@@ -12,3 +12,10 @@
 # 本地运行环境与日志
 /.venv/
 /web-server.log
+
+# rpm-check / hce-rpm-check 运行时报告树（按目标镜像分目录），仅本地交付，不入库
+/rpmcheck/
+/hce/
+
+# macOS 目录元数据
+.DS_Store

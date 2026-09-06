@@ -33,11 +33,15 @@ from .session import run_agent
 # 前端构建产物（vite build 输出），存在才挂载；开发时走 vite dev proxy
 DEFAULT_STATIC_DIR = Path(__file__).resolve().parent.parent / "web-ui" / "dist"
 # 流水线产物根：deploy（deploy.config.yaml 的 output_dir 固定前缀）+ rpm
-# （rpm-build/verify/archive 落盘处）。键即清单组与 URL 里的根前缀段，
-# Agent cwd 即项目根
+# （rpm-build/verify/archive 落盘处）+ rpmcheck（rpm-check / hce-rpm-check
+# 按目标镜像分目录的报告树，如 rpmcheck/hce_3p0/…、rpmcheck/openeuler_22p03/…）。
+# hce 为旧版 hce-rpm-check 目录的兼容根（历史产物仍可见，缺失则如实缺席）。
+# 键即清单组与 URL 里的根前缀段，Agent cwd 即项目根
 DEFAULT_ARTIFACT_ROOTS = {
     "deploy": Path(__file__).resolve().parent.parent / "deploy",
     "rpm": Path(__file__).resolve().parent.parent / "rpm",
+    "rpmcheck": Path(__file__).resolve().parent.parent / "rpmcheck",
+    "hce": Path(__file__).resolve().parent.parent / "hce",
 }
 # 产物文件名约定的权威源（见 artifacts.load_file_stages）
 DEFAULT_DEPLOY_CONFIG = Path(__file__).resolve().parent.parent / "deploy.config.yaml"

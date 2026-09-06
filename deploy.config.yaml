@@ -40,6 +40,37 @@ archive_result_file: "{{software}}-archive-result.md"
 deploy_list_file: "{{software}}-deploy-list.md"
 archive_issues_file: "{{software}}-archive-issues.md"
 
+# --- rpm-check（已有 RPM 包在目标 OS 的可安装性验证；输入=操作指导） ---
+# 输出落 rpmcheck/{{target_image}}/ 树——按目标镜像分目录，不与 rpm-build/
+# verify/archive 的 rpm/ 树混放；Web 产物区已注册 rpmcheck 根。target_image
+# 为目标镜像名 slug（小写、仅 [a-z0-9_]、版本号中 '.' 记为 'p'，
+# 如 openEuler 22.03 LTS → openeuler_22p03）。
+# target_os* 为门禁匹配值：/etc/os-release 的 ID 与 VERSION_ID 须分别等于
+# target_os_id / target_os_version_id，target_os 仅用于报告展示。
+rpm_check:
+  target_os: "openEuler 22.03 LTS"
+  target_os_id: "openEuler"
+  target_os_version_id: "22.03"
+  result_file: "rpmcheck/{{target_image}}/{{software}}/{{version}}/{{software}}-rpm-check-result.md"
+  issues_file: "rpmcheck/{{target_image}}/{{software}}/{{version}}/{{software}}-rpm-check-issues.md"
+
+# --- hce-rpm-check（rpm-check 的 HCE 目标 profile；在 HCE 基础镜像上按操作指导装 RPM 并验证软件可用） ---
+# 输出位于 rpmcheck/{{target_image}}/ 树（Web 产物区已注册该根；与 rpm-check
+# 的 openeuler_* 目录天然分离）。target_image 按目标镜像：HCE 3.0 → hce_3p0，
+# HCE 2.0 → hce_2p0。镜像按包架构自动选：
+#   x86_64 → HCE 3.0 Standard（0b0f2f44）；aarch64 → HCE 2.0 Standard for ARM（04f8c759，
+#   ap-southeast-1 实测 HCE 3.0 无 ARM Standard 公共镜像）。OS 门禁宽松匹配（ID/名称命中
+# 任一即认定 HCE），版本仅记录不校验（2.0/3.0 皆可）。
+hce_rpm_check:
+  os_id_match: ["hce", "HCE"]
+  os_name_contains: "Huawei Cloud Euler"
+  default_image_id_x86: "0b0f2f44-2a85-48a3-a259-8b4b36f9cc19"
+  default_image_id_arm: "04f8c759-2a22-412f-8fd5-969ddc61afec"
+  default_flavor_x86: "c7.xlarge.2"
+  default_flavor_arm: "kc1.xlarge.2"
+  result_file: "rpmcheck/{{target_image}}/{{software}}/{{version}}/{{software}}-rpm-check-result.md"
+  issues_file: "rpmcheck/{{target_image}}/{{software}}/{{version}}/{{software}}-rpm-check-issues.md"
+
 # --- rpm-archive（RPM 流水线归档；输出位于 rpm/ 树，键与 rpm agent 内置默认一致） ---
 # package_dir：归档开始时收集的产物包落盘目录（binary/ 构建二进制包、
 # source/ 源码包、deps/ 原有依赖包三子目录），Web 界面产物区自动可见可下载

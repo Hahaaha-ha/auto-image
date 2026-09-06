@@ -1,9 +1,10 @@
 """产物多根全量浏览：目录分组清单、内容读取、单文件下载与批量 zip。
 
-产物由流水线落盘在两处根目录下（deploy.config.yaml 的 output_dir 固定
-前缀 deploy/ + rpm 流水线产物目录 rpm/）；本模块只读浏览全部产物（含
+产物由流水线落盘在多根目录下（deploy.config.yaml 的 output_dir 固定
+前缀 deploy/ + rpm 流水线产物目录 rpm/ + rpm-check/hce-rpm-check 按目标
+镜像分目录的报告树 rpmcheck/）；本模块只读浏览全部产物（含
 历史轮次、重跑备份与杂项文件），不做任何按会话/阶段的过滤——侧栏产物
-区即两根目录的镜像，清单组键带根前缀（deploy/…、rpm/…），约定命名的
+区即各根目录的镜像，清单组键带根前缀（deploy/…、rpm/…、rpmcheck/…），约定命名的
 文件带阶段徽标（deploy 文件名从 config 派生，rpm 约定单点维护于
 RPM_FILE_STAGES；{{software}} 占位剥去得后缀），非约定的（.v1 备份、
 人工杂项）无徽标平铺。
@@ -38,10 +39,11 @@ CONFIG_KEY_STAGES = {
 }
 
 # rpm 流水线产物约定（rpm-build / rpm-verify / rpm-archive 的内置默认文件
-# 名，rpm_archive 段在 deploy.config.yaml 落档）。与 deploy 派生后缀无
-# 冲突：-rpm-verify-* / -rpm-archive-* 被 deploy 通用后缀先命中且阶段
-# 一致，-rpm-result / -rpm-issues / -rpm-deliver-list / -rpm.sh 仅此处能
-# 匹配。.rpm 同时覆盖 .src.rpm 与依赖包（rpms/{binary,source,deps}/ 归档
+# 名，rpm_archive 段在 deploy.config.yaml 落档；rpm-check / hce-rpm-check
+# 的报告落 rpmcheck/{{target_image}}/ 树，后缀约定相同、在此一并维护）。
+# 与 deploy 派生后缀无冲突：-rpm-verify-* /
+# -rpm-archive-* 被 deploy 通用后缀先命中且阶段一致，-rpm-result /
+# -rpm-issues / -rpm-deliver-list / -rpm.sh / -rpm-check-* 仅此处能匹配。.rpm 同时覆盖 .src.rpm 与依赖包（rpms/{binary,source,deps}/ 归档
 # 收集的包，归档阶段落盘、本质是构建产物 → BUILD）。
 # 阶段值取 normalize 常量（单来源）；BUILD 为 rpm 流水线独有阶段、不在
 # deploy 四阶段之列，仅此处使用故保留本地字面量。
@@ -49,6 +51,8 @@ RPM_BUILD = "BUILD"
 RPM_FILE_STAGES = (
     ("-rpm-verify-result.md", VERIFY),
     ("-rpm-verify-issues.md", VERIFY),
+    ("-rpm-check-result.md", VERIFY),
+    ("-rpm-check-issues.md", VERIFY),
     ("-rpm-result.md", RPM_BUILD),
     ("-rpm-issues.md", RPM_BUILD),
     ("-rpm-archive-result.md", ARCHIVE),
