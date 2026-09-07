@@ -52,7 +52,7 @@ keywords: rpm, 验证, 安装, 兼容性, openEuler, 指导, install, verify, �
 
 ## 配置文件
 
-输出路径与目标 OS 由项目根 `deploy.config.yaml` 的 `rpm_check` 段控制（**Read 之；缺失则用内置默认**）。占位符运行时替换：`{{software}}`/`{{version}}`（version 取完整「版本-发行号」，如 `6.0.0-24`，不含 `.rpm` 后缀与斜杠）；`{{target_image}}` = **目标机器基础镜像 slug**（镜像名称或 os-release 的 ID+VERSION_ID → 小写、非 `[a-z0-9]` 记为 `_`、版本号中 `.` 记为 `p`）：HCE 3.0 → `hce_3p0`、HCE 2.0 → `hce_2p0`、openEuler 22.03 LTS → `openeuler_22p03`。取值优先级：调用方显式给的镜像 > 配置/默认镜像（hce profile 按包架构自动选）；已有别名路径在步骤 1 门禁后取实测 os-release；实测与计划不一致以实测为准并记录。产物按目标镜像分目录——rpm-check（`openeuler_*`）与 hce-rpm-check（`hce_*`）目录天然不同，且均不落入 rpm-build 的 `rpm/` 树。
+输出路径与目标 OS 由项目根 `deploy.config.yaml` 的 `rpm_check` 段控制（**Read 之；缺失则用内置默认**）。占位符运行时替换：`{{software}}`/`{{version}}`（version 取完整「版本-发行号」，如 `6.0.0-24`，不含 `.rpm` 后缀与斜杠）；`{{target_image}}` = **目标机器基础镜像 slug**（镜像名称或 os-release 的 ID+VERSION_ID → 小写、非 `[a-z0-9]` 记为 `_`、版本号中 `.` 记为 `p`）：HCE 3.0 → `hce_3p0`、HCE 2.0 → `hce_2p0`、openEuler 22.03 LTS → `openeuler_22p03`。取值优先级：调用方显式给的镜像 > 配置/默认镜像（hce profile 按包目标 openEuler 版本对标选：oe2203* → HCE 2.0、oe2403sp1 → HCE 3.0，再按包架构取镜像）；已有别名路径在步骤 1 门禁后取实测 os-release；实测与计划不一致以实测为准并记录。产物按目标镜像分目录——rpm-check（`openeuler_*`）与 hce-rpm-check（`hce_*`）目录天然不同，且均不落入 rpm-build 的 `rpm/` 树。
 
 本 skill 使用的字段：
 - `rpm_check.target_os`：目标 OS 展示名（报告用）

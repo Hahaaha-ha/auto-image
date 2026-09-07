@@ -57,19 +57,26 @@ rpm_check:
 # --- hce-rpm-check（rpm-check 的 HCE 目标 profile；在 HCE 基础镜像上按操作指导装 RPM 并验证软件可用） ---
 # 输出位于 rpmcheck/{{target_image}}/ 树（Web 产物区已注册该根；与 rpm-check
 # 的 openeuler_* 目录天然分离）。target_image 按目标镜像：HCE 3.0 → hce_3p0，
-# HCE 2.0 → hce_2p0。镜像按包架构自动选：
-#   x86_64 → HCE 3.0 Standard（0b0f2f44）；aarch64 → HCE 2.0 Standard for ARM（04f8c759，
-#   ap-southeast-1 实测 HCE 3.0 无 ARM Standard 公共镜像）。OS 门禁宽松匹配（ID/名称命中
-# 任一即认定 HCE），版本仅记录不校验（2.0/3.0 皆可）。
+# HCE 2.0 → hce_2p0。镜像一律 ARM（鲲鹏），不提供 x86 镜像；按包目标 openEuler
+# 版本对标选 HCE 版本：
+#   openEuler 22.03 LTS 系（oe2203 / oe2203sp1..sp4）→ HCE 2.0（基于 openEuler
+#   22.03 LTS）→ 唯一默认镜像 HCE 2.0 Standard for ARM（04f8c759），不按包架构
+#   分支（x86_64/aarch64/noarch 皆用 ARM 镜像）
+#   openEuler 24.03 LTS SP1 系（oe2403sp1）→ HCE 3.0（基于 openEuler 24.03 LTS
+#   SP1）——区域无 HCE 3.0 ARM 公共镜像，停止要求显式给镜像；tag 无法对标
+#   openEuler 版本（如 oe2503/无 tag）同样停止。OS 门禁宽松匹配（ID/名称命中
+#   任一即认定 HCE），版本仅记录不校验（2.0/3.0 皆可）。验证通过后按 rpm-archive
+#   模板（.claude/agents/rpm-archive.md）生成归档安装脚本 install-rpm.sh，并在全新
+#   拉起的初始 HCE ARM 镜像验证机上真实执行实测（快照→忠实执行→冒烟→源恢复与
+#   无残留比对），跑通才算交付，落 rpmcheck 树。
 hce_rpm_check:
   os_id_match: ["hce", "HCE"]
   os_name_contains: "Huawei Cloud Euler"
-  default_image_id_x86: "0b0f2f44-2a85-48a3-a259-8b4b36f9cc19"
-  default_image_id_arm: "04f8c759-2a22-412f-8fd5-969ddc61afec"
-  default_flavor_x86: "c7.xlarge.2"
-  default_flavor_arm: "kc1.xlarge.2"
+  default_image_id_arm: "04f8c759-2a22-412f-8fd5-969ddc61afec"   # Huawei Cloud EulerOS 2.0 Standard 64bit for ARM (aarch64)，唯一默认镜像
+  default_flavor_arm: "kc1.xlarge.2"                             # 鲲鹏 ARM 规格
   result_file: "rpmcheck/{{target_image}}/{{software}}/{{version}}/{{software}}-rpm-check-result.md"
   issues_file: "rpmcheck/{{target_image}}/{{software}}/{{version}}/{{software}}-rpm-check-issues.md"
+  install_script_file: "rpmcheck/{{target_image}}/{{software}}/{{version}}/install-rpm.sh"   # 归档安装脚本（rpm-archive 模板生成；生成后在初始镜像实测，跑通才交付）
 
 # --- rpm-archive（RPM 流水线归档；输出位于 rpm/ 树，键与 rpm agent 内置默认一致） ---
 # package_dir：归档开始时收集的产物包落盘目录（binary/ 构建二进制包、
