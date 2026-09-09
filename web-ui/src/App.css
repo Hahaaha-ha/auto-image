@@ -350,7 +350,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   border-left: 1px solid var(--line);
 }
 /* 卡头工具行：全选 / 清空 / 勾选集打包 zip */
-.va-art-tools { display: flex; gap: 6px; align-items: center; }
+.va-art-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .va-art-tools button { padding: 2px 8px; font-size: 11.5px; }
 .va-art-zip { color: var(--accent); border-color: var(--accent); }
 /* 组头：整组勾选框 + 目录名 + 文件数，点击展开/收起（div 承载：内部还嵌
@@ -443,3 +443,33 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   background: #fff8c5; border-radius: 0 6px 6px 0; color: var(--ink-2);
 }
 .va-md img { max-width: 100%; }
+
+/* ---------- OBS 产物面板（侧栏第三面板） ---------- */
+
+.va-obs-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.va-obs-head .va-obs-bucket {
+  font-size: 10.5px; text-transform: none; letter-spacing: 0;
+  color: var(--ink-2); background: var(--surface-deep);
+  border-radius: 8px; padding: 1px 6px;
+  max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.va-obs-head .va-obs-refresh {
+  margin-left: auto; flex-shrink: 0; padding: 1px 8px;
+  font-size: 10.5px; text-transform: none; letter-spacing: 0;
+}
+.va-obs-error {
+  margin: 4px 6px; padding: 4px 8px; font-size: 11.5px;
+  color: var(--bad); background: #fff1f0; border: 1px solid #ffd0cc;
+  border-radius: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 成功提示条（与 error-bar 对称：绿色短暂展示，复制链接/归档完成等） */
+.notice-bar {
+  margin: 0;
+  padding: 6px 14px;
+  background: #dafbe1;
+  color: var(--ok);
+  border-top: 1px solid #abe4b8;
+  font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}

@@ -2,7 +2,7 @@
 // 扣等待输入空档、终态与挂起同口径。UI 的「总计时间」押在这块地基上。
 // 只断言外部可见行为（秒数、展示串），不断言内部实现。
 import { describe, expect, it } from 'vitest'
-import { activeSeconds, fmtActive, resumeMark } from './derive'
+import { activeSeconds, fmtActive, obsGroups, resumeMark, OBS_ROOT_DIR } from './derive'
 
 // 事件构造：ts 并入 payload（快照与全局流两路落地后的统一形状）
 const ev = (type, ts) => ({ seq: ts, type, payload: { ts } })
@@ -74,5 +74,36 @@ describe('resumeMark', () => {
     expect(resumeMark(fork, { run_source: source })).toBe(
       " ⑂ Fork 自『部署 nginx』",
     )
+  })
+})
+
+describe('obsGroups', () => {
+  const obj = (key, size = 1, last_modified = '') => ({ key, size, last_modified })
+
+  it('按 key 目录段分组，文件条目保留 key 全名（根级对象不能由组前缀拼回）', () => {
+    const groups = obsGroups([
+      obj('deploy/lobechat/1.143.3/install-result.md', 5659, '2026/09/09 15:35:07'),
+      obj('readme.md', 12, '2026/09/09 10:00:00'),
+    ])
+    const byDir = Object.fromEntries(groups.map((g) => [g.dir, g]))
+    expect(byDir['deploy/lobechat/1.143.3'].files[0].key).toBe('deploy/lobechat/1.143.3/install-result.md')
+    expect(byDir[OBS_ROOT_DIR].files[0].key).toBe('readme.md')
+    expect(byDir[OBS_ROOT_DIR].files[0].name).toBe('readme.md')
+  })
+
+  it('组间按组内最新 last_modified 降序，组内按对象名升序', () => {
+    const groups = obsGroups([
+      obj('old/x.md', 1, '2026/09/01 00:00:00'),
+      obj('new/b.md', 1, '2026/09/09 00:00:00'),
+      obj('new/a.md', 2, '2026/09/05 00:00:00'),
+    ])
+    expect(groups.map((g) => g.dir)).toEqual(['new', 'old'])
+    expect(groups[0].files.map((f) => f.name)).toEqual(['a.md', 'b.md'])
+  })
+
+  it('无 key 的坏条目跳过，空清单/空入参返回空组', () => {
+    expect(obsGroups([])).toEqual([])
+    expect(obsGroups(null)).toEqual([])
+    expect(obsGroups([{ size: 3 }, { key: '' }])).toEqual([])
   })
 })

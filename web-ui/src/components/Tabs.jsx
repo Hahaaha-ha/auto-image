@@ -53,7 +53,7 @@ export default function Tabs() {
         const key = tabKey(t)
         const on = key === s.activeKey
         const run = t.kind === 'session' ? s.runs[t.runId] : null
-        const closeable = t.kind === 'file' || sessionCount > 1
+        const closeable = t.kind !== 'session' || sessionCount > 1
         return (
           <div
             key={key}
@@ -78,9 +78,11 @@ export default function Tabs() {
               }
             }}
             title={
-              t.kind === 'file'
-                ? t.relPath
-                : `${tabStatusLabel(run)} · ${firstPromptPreview(run, 60)} · ${t.runId}${resumeMark(run, s.runs)}`
+              t.kind === 'obs'
+                ? t.key
+                : t.kind === 'file'
+                  ? t.relPath
+                  : `${tabStatusLabel(run)} · ${firstPromptPreview(run, 60)} · ${t.runId}${resumeMark(run, s.runs)}`
             }
           >
             {run ? (
@@ -90,15 +92,23 @@ export default function Tabs() {
               </>
             ) : (
               <>
-                <span className="va-tab-ico">{s.artifactCache[t.relPath]?.binary ? '📦' : '📄'}</span>
+                <span className="va-tab-ico">
+                  {(t.kind === 'obs' ? s.obsCache[t.key]?.binary : s.artifactCache[t.relPath]?.binary) ? '📦' : '📄'}
+                </span>
                 <span className="va-tab-name">{t.name}</span>
               </>
             )}
             {closeable ? (
               <button
                 className="va-tab-close"
-                title={t.kind === 'file' ? '关闭文件标签页' : '关闭标签页（不影响会话执行，列表里可重新打开）'}
-                aria-label={`关闭 ${t.kind === 'file' ? t.name : firstPromptPreview(run)} 标签页`}
+                title={
+                  t.kind === 'session'
+                    ? '关闭标签页（不影响会话执行，列表里可重新打开）'
+                    : t.kind === 'obs'
+                      ? '关闭 OBS 对象标签页'
+                      : '关闭文件标签页'
+                }
+                aria-label={`关闭 ${t.kind === 'session' ? firstPromptPreview(run) : t.name} 标签页`}
                 onClick={(e) => {
                   e.stopPropagation()
                   store.closeTab(key)

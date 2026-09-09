@@ -1,8 +1,17 @@
 # ssh-skill 命令执行审计日志（运行时产物）
 /logs/
 
+# 各 skill 运行时操作日志（OBS 上传/删除等执行记录）
+.claude/skills/*/logs/
+
 # 仓库根共享凭证（ecs-skill + ims-skill），含 AK/SK 明文
 /scope.yaml
+
+# OBS 凭据加密密钥（scope.yaml obs 段 ak_enc/sk_enc 的解密钥，AES-256-GCM）及其备份
+/.obs-secret.key*
+
+# Python 字节码缓存
+__pycache__/
 
 # 流水线运行时产物（安装/验证/归档结果、指南、RPM 包），仅本地交付，不入库
 /deploy/
