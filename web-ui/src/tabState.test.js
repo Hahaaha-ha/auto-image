@@ -2,16 +2,21 @@
 // UI 切片押在这块地基上。只断言外部可见行为（开了什么、关后激活谁、
 // 控制面是谁、落盘剩什么），不断言内部实现。
 import { describe, expect, it } from 'vitest'
-import { closeTab, controlRunId, openFile, openSession, persistableTabs, tabKey } from './tabState'
+import { closeTab, controlRunId, openFile, openObs, openSession, persistableTabs, tabKey } from './tabState'
 
 const s = (runId) => ({ kind: 'session', runId })
 const f = (relPath, name) => ({ kind: 'file', relPath, name })
+const o = (key, name) => ({ kind: 'obs', key, name })
 const keys = (tabs) => tabs.map(tabKey)
 
 describe('tabKey', () => {
   it('会话标签页 key 为 session:<runId>，文件标签页为 file:<relPath>', () => {
     expect(tabKey(s('run_1'))).toBe('session:run_1')
     expect(tabKey(f('deploy/nginx-install.md', 'nginx-install.md'))).toBe('file:deploy/nginx-install.md')
+  })
+
+  it('OBS 对象标签页 key 为 obs:<对象key>', () => {
+    expect(tabKey(o('deploy/a.md', 'a.md'))).toBe('obs:deploy/a.md')
   })
 })
 
@@ -192,5 +197,53 @@ describe('persistableTabs', () => {
 
   it('无会话标签页：viewRun 为 null', () => {
     expect(persistableTabs([], null, null)).toEqual({ openTabs: [], viewRunId: null })
+  })
+})
+
+describe('openObs', () => {
+  it('已有该对象标签页：不重插，只激活', () => {
+    const tabs = [s('run_1'), o('deploy/a.md', 'a.md'), s('run_2')]
+    const r = openObs(tabs, 'session:run_1', 'deploy/a.md', 'a.md')
+    expect(keys(r.tabs)).toEqual(['session:run_1', 'obs:deploy/a.md', 'session:run_2'])
+    expect(r.activeKey).toBe('obs:deploy/a.md')
+  })
+
+  it('新对象标签页插当前激活标签页右侧并激活（与 openFile 同语义）', () => {
+    const tabs = [s('run_1'), s('run_2'), s('run_3')]
+    const r = openObs(tabs, 'session:run_2', 'rpm/x/y.rpm', 'y.rpm')
+    expect(keys(r.tabs)).toEqual(['session:run_1', 'session:run_2', 'obs:rpm/x/y.rpm', 'session:run_3'])
+    expect(r.activeKey).toBe('obs:rpm/x/y.rpm')
+  })
+
+  it('name 缺省取 key 末段；根级对象（无 /）整串即名', () => {
+    expect(openObs([s('run_1')], 'session:run_1', 'deploy/a/b.md').tabs[1].name).toBe('b.md')
+    expect(openObs([s('run_1')], 'session:run_1', 'readme.md').tabs[1].name).toBe('readme.md')
+  })
+
+  it('不修改入参数组', () => {
+    const tabs = [s('run_1')]
+    openObs(tabs, 'session:run_1', 'deploy/a.md')
+    expect(keys(tabs)).toEqual(['session:run_1'])
+  })
+})
+
+describe('closeTab · OBS 对象标签页', () => {
+  it('关激活的 OBS 标签页 → 激活左邻（与文件标签页同语义）', () => {
+    const tabs = [s('run_1'), s('run_2'), o('deploy/a.md', 'a.md'), s('run_3')]
+    const r = closeTab(tabs, 'obs:deploy/a.md', 'obs:deploy/a.md')
+    expect(keys(r.tabs)).toEqual(['session:run_1', 'session:run_2', 'session:run_3'])
+    expect(r.activeKey).toBe('session:run_2')
+  })
+
+  it('OBS 标签页不持久化（落盘只留会话）', () => {
+    const tabs = [s('run_1'), o('deploy/a.md', 'a.md'), s('run_2')]
+    const r = persistableTabs(tabs, 'obs:deploy/a.md', 'session:run_2')
+    expect(r.openTabs).toEqual(['run_1', 'run_2'])
+    expect(r.viewRunId).toBe('run_2')
+  })
+
+  it('激活 OBS 标签页时控制面仍是记住的会话（与文件标签页同语义）', () => {
+    const tabs = [s('run_1'), s('run_2'), o('deploy/a.md', 'a.md')]
+    expect(controlRunId(tabs, 'obs:deploy/a.md', 'session:run_1')).toBe('run_1')
   })
 })

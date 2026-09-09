@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import artifacts as artifacts_mod
+from . import obs as obs_mod
 from . import rebuild as rebuild_mod
 from . import redact as redact_mod
 from . import runs as runs_mod
@@ -66,6 +67,8 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
                artifact_roots=None, deploy_config=None, scope_config=None,
                list_sessions_fn=None, get_session_messages_fn=None, transcript_times_fn=None,
                residual_cli_scan=None,
+               obs_list_fn=None, obs_url_fn=None, obs_read_fn=None, obs_archive_fn=None,
+               obs_upload_zip_fn=None, obs_health_fn=None,
     state_path=None, title_factory=None, max_parallel_runs=None):
     """session_factory 可注入：生产为 ClaudeSDKClient 真实现（默认），
     测试注入按剧本推消息的假实现——注入边界即唯一测试缝。artifact_roots
@@ -93,6 +96,15 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     titles = title_factory or sdk_mod.TitleSessionFactory()
     artifact_roots = {name: Path(p) for name, p in (artifact_roots or DEFAULT_ARTIFACT_ROOTS).items()}
     file_stages = artifacts_mod.load_file_stages(deploy_config or DEFAULT_DEPLOY_CONFIG)
+    # OBS 对象浏览：默认实现绑定真实 scope（与脱敏同源），测试注入假函数
+    # （不触网）。SDK 缺失或未配置在请求时报 503，不影响启动与其它功能。
+    obs_scope = Path(scope_config or DEFAULT_SCOPE_CONFIG)
+    obs_list = obs_list_fn or (lambda limit=1000: obs_mod.list_objects(obs_scope, limit))
+    obs_url = obs_url_fn or (lambda key="", expires=3600: obs_mod.signed_url(obs_scope, key, expires))
+    obs_read = obs_read_fn or (lambda key="": obs_mod.read_text(obs_scope, key))
+    obs_archive = obs_archive_fn or (lambda items: obs_mod.upload_paths(obs_scope, items))
+    obs_upload_zip = obs_upload_zip_fn or (lambda key, data: obs_mod.upload_bytes(obs_scope, key, data))
+    obs_health = obs_health_fn or (lambda: obs_mod.health_check(obs_scope))
     app.state.run_manager = manager
     app.state.event_store = store
     app.state.session_factory = factory
@@ -292,6 +304,114 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
             media_type="application/zip",
             headers={"Content-Disposition": f'attachment; filename="{name}"'},
         )
+
+    # OBS 对象浏览（scope obs 段 + esdk-obs-python）：清单 / 签名下载链接 /
+    # 文本预览。未配置（SDK 缺失或 scope 无 obs 段）503、云侧失败 502、
+    # 对象级 404/422。SDK 是阻塞 IO——同步 def 由 FastAPI 派线程池执行，
+    # 不占事件循环。
+    @app.get("/api/obs/objects")
+    def obs_objects(limit: int = 1000):
+        try:
+            return obs_list(limit=max(1, min(limit, 5000)))
+        except obs_mod.ObsNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except obs_mod.ObsApiError as exc:
+            raise HTTPException(status_code=502, detail=exc.error) from exc
+
+    @app.get("/api/obs/url")
+    def obs_signed_url(key: str = "", expires: int = 3600):
+        try:
+            return obs_url(key=key, expires=max(60, min(expires, 7 * 24 * 3600)))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except obs_mod.ObsNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except obs_mod.ObsApiError as exc:
+            raise HTTPException(status_code=502, detail=exc.error) from exc
+
+    @app.get("/api/obs/content")
+    def obs_content(key: str = ""):
+        try:
+            found = obs_read(key=key)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except obs_mod.ObsNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except obs_mod.ObsApiError as exc:
+            raise HTTPException(status_code=502, detail=exc.error) from exc
+        if found is None:
+            raise HTTPException(status_code=404, detail="object not found")
+        if found.get("binary"):
+            raise HTTPException(
+                status_code=422,
+                detail="binary or oversized object; use /api/obs/url for a signed download link",
+            )
+        return found
+
+    # 本地产物批量归档到 OBS：paths（根前缀相对路径，与 zip 端点同形状）→
+    # 服务端 resolve（路径约束复用——服务不是任意文件上传器）后逐个 putFile，
+    # 对象名 = 产物相对路径（目录结构原样保留，与桶内既有 key 同构）。
+    # 缺失/越界项如实跳过并计数，一个都收不到 404；未配置 503、云失败 502。
+    @app.post("/api/obs/archive")
+    def archive_to_obs(body: dict | None = None):  # 函数名不叫 obs_archive——避免遮蔽同名闭包（默认实现 lambda）自递归
+
+        paths = (body or {}).get("paths")
+        if not isinstance(paths, list) or not paths or not all(
+            isinstance(p, str) and p for p in paths
+        ):
+            raise HTTPException(status_code=422, detail="paths required")
+        items = []
+        for rel in paths:
+            found = artifacts_mod.resolve(artifact_roots, file_stages, rel)
+            if found is not None:
+                items.append((rel, found[1]))
+        if not items:
+            raise HTTPException(status_code=404, detail="no artifacts to archive")
+        try:
+            result = obs_archive(items)
+        except obs_mod.ObsNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except obs_mod.ObsApiError as exc:
+            raise HTTPException(status_code=502, detail=exc.error) from exc
+        return {**result, "requested": len(paths), "skipped": len(paths) - len(items)}
+
+    # 多选产物打包 zip 归档到 OBS：paths（与 zip 下载端点同形状）在服务端
+    # 内存打包（artifacts.zip_files 复用，不落盘）后 putContent 直传，对象名
+    # 固定 zip/ 前缀 + 自定义包名（normalize_zip_name 清洗）。无有效产物 404、
+    # 包名/paths 非法 422、未配置 503、云失败 502。
+    @app.post("/api/obs/archive-zip")
+    def archive_zip_to_obs(body: dict | None = None):
+        paths = (body or {}).get("paths")
+        if not isinstance(paths, list) or not paths or not all(
+            isinstance(p, str) and p for p in paths
+        ):
+            raise HTTPException(status_code=422, detail="paths required")
+        try:
+            name = obs_mod.normalize_zip_name((body or {}).get("name"))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        stream, count = artifacts_mod.zip_files(artifact_roots, file_stages, paths)
+        if stream is None:
+            raise HTTPException(status_code=404, detail="no artifacts to zip")
+        try:
+            result = obs_upload_zip(f"zip/{name}", stream.getvalue())
+        except obs_mod.ObsNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except obs_mod.ObsApiError as exc:
+            raise HTTPException(status_code=502, detail=exc.error) from exc
+        return {**result, "zipped": count, "sources": paths}
+
+    # OBS 健康检查：headBucket 单请求全链路（配置解析 → 凭据解密 → SDK →
+    # 网络 → 凭据有效性 → 桶存在）。200 = 健康；503 = 未配置/密钥问题；
+    # 502 = 云侧失败（凭据错误/网络不通/桶不存在）——状态码即监控判定。
+    @app.get("/api/obs/health")
+    def check_obs_health():
+        try:
+            return obs_health()
+        except obs_mod.ObsNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except obs_mod.ObsApiError as exc:
+            raise HTTPException(status_code=502, detail=exc.error) from exc
 
     # per-run 事件端点收窄为纯快照：按 Last-Event-ID 重放历史（断点续传），
     # 重放完毕正常结束响应——不常驻、无心跳、无 ENDED 关流判定（终态事件

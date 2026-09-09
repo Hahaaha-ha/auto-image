@@ -11,6 +11,7 @@
 // 非查看中的标签页状态点由 GET /api/runs 摘要轮询驱动。header 与输入条
 // 构成控制面，绑定 controlRunId 解析出的会话——激活文件标签页不换对象。
 import { useSyncExternalStore } from 'react'
+import { fmtSize } from './derive.js'
 import { mergeSessionEvents, mergeSessionSummary, SESSION_STATUS } from './eventMerge.js'
 import * as tabState from './tabState.js'
 
@@ -97,12 +98,17 @@ let state = {
   lastSessionKey: restored.viewRunId ? `session:${restored.viewRunId}` : null,
   connection: 'connecting', // 全局事件流连接态：connecting → live / reconnecting
   submitError: null,
+  notice: null,               // 成功提示条（与 submitError 对称，绿色短暂展示）
   now: Date.now(),
   drafts: {},                // 会话草稿镜像（runId → 文本；真身在 setDraft 侧的 map）
   artifacts: { groups: [] }, // deploy/ + rpm/ 全量产物（目录分组，全局不属于任何 run）
   artifactCache: {},         // 产物内容多槽缓存（relPath → 条目+content），关标签页不清
   artifactSel: {},           // 批量下载勾选集（relPath → true，随清单刷新剪枝）
   artifactZipping: false,    // zip 打包请求进行中（按钮防重复触发）
+  obs: { objects: [], bucket: null, region: null, domain: null, error: null, loading: false }, // OBS 桶内对象清单（scope obs 段绑定，尽力而为）
+  obsCache: {},              // OBS 对象内容多槽缓存（对象 key → 条目+content），关标签页不清
+  obsArchiving: false,       // 批量归档请求进行中（按钮防重复触发）
+  obsZipArchiving: false,    // 打包 zip 归档请求进行中（按钮防重复触发）
 }
 
 // 时长走针仅在控制面会话执行期间（挂起与终态冻结，终态由事件求和定格）
@@ -165,6 +171,14 @@ function fail(message) {
   clearTimeout(errorTimer)
   set({ submitError: message })
   errorTimer = setTimeout(() => state.submitError && set({ submitError: null }), 4000)
+}
+
+// 成功提示条（与 fail 对称：绿色短暂展示）
+let noticeTimer = null
+function ok(message) {
+  clearTimeout(noticeTimer)
+  set({ notice: message })
+  noticeTimer = setTimeout(() => state.notice && set({ notice: null }), 4000)
 }
 
 // 409 家族提示条文案：命中判定值给人话提示，其余如实透传服务端 detail
@@ -658,7 +672,213 @@ export async function downloadArtifactZip() {
   }
 }
 
+// ---------- OBS 产物 ----------
+
+// 桶内清单刷新（启动即拉一次 + 面板刷新钮；尽力而为，失败落面板错误行
+// 不打断使用。流水线事件不联动——OBS 上传不经过本服务的已知事件面）
+export async function refreshObs() {
+  if (state.obs.loading) return
+  set({ obs: { ...state.obs, loading: true } })
+  try {
+    const resp = await fetch('/api/obs/objects?limit=1000')
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      set({ obs: { ...state.obs, loading: false, error: data.detail || `HTTP ${resp.status}` } })
+      return
+    }
+    set({
+      obs: {
+        objects: data.objects ?? [],
+        bucket: data.bucket ?? null,
+        region: data.region ?? null,
+        domain: data.domain ?? null,
+        error: null,
+        loading: false,
+      },
+    })
+  } catch (err) {
+    set({ obs: { ...state.obs, loading: false, error: err.message } })
+  }
+}
+
+// 打开 OBS 对象标签页：已有则只激活；新则拉文本预览进多槽缓存（对象 key
+// 寻址，fetch 前逐段编码）。二进制/超限对象（端点 422）不拉内容，占位
+// 视图元信息取清单条目。
+export async function openObsObject(key, entry) {
+  if (!state.obsCache[key]) {
+    try {
+      const resp = await fetch(`/api/obs/content?key=${encodeURIComponent(key)}`)
+      const data = await resp.json().catch(() => ({}))
+      if (resp.ok) {
+        set({ obsCache: { ...state.obsCache, [key]: data } })
+      } else if (resp.status === 422) {
+        // 二进制/超限对象不可预览：占位视图元信息来自清单条目
+        const cut = key.lastIndexOf('/')
+        set({
+          obsCache: {
+            ...state.obsCache,
+            [key]: {
+              dir: cut > 0 ? key.slice(0, cut) : '',
+              name: entry?.name ?? key.slice(cut + 1),
+              size: entry?.size ?? null,
+              binary: true,
+            },
+          },
+        })
+      } else {
+        fail(`打开 OBS 对象失败：${data.detail || `HTTP ${resp.status}`}`)
+        return
+      }
+    } catch (err) {
+      fail(`打开 OBS 对象失败：${err.message}`)
+      return
+    }
+  }
+  applyTabState(tabState.openObs(state.tabs, state.activeKey, key, entry?.name))
+}
+
+// OBS 对象下载：先取签名链接（服务端本地签名），临时 <a> 新标签打开——
+// 文本浏览器直接渲染，二进制按 OBS 响应下载
+export async function downloadObsObject(key) {
+  try {
+    const resp = await fetch(`/api/obs/url?key=${encodeURIComponent(key)}`)
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      fail(`获取 OBS 下载链接失败：${data.detail || `HTTP ${resp.status}`}`)
+      return
+    }
+    const a = document.createElement('a')
+    a.href = data.signed_url
+    a.target = '_blank'
+    a.rel = 'noopener'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+  } catch (err) {
+    fail(`获取 OBS 下载链接失败：${err.message}`)
+  }
+}
+
+// 复制文本到剪贴板：优先 navigator.clipboard（仅安全上下文 https/localhost
+// 可用），不可用或被拒回退 execCommand——http://IP 访问形态必须兜底
+export async function copyText(text) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // 权限拒绝等：落到兜底路径
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.select()
+    const copied = document.execCommand('copy')
+    ta.remove()
+    return copied
+  } catch {
+    return false
+  }
+}
+
+// 复制 OBS 对象签名下载链接（7 天有效）：返回是否复制成功（行级按钮据此
+// 打 ✓ 反馈）。两条兜底出口：剪贴板全拒时链接打到控制台供手动复制
+export async function copyObsLink(key) {
+  try {
+    const resp = await fetch(`/api/obs/url?key=${encodeURIComponent(key)}&expires=604800`)
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      fail(`获取 OBS 下载链接失败：${data.detail || `HTTP ${resp.status}`}`)
+      return false
+    }
+    if (await copyText(data.signed_url)) {
+      ok(`已复制下载链接（签名 7 天有效）：${key}`)
+      return true
+    }
+    // eslint-disable-next-line no-console
+    console.log('OBS 签名链接（剪贴板不可用，请手动复制）：', data.signed_url)
+    fail('复制到剪贴板失败（浏览器限制）——链接已打印到控制台（F12），可手动复制')
+    return false
+  } catch (err) {
+    fail(`获取 OBS 下载链接失败：${err.message}`)
+    return false
+  }
+}
+
+// 批量归档本地产物到 OBS：勾选集 → POST /api/obs/archive（服务端经产物
+// 路径约束解析后逐个 putFile，对象名 = 产物路径），完成后刷新 OBS 清单；
+// 部分失败如实逐项点名
+export async function archiveToObs() {
+  const paths = Object.keys(state.artifactSel)
+  if (!paths.length || state.obsArchiving) return
+  set({ obsArchiving: true })
+  try {
+    const resp = await fetch('/api/obs/archive', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths }),
+    })
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      fail(`归档到 OBS 失败：${data.detail || `HTTP ${resp.status}`}`)
+      return
+    }
+    refreshObs()
+    if (data.failed?.length) {
+      fail(`归档完成：${data.count} 成功、${data.failed.length} 失败（${data.failed.map((f) => f.key).join('、')}）`)
+    } else {
+      ok(`已归档 ${data.count} 个产物到 OBS（对象名 = 产物路径）`)
+    }
+  } catch (err) {
+    fail(`归档到 OBS 失败：${err.message}`)
+  } finally {
+    set({ obsArchiving: false })
+  }
+}
+
+// 打包归档：勾选集 → 自定义包名（prompt，取消即中止）→ 服务端内存打 zip
+// 直传 OBS（对象名固定 zip/ 前缀，.zip 后缀服务端自动补，同名覆盖）
+export async function archiveZipToObs() {
+  const paths = Object.keys(state.artifactSel)
+  if (!paths.length || state.obsZipArchiving) return
+  const d = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  const def = `bundle-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`
+  const answer = window.prompt(`打包 ${paths.length} 个产物为 zip（上传到 OBS 的 zip/ 目录，自动补 .zip 后缀）\n包名：`, def)
+  if (answer == null) return // 取消：不动
+  const name = String(answer).trim()
+  if (!name) {
+    fail('zip 包名不能为空')
+    return
+  }
+  set({ obsZipArchiving: true })
+  try {
+    const resp = await fetch('/api/obs/archive-zip', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths, name }),
+    })
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      fail(`打包归档失败：${data.detail || `HTTP ${resp.status}`}`)
+      return
+    }
+    refreshObs()
+    ok(`已打包 ${data.zipped} 个产物 → ${data.key}（${fmtSize(data.size)}，同名覆盖）`)
+  } catch (err) {
+    fail(`打包归档失败：${err.message}`)
+  } finally {
+    set({ obsZipArchiving: false })
+  }
+}
+
 // 启动即恢复任务列表（含服务重启后经 transcript 重建的历史）与产物清单
-// （loadRuns 无历史时提前 return，产物首刷不能依赖它）
+// （loadRuns 无历史时提前 return，产物首刷不能依赖它）；OBS 清单同样尽力拉一次
 loadRuns()
 refreshArtifacts()
+refreshObs()

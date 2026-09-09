@@ -356,6 +356,13 @@ export default function App() {
                 <div className="big">未开始</div>
                 <div>点标签栏「+ 新建」创建会话，输入第一条部署指令</div>
               </div>
+            ) : activeTab.kind === 'obs' ? (
+              <ArtifactView
+                artifact={s.obsCache[activeTab.key]}
+                onDownload={store.copyObsLink}
+                downloadLabel="⧉ 复制链接"
+                binaryLabel="⧉ 复制下载链接"
+              />
             ) : activeTab.kind === 'file' ? (
               <ArtifactView artifact={activeArtifact} onDownload={store.downloadArtifact} />
             ) : activeRun ? (
@@ -366,6 +373,7 @@ export default function App() {
       </div>
 
       {s.submitError && <div className="error-bar">{s.submitError}</div>}
+      {s.notice && <div className="notice-bar">{s.notice}</div>}
 
       <ChatBar />
     </div>

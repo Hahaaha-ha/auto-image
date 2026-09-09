@@ -199,3 +199,39 @@ export function defaultOpenPaths(groups) {
   }
   return open
 }
+
+// ---------- OBS 对象树（桶内对象平铺 → 目录分组，供 artifactTree 复用） ----------
+
+// 根级对象（key 无 /）的分组目录名：artifactTree 要求非空目录段，空串会
+// 挂出无名节点，给个明确的展示名
+export const OBS_ROOT_DIR = '（桶根）'
+
+// OBS 对象清单 → 与本地产物清单同形状的分组（{dir, files}）：组间按组内
+// 最新 last_modified 降序（'YYYY/MM/DD HH:MM:SS' 字符串字典序即时间序，
+// 与本地面板「最新在前」同感），组内按对象名升序。文件条目带 key 全名
+// （树行寻址用——根级对象的 key 与「（桶根）」前缀拼不回原值）。无 key
+// 的坏条目跳过。
+export function obsGroups(objects, rootDir = OBS_ROOT_DIR) {
+  const byDir = new Map()
+  for (const o of objects ?? []) {
+    const key = String(o?.key ?? '')
+    if (!key) continue
+    const cut = key.lastIndexOf('/')
+    const dir = cut === -1 ? rootDir : key.slice(0, cut)
+    const name = cut === -1 ? key : key.slice(cut + 1)
+    const last = String(o?.last_modified ?? '')
+    let g = byDir.get(dir)
+    if (!g) {
+      g = { dir, latest: '', files: [] }
+      byDir.set(dir, g)
+    }
+    g.files.push({ name, size: o?.size ?? null, last_modified: last, key })
+    if (last > g.latest) g.latest = last
+  }
+  const groups = [...byDir.values()]
+  groups.sort((a, b) => (a.latest < b.latest ? 1 : a.latest > b.latest ? -1 : 0))
+  return groups.map((g) => {
+    g.files.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    return { dir: g.dir, files: g.files }
+  })
+}

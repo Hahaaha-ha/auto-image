@@ -1,13 +1,16 @@
-// 左侧侧栏：顶部小 tab「会话 | 产物」切两块面板（默认产物，切过之后
-// localStorage 记住选择）。会话面板 = 全部会话仪表盘（含 ENDED 与重启
+// 左侧侧栏：顶部小 tab「会话 | 产物 | OBS产物」切三块面板（默认产物，切过
+// 之后 localStorage 记住选择）。会话面板 = 全部会话仪表盘（含 ENDED 与重启
 // 恢复的历史，服务端最后活跃降序平铺），点行开成（或激活既有）会话
 // 标签页——历史会话由此第一次可达。产物面板 = 原产物卡内容原样迁入
 // （工具行/复选框/zip/单文件下载/默认展开最新组），点文件开成（或激活
-// 既有）文件标签页——多槽内容缓存，消息流不再被顶走。数据零新增请求：
-// 会话列表即摘要轮询已拉的全量，产物即清单刷新。
+// 既有）文件标签页——多槽内容缓存，消息流不再被顶走。OBS产物面板 = 桶内
+// 对象在线清单（/api/obs/objects），树形同构，点对象开 OBS 标签页预览。
+// 数据请求：会话列表即摘要轮询已拉的全量，本地产物即清单刷新，OBS 启动
+// 拉一次 + 刷新钮（不随流水线事件联动）。
 import { useState } from 'react'
 import * as store from '../store.js'
 import { tabKey } from '../tabState.js'
+import ObsPanel from './ObsPanel.jsx'
 import StageBadge from './StageBadge.jsx'
 import {
   RUN_STATUS_LABEL, STAGE_LABEL, firstPromptPreview, lastActivityAt, tabDot, fmtAgo,
@@ -202,6 +205,22 @@ function ArtifactPanel({ openFiles, activeRel }) {
           >
             {s.artifactZipping ? '打包中…' : `下载 zip${selCount ? ` (${selCount})` : ''}`}
           </button>
+          <button
+            className="va-art-zip"
+            onClick={() => store.archiveToObs()}
+            disabled={selCount === 0 || s.obsArchiving}
+            title="勾选的产物上传到 OBS 桶（对象名 = 产物路径，同名覆盖）"
+          >
+            {s.obsArchiving ? '归档中…' : `归档到 OBS${selCount ? ` (${selCount})` : ''}`}
+          </button>
+          <button
+            className="va-art-zip"
+            onClick={() => store.archiveZipToObs()}
+            disabled={selCount === 0 || s.obsZipArchiving}
+            title="勾选的产物打成一个 zip（自定义包名）上传到 OBS 的 zip/ 目录"
+          >
+            {s.obsZipArchiving ? '打包中…' : `打包归档${selCount ? ` (${selCount})` : ''}`}
+          </button>
         </div>
       )}
       {roots.length === 0 && <div className="va-side-empty">deploy/ · rpm/ 下暂无产物</div>}
@@ -217,12 +236,15 @@ function ArtifactPanel({ openFiles, activeRel }) {
 // 两面板的「当前对象」标记都从 tabs 派生：会话面板高亮控制面会话，
 // 产物面板高亮激活的文件标签页（弱标记则覆盖全部已开文件）。
 const SIDE_PANEL_KEY = 'va-side-panel'
+const PANELS = ['sessions', 'artifacts', 'obs']
 function readPanel() {
   try {
-    return localStorage.getItem(SIDE_PANEL_KEY) === 'sessions' ? 'sessions' : 'artifacts'
+    const v = localStorage.getItem(SIDE_PANEL_KEY)
+    if (PANELS.includes(v)) return v
   } catch {
-    return 'artifacts'
+    // 存储不可用（隐私模式等）：回落默认面板
   }
+  return 'artifacts'
 }
 
 export default function SidePanel() {
@@ -230,6 +252,7 @@ export default function SidePanel() {
   const [panel, setPanel] = useState(readPanel)
   const openIds = new Set(s.tabs.filter((t) => t.kind === 'session').map((t) => t.runId))
   const openFiles = new Set(s.tabs.filter((t) => t.kind === 'file').map((t) => t.relPath))
+  const openObsKeys = new Set(s.tabs.filter((t) => t.kind === 'obs').map((t) => t.key))
   const activeTab = s.tabs.find((t) => tabKey(t) === s.activeKey)
   const switchPanel = (p) => {
     setPanel(p)
@@ -260,10 +283,21 @@ export default function SidePanel() {
         >
           产物
         </button>
+        <button
+          role="tab"
+          aria-selected={panel === 'obs'}
+          aria-controls="va-side-panel"
+          className={panel === 'obs' ? 'on' : ''}
+          onClick={() => switchPanel('obs')}
+        >
+          OBS产物
+        </button>
       </div>
       <div className="va-side-panel-wrap" id="va-side-panel" role="tabpanel">
         {panel === 'sessions' ? (
           <SessionPanel order={s.order} runs={s.runs} controlId={store.controlRunId()} openIds={openIds} />
+        ) : panel === 'obs' ? (
+          <ObsPanel openKeys={openObsKeys} activeKey={activeTab?.kind === 'obs' ? activeTab.key : null} />
         ) : (
           <ArtifactPanel openFiles={openFiles} activeRel={activeTab?.kind === 'file' ? activeTab.relPath : null} />
         )}

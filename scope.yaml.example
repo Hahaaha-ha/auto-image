@@ -1,8 +1,8 @@
 # 仓库根共享 scope 配置范本（脱密）。复制为 scope.yaml 后填入真实值。
 # scope.yaml 已被 .gitignore 忽略。
 #
-# 这是 ecs-skill 与 ims-skill 的唯一凭证源。
-# 顶层 ak/sk/region/project_id 共享；各 skill 的段（ecs_create / ims_create）共存。
+# 这是 ecs-skill / ims-skill / obs-skill 的唯一凭证源。
+# 顶层 ak/sk/region/project_id 共享；各 skill 的段（ecs_create / ims_create / obs）共存。
 #
 # 优先级（高 → 低）：
 #   AK/SK : HUAWEICLOUD_SDK_AK / _SK 环境变量  >  下方 ak/sk
@@ -54,3 +54,18 @@ ecs_create:
 # └──────────────────────────────────────────────────────────────────┘
 ims_create:
   enterprise_project_id: ""      # 企业项目 ID；留空/不写 → 不下发
+
+# ┌──────────────────────────────────────────────────────────────────┐
+# │ obs-skill 段                                                    │
+# │ 凭证读顶层 ak/sk/region；桶名必填，endpoint/domain 可省略自动推导。│
+# └──────────────────────────────────────────────────────────────────┘
+obs:
+  bucket: <YOUR_BUCKET>                                     # 对象上传目标桶，如 test-image-gen
+  # OBS 独立凭证（可与顶层 ECS 凭据不同账号），全缺回落顶层 ak/sk：
+  #   明文：ak: <YOUR_OBS_AK>  /  sk: <YOUR_OBS_SK>
+  #   加密：ak_enc / sk_enc = `python tools/obs_secret.py encrypt <明文>` 的输出
+  #         （enc:v1:AES-256-GCM；先 `python tools/obs_secret.py keygen` 生成
+  #          .obs-secret.key，或用 OBS_ENC_KEY 环境变量给密钥）
+  # region 可选覆盖（缺省用顶层 region）；env 覆盖：OBS_AK / OBS_SK / OBS_REGION
+  # endpoint: https://obs.<region>.myhuaweicloud.com        # 可省略 → 按 region 推导
+  # domain: https://<bucket>.obs.<region>.myhuaweicloud.com # 可省略 → 按桶+region 推导（公开 URL 前缀）
