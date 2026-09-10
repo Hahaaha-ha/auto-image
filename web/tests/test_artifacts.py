@@ -212,9 +212,10 @@ async def test_zip_includes_binary_packages():
             r = await client.post("/api/artifacts/zip", json={"paths": paths})
             assert r.status_code == 200, r.text
             zf = zipfile.ZipFile(io.BytesIO(r.content))
-            assert sorted(zf.namelist()) == sorted(paths), zf.namelist()
+            # 包内平铺文件名，不带目录树
+            assert sorted(zf.namelist()) == sorted(Path(p).name for p in paths), zf.namelist()
             for p in paths:
-                assert zf.read(p) == (rpm / p[len("rpm/"):]).read_bytes(), p
+                assert zf.read(Path(p).name) == (rpm / p[len("rpm/"):]).read_bytes(), p
 
 
 async def test_browse_both_roots_mixed_and_sorted():
@@ -338,11 +339,15 @@ async def test_zip_batches_selected_paths_across_roots():
         rpm.mkdir()
         make_output_tree(deploy, "nginx/1.25", GUIDE_FILES, mtime=1000)
         make_output_tree(rpm, "nginx/1.25.3", RPM_BUILD_FILES + RPM_ARCHIVE_FILES, mtime=1000)
+        # 同名干扰项：与 rpm 侧产物同名但内容不同，钉死「首个胜出」
+        dup = make_output_tree(deploy, "dup", ("nginx-rpm-result.md",), mtime=1000)
+        (dup / "nginx-rpm-result.md").write_text("同名干扰项，不应收录", encoding="utf-8")
         async with await run_with_client(root) as client:
             paths = [
                 "rpm/nginx/1.25.3/nginx-rpm-result.md",
                 "deploy/nginx/1.25/nginx-install.md",
                 "rpm/nginx/1.25.3/nginx-rpm-result.md",   # 重复项去重
+                "deploy/dup/nginx-rpm-result.md",         # 同名文件首个胜出，后者跳过
                 "rpm/nginx/1.25.3/nginx-absent.md",       # 缺失如实跳过
                 "deploy/../scope.yaml",                   # 越界跳过
                 "guides/nginx/install-guide.md",          # 未注册根跳过
@@ -352,15 +357,15 @@ async def test_zip_batches_selected_paths_across_roots():
             assert r.headers.get("content-type") == "application/zip"
             assert "attachment" in r.headers.get("content-disposition", "")
             zf = zipfile.ZipFile(io.BytesIO(r.content))
-            # zip 内保留根前缀目录树；顺序按给定（去重/跳过后）
+            # zip 内按文件名平铺（不带目录树）；顺序按给定（去重/跳过后）
             assert zf.namelist() == [
-                "rpm/nginx/1.25.3/nginx-rpm-result.md",
-                "deploy/nginx/1.25/nginx-install.md",
+                "nginx-rpm-result.md",
+                "nginx-install.md",
             ], zf.namelist()
-            assert zf.read("rpm/nginx/1.25.3/nginx-rpm-result.md") == (
+            assert zf.read("nginx-rpm-result.md") == (
                 rpm / "nginx/1.25.3/nginx-rpm-result.md"
             ).read_bytes()
-            assert zf.read("deploy/nginx/1.25/nginx-install.md") == (
+            assert zf.read("nginx-install.md") == (
                 deploy / "nginx/1.25/nginx-install.md"
             ).read_bytes()
 

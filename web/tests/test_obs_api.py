@@ -272,7 +272,7 @@ async def test_archive_zip_shape_and_packing():
             assert seen["data"][:2] == b"PK"  # 真 zip 字节流
             import io, zipfile
             zf = zipfile.ZipFile(io.BytesIO(seen["data"]))
-            assert sorted(zf.namelist()) == ["deploy/lobechat/a.md", "deploy/lobechat/b.md"]
+            assert sorted(zf.namelist()) == ["a.md", "b.md"]  # 平铺文件名，不带目录树
 
 
 async def test_archive_zip_missing_and_not_configured():

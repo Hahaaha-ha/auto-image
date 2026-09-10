@@ -286,8 +286,8 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         _entry, target = found
         return FileResponse(target, filename=target.name)
 
-    # 批量打包下载：POST {"paths": [根前缀相对路径…]} → 一个 zip（保留
-    # deploy/…、rpm/… 目录树；越界/缺失项如实跳过，一个都收不到 404）
+    # 批量打包下载：POST {"paths": [根前缀相对路径…]} → 一个 zip（包内按
+    # 文件名平铺、不带目录树；越界/缺失项如实跳过，一个都收不到 404）
     @app.post("/api/artifacts/zip")
     async def zip_artifacts(body: dict | None = None):
         paths = (body or {}).get("paths")
