@@ -165,22 +165,25 @@ def read(artifact_roots, file_stages, rel_path):
 
 
 def zip_files(artifact_roots, file_stages, rel_paths):
-    """批量打包：给定 rel_paths（根前缀）产出一个内存 zip。仅收录根内
-    存在的普通文件，缺失/越界/未知根如实跳过；按规范化路径去重、保持
-    给定顺序。返回 (zip 字节流, 收录数)；一个都没收到返回 (None, 0)。"""
+    """批量打包：给定 rel_paths（根前缀）产出一个内存 zip。包内不带目录
+    结构——文件一律按自身文件名平铺在 zip 根层（完整相对路径层级太深，
+    解包即得文件本体）。仅收录根内存在的普通文件，缺失/越界/未知根如实
+    跳过；按包内文件名去重、保持给定顺序（不同目录的同名文件首个胜出、
+    后者跳过——同名 zip 条目解包行为因工具而异，不留歧义）。返回
+    (zip 字节流, 收录数)；一个都没收到返回 (None, 0)。"""
     buf = io.BytesIO()
     seen = set()
     count = 0
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for rel in rel_paths:
-            arcname = PurePosixPath(rel).as_posix()
-            if arcname in seen:
-                continue
-            seen.add(arcname)
             found = resolve(artifact_roots, file_stages, rel)
             if found is None:
                 continue
             _entry, target = found
+            arcname = target.name
+            if arcname in seen:
+                continue
+            seen.add(arcname)
             zf.writestr(_zip_info(target, arcname), target.read_bytes())
             count += 1
     if count == 0:
