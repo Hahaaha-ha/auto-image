@@ -11,7 +11,11 @@ URL 按 OBS 约定携带 AccessKeyId（带签名下载机制本身如此，与 S
 """
 from __future__ import annotations
 
+import base64
+import json
 import os
+import re
+import secrets
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -199,7 +203,8 @@ _clients: dict[str, object] = {}
 
 
 def _get_client(scope_path):
-    """按 scope 路径缓存的 ObsClient（endpoint 随缓存固化，改 scope 需重启）。"""
+    """按 scope 路径缓存的 ObsClient（endpoint 随缓存固化；手工改 scope 需
+    重启，save_config 保存路径已自动失效缓存即时生效）。"""
     cache_key = str(Path(scope_path).resolve())
     if cache_key not in _clients:
         ak, sk, _region, _bucket, endpoint, _domain = _load_conf(scope_path)
@@ -370,3 +375,246 @@ def upload_bytes(scope_path, key, data):
         "url": f"{domain}/{quote(k, safe='/')}",
         "etag": (getattr(resp.body, "etag", None) if resp.body is not None else None),
     }
+
+
+# ---------------------------------------------------------------------------
+# OBS 配置查看 / 保存 —— 面板「配置」按钮的后端
+# ---------------------------------------------------------------------------
+# 原则：明文 AK/SK 只进内存不进任何返回面（视图一律脱敏 + 来源标注，
+# 长度单列）；保存路径只落密文（enc:v1，与 tools/obs_secret.py、obs-skill
+# 同格式，三处互验钉死），obs 段明文 ak/sk 键自动删除；scope.yaml 其余
+# 内容（注释、ECS 顶层凭据等）逐行保留——整文件 yaml 重写会抹掉注释，
+# 故对 obs 块做行级编辑。
+
+
+def _masked(value, head=4, tail=4):
+    """凭据明文 → 头尾各露 head/tail 字符的脱敏形；短值全遮（防拼出大半）。"""
+    v = str(value)
+    if len(v) <= head + tail + 2:
+        return "***"
+    return f"{v[:head]}***{v[-tail:]}"
+
+
+def _read_scope_dict(path):
+    """scope.yaml → dict（缺失/坏 YAML/非 dict 一律 {}，不抛）。"""
+    try:
+        data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _cred_view(env_val, plain, enc, sdk_env, top):
+    """单条凭据（ak 或 sk）的视图 (脱敏值, 长度, 来源)，永不抛。
+
+    优先级与 _obs_ak_sk/_load_conf 一致：OBS env > obs 明文 > obs 密文 >
+    通用 env > 顶层明文 > 无。密文尽力解密只为取脱敏形——解密失败不抛
+    （配置面板正要在密钥缺失/不匹配的坏状态下打开修配置），来源串里
+    如实带原因。"""
+    if env_val:
+        return _masked(env_val), len(env_val), "env"
+    if plain:
+        return _masked(plain), len(plain), "scope-plain"
+    if enc:
+        try:
+            v = _decrypt_token(enc)
+            return _masked(v), len(v), "scope-enc"
+        except ObsNotConfigured as exc:
+            return None, None, f"scope-enc（解密失败：{exc}）"
+    if sdk_env:
+        return _masked(sdk_env), len(sdk_env), "env-sdk"
+    if top:
+        return _masked(top), len(top), "scope-top"
+    return None, None, "none"
+
+
+def get_config(scope_path):
+    """scope.yaml + env → OBS 配置脱敏视图（面板「配置」打开即拉）。
+
+    未配置/半配置/密文解密失败都正常返回（这些正是要打开面板修的状态）；
+    configured 汇总凭据+region+bucket 四要素齐备与否。endpoint/domain 缺省
+    按 region（+bucket）推导展示，与 _load_conf 的运行时推导同规则。"""
+    path = Path(scope_path)
+    data = _read_scope_dict(path)
+    obs = data.get("obs") if isinstance(data.get("obs"), dict) else {}
+    ak_v = _cred_view(
+        (os.getenv(ENV_OBS_AK) or "").strip(), str(obs.get("ak", "") or "").strip(),
+        str(obs.get("ak_enc", "") or "").strip(), (os.getenv(ENV_AK) or "").strip(),
+        str(data.get("ak", "") or "").strip(),
+    )
+    sk_v = _cred_view(
+        (os.getenv(ENV_OBS_SK) or "").strip(), str(obs.get("sk", "") or "").strip(),
+        str(obs.get("sk_enc", "") or "").strip(), (os.getenv(ENV_SK) or "").strip(),
+        str(data.get("sk", "") or "").strip(),
+    )
+    region = (str(obs.get("region", "")).strip()
+              or (os.getenv(ENV_REGION) or str(data.get("region", ""))).strip())
+    bucket = str(obs.get("bucket", "")).strip()
+    endpoint = (str(obs.get("endpoint", "")).strip()
+                or (f"https://obs.{region}.myhuaweicloud.com" if region else ""))
+    domain = (str(obs.get("domain", "")).strip()
+              or (f"https://{bucket}.obs.{region}.myhuaweicloud.com"
+                  if bucket and region else ""))
+    return {
+        "scope_path": str(path),
+        "bucket": bucket or None,
+        "region": region or None,
+        "endpoint": endpoint.rstrip("/") or None,
+        "domain": domain.rstrip("/") or None,
+        "configured": bool(region and bucket and ak_v[0] and sk_v[0]),
+        "ak": {"masked": ak_v[0], "length": ak_v[1], "source": ak_v[2]},
+        "sk": {"masked": sk_v[0], "length": sk_v[1], "source": sk_v[2]},
+        "enc_key": {
+            "source": ("env" if os.environ.get(ENV_ENC_KEY, "").strip()
+                       else ("file" if ENC_KEY_FILE.is_file() else "missing")),
+            "file": ENC_KEY_FILE.name,
+        },
+    }
+
+
+def _encrypt_token(plaintext, hexkey):
+    """明文 → enc:v1:<b64url nonce>:<b64url ct>（AES-256-GCM）。
+
+    与 tools/obs_secret.py encrypt 同格式（第四处实现，格式由单测互验
+    钉死：本处产的密文 tools/skill 要能解）。hexkey 由 _ensure_enc_key
+    保证 64 hex。cryptography 缺失抛 ObsNotConfigured（503 语义）。"""
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ImportError as exc:
+        raise ObsNotConfigured(f"cryptography not installed: {exc}") from exc
+    key = bytes.fromhex(hexkey)
+    nonce = secrets.token_bytes(12)
+    ct = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
+    b64u = lambda raw: base64.urlsafe_b64encode(raw).decode().rstrip("=")  # noqa: E731
+    return f"{ENC_PREFIX}:{b64u(nonce)}:{b64u(ct)}"
+
+
+def _ensure_enc_key_hex():
+    """加密密钥就绪：env > 密钥文件 > 现场生成（600，同 tools keygen，
+    已存在不覆盖）。返回 64 hex；生成后写进程内缓存（本进程立即可解密）。"""
+    global _enc_key_cached
+    hexkey = _load_enc_key()
+    if hexkey:
+        return hexkey
+    hexkey = secrets.token_bytes(32).hex()
+    ENC_KEY_FILE.write_text(hexkey + "\n", encoding="utf-8")
+    os.chmod(ENC_KEY_FILE, 0o600)
+    _enc_key_cached = hexkey
+    return hexkey
+
+
+# obs 段受管键（行级编辑只碰这些；其余键行/注释原样保留）
+_OBS_MANAGED_KEYS = re.compile(r"^(ak|sk|ak_enc|sk_enc|bucket|region|endpoint|domain)$")
+
+
+def _update_obs_block(text, updates):
+    """scope.yaml 文本级 obs 段编辑：updates {键: 新值 | None(删除)}。
+
+    只重写受管键的行、其余行（含注释、未知键、顶层其它段）逐字保留；
+    段内没有的键补在段尾；顶层无 obs 段则文末追加。受管键行上的行尾
+    注释会被丢弃（仅该行，独立注释行不动）。值经 json.dumps 双引号转义
+    （YAML 兼容 JSON 字符串）。返回新文本（结尾保证一个换行）。"""
+    lines = text.splitlines()
+    obs_idx = None
+    for i, line in enumerate(lines):
+        if line.strip() == "obs:" and not line[:1].isspace():
+            obs_idx = i
+            break
+    pending = dict(updates)
+    if obs_idx is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append("obs:")
+        obs_idx = len(lines) - 1
+        seg, tail = [], []
+    else:
+        end = obs_idx + 1
+        while end < len(lines):
+            line = lines[end]
+            if line.strip() and not line[:1].isspace():
+                break
+            end += 1
+        seg, tail = lines[obs_idx + 1:end], lines[end:]
+    new_seg = []
+    for line in seg:
+        m = re.match(r"^\s+([A-Za-z0-9_-]+)\s*:", line)
+        if m and _OBS_MANAGED_KEYS.match(m.group(1)) and m.group(1) in pending:
+            key = m.group(1)
+            val = pending.pop(key)
+            if val is not None:
+                new_seg.append(f"  {key}: {json.dumps(val, ensure_ascii=False)}")
+            # None → 该行整体删除
+        else:
+            new_seg.append(line)
+    for key, val in pending.items():
+        if val is not None:
+            new_seg.append(f"  {key}: {json.dumps(val, ensure_ascii=False)}")
+    return "\n".join(lines[:obs_idx + 1] + new_seg + tail) + "\n"
+
+
+def save_config(scope_path, ak=None, sk=None, region=None, bucket=None, endpoint=None):
+    """配置保存（面板「配置」按钮的写路径）：ak/sk 一律密文落盘
+    （ak_enc/sk_enc），obs 段明文 ak/sk 键自动删除（无论本次是否提交新
+    凭据——历史明文一并清掉）；bucket/region/endpoint 明文，endpoint
+    未提交时按（新）region 推导重写，domain 按 桶+region 重写，避免
+    改 region 后旧值残留生效。
+
+    保存后：该 scope 的客户端缓存失效（新配置即时生效无需重启）；新
+    凭据明文登记进脱敏已知清单（此后任何事件流文本出现即被遮蔽——
+    明文已不落盘，这是内存里的最后一道防线）。返回脱敏配置视图（同
+    get_config，明文永不回传）。输入全空/非字符串 → ValueError（422）。"""
+    clean = {}
+    for name, val in (("ak", ak), ("sk", sk), ("region", region),
+                      ("bucket", bucket), ("endpoint", endpoint)):
+        if val is None:
+            continue
+        if not isinstance(val, str):
+            raise ValueError(f"{name} must be a string")
+        val = val.strip()
+        if val:
+            clean[name] = val
+    if not clean:
+        raise ValueError("nothing to save (at least one of ak/sk/region/bucket/endpoint)")
+    path = Path(scope_path)
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+
+    data = _read_scope_dict(path)
+    obs = data.get("obs") if isinstance(data.get("obs"), dict) else {}
+    updates = {"ak": None, "sk": None}  # 明文键一律删除
+    if "ak" in clean or "sk" in clean:
+        hexkey = _ensure_enc_key_hex()
+        if "ak" in clean:
+            updates["ak_enc"] = _encrypt_token(clean["ak"], hexkey)
+        if "sk" in clean:
+            updates["sk_enc"] = _encrypt_token(clean["sk"], hexkey)
+    if "bucket" in clean:
+        updates["bucket"] = clean["bucket"]
+    if "region" in clean:
+        updates["region"] = clean["region"]
+
+    final_bucket = clean.get("bucket", str(obs.get("bucket", "")).strip())
+    final_region = clean.get("region", str(obs.get("region", "")).strip()
+                             or str(data.get("region", "")).strip())
+    if "endpoint" in clean:
+        final_endpoint = clean["endpoint"]
+    elif "region" in clean:
+        # region 刚被改：旧 endpoint 属于别的 region，按新 region 重推
+        final_endpoint = f"https://obs.{final_region}.myhuaweicloud.com" if final_region else ""
+    else:
+        final_endpoint = (str(obs.get("endpoint", "")).strip()
+                          or (f"https://obs.{final_region}.myhuaweicloud.com" if final_region else ""))
+    updates["endpoint"] = final_endpoint.rstrip("/") or None
+    updates["domain"] = (f"https://{final_bucket}.obs.{final_region}.myhuaweicloud.com"
+                         if final_bucket and final_region else None)
+
+    new_text = _update_obs_block(text, updates)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(new_text, encoding="utf-8")
+    os.chmod(tmp, path.stat().st_mode & 0o777 if path.exists() else 0o600)
+    os.replace(tmp, path)
+
+    _clients.pop(str(path.resolve()), None)  # 客户端缓存失效：新配置即时生效
+    if "ak" in clean or "sk" in clean:
+        from .redact import register_secrets  # 惰性导入（redact 无反向依赖）
+        register_secrets([v for k, v in clean.items() if k in ("ak", "sk")])
+    return get_config(scope_path)

@@ -401,6 +401,38 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
             raise HTTPException(status_code=502, detail=exc.error) from exc
         return {**result, "zipped": count, "sources": paths}
 
+    # OBS 配置查看（GET，脱敏视图：明文 ak/sk 永不出服务，只回脱敏形 +
+    # 来源 + endpoint/bucket/region）与保存（POST）：ak/sk 服务端加密
+    # （enc:v1）落 scope.yaml 的 obs 段、明文键自动删除，其余内容逐行
+    # 保留；保存后尽力健康检查（失败不回滚，结果如实带回由用户决断）。
+    # 输入非法 422、加密依赖缺失 503。
+    @app.get("/api/obs/config")
+    def get_obs_config():
+        return obs_mod.get_config(obs_scope)
+
+    @app.post("/api/obs/config")
+    def save_obs_config(body: dict | None = None):
+        b = body or {}
+        try:
+            view = obs_mod.save_config(
+                obs_scope,
+                ak=b.get("ak"), sk=b.get("sk"),
+                region=b.get("region"), bucket=b.get("bucket"),
+                endpoint=b.get("endpoint"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except obs_mod.ObsNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        check = {"ok": False, "error": None}
+        try:
+            check = obs_health()
+        except obs_mod.ObsNotConfigured as exc:
+            check = {"ok": False, "error": str(exc)}
+        except obs_mod.ObsApiError as exc:
+            check = {"ok": False, "error": exc.error}
+        return {**view, "saved": True, "check": check}
+
     # OBS 健康检查：headBucket 单请求全链路（配置解析 → 凭据解密 → SDK →
     # 网络 → 凭据有效性 → 桶存在）。200 = 健康；503 = 未配置/密钥问题；
     # 502 = 云侧失败（凭据错误/网络不通/桶不存在）——状态码即监控判定。
