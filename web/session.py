@@ -32,6 +32,10 @@ from .sdk import SessionStart
 class TurnFailure(Exception):
     """回合终局失败（Result 错误 subtype）：run_turn 的异常收尾转 turn.failed。"""
 
+    def __init__(self, message, usage=None):
+        super().__init__(message)
+        self.usage = usage if isinstance(usage, dict) else None
+
 
 async def run_turn(run, text, session_factory, store, on_change=None):
     """执行一个回合：起按回合连接 → 推指令 → 消费消息流至 Result → 收尾。
@@ -76,7 +80,11 @@ async def run_turn(run, text, session_factory, store, on_change=None):
             # 收尾；_finish 同时消费标记，保证只产生一条 turn.stopped。
             _finish(run, store, None)
         else:
-            store.append(run.run_id, "turn.failed", {"message": redact_text(str(exc))})
+            payload = {"message": redact_text(str(exc))}
+            usage = getattr(exc, "usage", None)
+            if isinstance(usage, dict):
+                payload["usage"] = usage
+            store.append(run.run_id, "turn.failed", payload)
         changed()
     finally:
         # 引用只在本 async context 内有效。身份判断避免未来代码在旧任务
@@ -135,11 +143,29 @@ def _finish(run, store, message):
     """
     if run.stop_requested:
         run.stop_requested = False
-        store.append(run.run_id, "turn.stopped", {})
+        usage = _usage_of(message)
+        store.append(run.run_id, "turn.stopped",
+                     {"usage": usage} if usage else {})
     elif message is None or message.get("subtype") == "success":
         result = message.get("result", "") if message else ""
-        store.append(run.run_id, "turn.completed", {"result": redact_text(result)})
+        payload = {"result": redact_text(result)}
+        usage = _usage_of(message)
+        if usage:
+            payload["usage"] = usage
+        store.append(run.run_id, "turn.completed", payload)
     else:
         subtype = message.get("subtype") or "unknown"
         detail = redact_text(str(message.get("result") or "")).strip()
-        raise TurnFailure(f"回合以 {subtype} 终止" + (f"：{detail}" if detail else ""))
+        raise TurnFailure(f"回合以 {subtype} 终止" + (f"：{detail}" if detail else ""),
+                          usage=_usage_of(message))
+
+
+def _usage_of(message):
+    """Result 适配 dict → usage dict（缺省/形状不合为 None）。
+
+    CLI 在 resume 会话上可能给累计值而非本回合增量——如实透传，任务侧
+    按键取 max 幂等合并，不在此做增量推算。"""
+    if not isinstance(message, dict):
+        return None
+    usage = message.get("usage")
+    return usage if isinstance(usage, dict) else None

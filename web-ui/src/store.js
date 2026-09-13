@@ -84,6 +84,19 @@ function persistTabs() {
   }
 }
 
+// 侧栏面板选择持久化（从 SidePanel 上提；跨面板跳转需要 store 持有状态）
+const SIDE_PANEL_KEY = 'va-side-panel'
+const SIDE_PANELS = ['sessions', 'tasks', 'artifacts', 'obs', 'ecs']
+function readSidePanel() {
+  try {
+    const v = localStorage.getItem(SIDE_PANEL_KEY)
+    if (SIDE_PANELS.includes(v)) return v
+  } catch {
+    // 存储不可用（隐私模式等）：回落默认面板
+  }
+  return 'artifacts'
+}
+
 // order：全部会话的列表序（含未打开的，服务端列表同源）；tabs：混合标签
 // 栏的标签页数组（{kind:'session',runId} | {kind:'file',relPath,name}），
 // activeKey 复合 key 寻址（session:<runId> / file:<relPath>），决策全走
@@ -111,6 +124,82 @@ let state = {
   obsZipArchiving: false,    // 打包 zip 归档请求进行中（按钮防重复触发）
   ecs: { instances: [], region: null, error: null, loading: false, checking: false }, // ECS 实例清单（scope 顶层凭据绑定，尽力而为）
   ecsCreating: false,        // 建机请求进行中（分钟级长请求，对话框防重复提交）
+  tasks: [],                 // 流水线任务（rpm-*/deploy-* 派发即建；服务端 task/ 目录持久化）
+  sidePanel: readSidePanel(), // 侧栏面板选择（上提到 store：会话标签的任务 pill 要跨面板跳转）
+  activeTaskId: null,        // 任务面板高亮行（openTask 跳转锚点）
+}
+
+export function setSidePanel(panel) {
+  if (!SIDE_PANELS.includes(panel)) return
+  set({ sidePanel: panel })
+  try {
+    localStorage.setItem(SIDE_PANEL_KEY, panel)
+  } catch {
+    // 存储不可用：只丢面板选择存活，不影响使用
+  }
+}
+
+// 服务端任务 → 前端形状（snake→camel；usage 四键原样数值或 null）
+function makeTask(t) {
+  return {
+    taskId: t.task_id,
+    runId: t.run_id,
+    type: t.type,
+    status: t.status,
+    outcome: t.outcome,
+    name: t.name,
+    software: t.software,
+    version: t.version,
+    confirmed: t.confirmed,
+    stages: (t.stages ?? []).map((s) => ({ stage: s.stage, startedAt: s.started_at, endedAt: s.ended_at })),
+    currentStage: t.current_stage,
+    usage: t.usage
+      ? {
+          inputTokens: t.usage.input_tokens,
+          outputTokens: t.usage.output_tokens,
+          cacheReadTokens: t.usage.cache_read_tokens,
+          cacheCreationTokens: t.usage.cache_creation_tokens,
+        }
+      : null,
+    serverAlias: t.server_alias,
+    instanceId: t.instance_id,
+    createdAt: t.created_at,
+    endedAt: t.ended_at,
+    turnText: t.turn_text,
+  }
+}
+
+// 任务清单刷新（阶段事件/摘要周期/启动驱动；尽力而为，失败静默——
+// 面板下一周期自愈）
+export async function refreshTasks() {
+  try {
+    const resp = await fetch('/api/tasks')
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) return
+    set({ tasks: (data.tasks ?? []).map(makeTask) })
+  } catch {
+    // 网络断等：静默
+  }
+}
+
+// 跳转到任务：切任务面板 + 高亮行（会话标签 pill / 任务互跳的入口）
+export function openTask(taskId) {
+  set({ sidePanel: 'tasks', activeTaskId: taskId })
+  if (!state.tasks.length) refreshTasks()
+}
+
+// runId → 进行中任务（会话标签 pill 用；一个 run 同时至多一个活动任务）
+export function runningTaskByRun(runId) {
+  return state.tasks.find((t) => t.status === 'RUNNING' && t.runId === runId) ?? null
+}
+
+// ECS 实例 → 运行中任务（instance_id 精确 join；已有别名安装路径的 meta
+// 无 instance_id，按创建命名规约 ecs-<server_alias> 名字兜底）
+export function runningTaskByInstance(inst) {
+  return state.tasks.find((t) => t.status === 'RUNNING' && (
+    (t.instanceId && t.instanceId === inst.id)
+    || (t.serverAlias && inst.name === 'ecs-' + t.serverAlias)
+  )) ?? null
 }
 
 // 时长走针仅在控制面会话执行期间（挂起与终态冻结，终态由事件求和定格）
@@ -200,7 +289,10 @@ function ingestEvents(runId, events) {
   const session = state.runs[runId]
   if (!session || !events.length) return
   setRun(runId, mergeSessionEvents(session, events))
-  if (events.some((event) => REFRESH_EVENT_TYPES.includes(event.type))) refreshArtifacts()
+  if (events.some((event) => REFRESH_EVENT_TYPES.includes(event.type))) {
+    refreshArtifacts()
+    refreshTasks() // 任务面同源驱动：阶段推进/回合收尾即任务状态变化
+  }
 }
 
 // 广播帧 → 事件落地：帧带 run_id/seq/ts，先过「该 run 打开着标签页」守卫
@@ -385,6 +477,9 @@ async function pollSummaries() {
   } catch {
     // 轮询失败静默：SSE 在的标签页不受影响，下个周期再试
   }
+  // 任务清单随摘要周期刷新：未开标签页的 run 广播帧被丢弃，任务面板/
+  // ECS 运行态/会话标签 pill 都靠这里保活（服务端是内存读，开销可忽略）
+  refreshTasks()
 }
 
 // 新会话落位（新建/Fork 共用）：run 注册、标签页尾插并切为查看中，再拉一次
@@ -967,9 +1062,10 @@ export async function createEcs(body) {
 }
 
 // 启动即恢复任务列表（含服务重启后经 transcript 重建的历史）与产物清单
-// （loadRuns 无历史时提前 return，产物首刷不能依赖它）；OBS 清单与 ECS
-// 实例清单同样尽力拉一次
+// （loadRuns 无历史时提前 return，产物首刷不能依赖它）；OBS 清单、ECS
+// 实例与流水线任务清单同样尽力拉一次
 loadRuns()
 refreshArtifacts()
 refreshObs()
 refreshEcs()
+refreshTasks()

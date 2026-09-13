@@ -9,7 +9,7 @@
 // 方向键沿序列切换，title 带状态词——状态不只靠 8px 形状传达。
 import { useEffect, useRef } from 'react'
 import * as store from '../store.js'
-import { firstPromptPreview, resumeMark, tabDot, tabStatusLabel, runningCount, runningOthers } from '../derive.js'
+import { firstPromptPreview, resumeMark, tabDot, tabStatusLabel, runningCount, runningOthers, TASK_TYPE_LABEL } from '../derive.js'
 import { tabKey } from '../tabState.js'
 
 export default function Tabs() {
@@ -89,6 +89,25 @@ export default function Tabs() {
               <>
                 <span className={`va-tab-dot ${tabDot(run)}`} />
                 <span className="va-tab-name">{firstPromptPreview(run)}</span>
+                {(() => {
+                  // 会话正跑流水线任务：标签打 pill（类型+软件+版本），点击
+                  // 跳任务面板（stopPropagation——不激活本标签页）
+                  const task = store.runningTaskByRun(t.runId)
+                  if (!task) return null
+                  return (
+                    <button
+                      className="va-tab-task"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        store.openTask(task.taskId)
+                      }}
+                      title={`${task.name} · ${task.taskId}（点击跳到任务面板）`}
+                    >
+                      {TASK_TYPE_LABEL[task.type] ?? task.type} {task.software ?? '未知'}
+                      {task.version ? ` ${task.version}` : ''}
+                    </button>
+                  )
+                })()}
               </>
             ) : (
               <>

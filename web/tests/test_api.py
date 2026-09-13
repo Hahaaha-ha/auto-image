@@ -265,8 +265,11 @@ async def test_first_message_drives_scripted_turn():
         tss = [e["data"]["ts"] for e in events]
         assert all(isinstance(t, (int, float)) for t in tss), tss
         assert tss == sorted(tss), tss
-        # 阶段由 Task + subagent_type 推导
-        assert events[5]["data"] == {"stage": "GUIDE", "status": "running", "ts": events[5]["data"]["ts"]}
+        # 阶段由 Task + subagent_type 推导（subagent 随行供任务跟踪分流类型）
+        assert events[5]["data"] == {
+            "stage": "GUIDE", "status": "running", "subagent": "deploy-guide",
+            "ts": events[5]["data"]["ts"],
+        }
         # 工具事件带工具名 + 脱敏摘要（折叠行）+ 脱敏全文（展开查看）
         assert events[6]["data"]["tool"] == "Task"
         assert "detail" in events[6]["data"] and "summary" in events[6]["data"]
@@ -1154,6 +1157,75 @@ async def test_summary_tracks_last_event_at():
         events, _ = await collect_sse(await open_stream(client, run_id))
         summary = (await client.get(f"/api/runs/{run_id}")).json()
         assert summary["last_event_at"] == events[-1]["data"]["ts"], summary
+
+
+async def test_pipeline_turn_creates_image_task():
+    """流水线回合 → /api/tasks：deploy-guide 派发建镜像任务，回合 success
+    收尾（DEFAULT_SCRIPT；软件/版本来自指令文本启发式）。"""
+    app = make_app()
+    async with httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver") as client:
+        run_id = (await client.post("/api/runs", json={})).json()["run_id"]
+        await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx 1.25 到 server-a"})
+        await wait_status(client, run_id, "READY")
+        r = await client.get("/api/tasks")
+        assert r.status_code == 200, r.text
+        tasks = r.json()["tasks"]
+        assert len(tasks) == 1, tasks
+        t = tasks[0]
+        assert t["run_id"] == run_id
+        assert t["type"] == "image"
+        assert t["status"] == "DONE" and t["outcome"] == "success"
+        assert t["task_id"].startswith("task-"), t
+        assert t["software"] == "nginx" and t["version"] == "1.25", t
+        assert "镜像 nginx 1.25 (" in t["name"], t["name"]
+        assert [s["stage"] for s in t["stages"]] == ["GUIDE"], t["stages"]
+        assert t["stages"][0]["started_at"] is not None
+        assert t["stages"][0]["ended_at"] is not None  # 回合收尾关上末阶段
+        assert t["current_stage"] is None
+        assert t["ended_at"] is not None
+
+
+async def test_rpm_pipeline_task_with_usage():
+    """rpm 流水线：rpm-guide→rpm-build 两阶段派发建 RPM 任务（BUILD 阶段），
+    回合收尾的 usage 累计进任务（缓存/输入/输出）。"""
+    script = [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_01", "name": "Agent",
+             "input": {"subagent_type": "rpm-guide", "prompt": "出指南"}},
+        ]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_02", "name": "Agent",
+             "input": {"subagent_type": "rpm-build", "prompt": "构建"}},
+        ]}},
+        {"type": "result", "subtype": "success", "result": "rpm 流水线完成",
+         "usage": {"input_tokens": 1000, "output_tokens": 200,
+                   "cache_read_input_tokens": 50000, "cache_creation_input_tokens": 300}},
+    ]
+    app = make_app(script=script)
+    async with httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver") as client:
+        run_id = (await client.post("/api/runs", json={})).json()["run_id"]
+        await client.post(f"/api/runs/{run_id}/messages", json={"text": "制作 redis 7.2 的 RPM"})
+        await wait_status(client, run_id, "READY")
+        tasks = (await client.get("/api/tasks")).json()["tasks"]
+        assert len(tasks) == 1, tasks
+        t = tasks[0]
+        assert t["type"] == "rpm"
+        assert [s["stage"] for s in t["stages"]] == ["GUIDE", "BUILD"], t["stages"]
+        assert t["stages"][0]["ended_at"] is not None  # 阶段推进关上 GUIDE
+        assert t["usage"] == {"input_tokens": 1000, "output_tokens": 200,
+                              "cache_read_tokens": 50000, "cache_creation_tokens": 300}, t["usage"]
+
+
+async def test_plain_turn_creates_no_task():
+    """无流水线子 agent 的普通回合不建任务。"""
+    script = [{"type": "result", "subtype": "success", "result": "只是聊聊"}]
+    app = make_app(script=script)
+    async with httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver") as client:
+        run_id = (await client.post("/api/runs", json={})).json()["run_id"]
+        await client.post(f"/api/runs/{run_id}/messages", json={"text": "你好"})
+        await wait_status(client, run_id, "READY")
+        tasks = (await client.get("/api/tasks")).json()["tasks"]
+        assert tasks == [], tasks
 
 
 async def main():

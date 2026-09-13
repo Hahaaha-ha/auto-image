@@ -40,6 +40,10 @@ def make_test_app(*, session_factory=None, title_factory=None, **overrides):
         "residual_cli_scan": lambda: [],
         "scope_config": scope_config,
         "state_path": test_root / "state.json",
+        "task_dir": test_root / "task",
+        # 产物根也隔离到临时目录：任务跟踪的产物确认扫描会读 deploy/rpm 树，
+        # 不能被真实仓库的运行时产物污染（个别测试显式覆盖时以此为准）
+        "artifact_roots": {name: test_root / name for name in ("deploy", "rpm", "rpmcheck", "hce")},
     }
     options.update(overrides)
     app = create_app(**options)

@@ -142,3 +142,62 @@ describe('快照与全局流归并', () => {
     expect(snapshotRequests.at(-1).headers['Last-Event-ID']).toBe('10')
   })
 })
+
+describe('任务面板联动', () => {
+  const mockTasks = (tasks) => {
+    fetch.mockImplementation(async (url) => {
+      if (url === '/api/tasks') {
+        return { ok: true, json: async () => ({ tasks }) }
+      }
+      return { ok: false }
+    })
+  }
+
+  it('refreshTasks 映射服务端任务（snake→camel + usage 四键）', async () => {
+    mockTasks([{
+      task_id: 'task-20260914073000-ab12', run_id: 'r1', type: 'rpm',
+      status: 'DONE', outcome: 'success', name: 'RPM redis 7.2 (202609140730)',
+      software: 'redis', version: '7.2', confirmed: true,
+      stages: [{ stage: 'GUIDE', started_at: 1, ended_at: 2 }, { stage: 'BUILD', started_at: 2, ended_at: 3 }],
+      current_stage: null,
+      usage: { input_tokens: 10, output_tokens: 5, cache_read_tokens: 100, cache_creation_input_tokens_unused: 0 },
+      server_alias: 'redis-2026091407', instance_id: 'i-1',
+      created_at: 1, ended_at: 3, turn_text: '制作 redis 7.2',
+    }])
+    await store.refreshTasks()
+    const t = store.getState().tasks[0]
+    expect(t.taskId).toBe('task-20260914073000-ab12')
+    expect(t.runId).toBe('r1')
+    expect(t.currentStage).toBeNull()
+    expect(t.stages[1]).toEqual({ stage: 'BUILD', startedAt: 2, endedAt: 3 })
+    expect(t.usage.inputTokens).toBe(10)
+    expect(t.usage.outputTokens).toBe(5)
+    expect(t.usage.cacheReadTokens).toBe(100)
+  })
+
+  it('openTask 切任务面板并高亮；选择器按 run/instance 联查（instance_id 精确 + ecs-别名兜底）', async () => {
+    mockTasks([
+      { task_id: 'task-run', run_id: 'r1', type: 'image', status: 'RUNNING', outcome: null,
+        name: '镜像 nginx (…)', software: 'nginx', version: null, confirmed: false,
+        stages: [], current_stage: 'INSTALL', usage: null,
+        server_alias: 'nginx-2026091407', instance_id: 'i-1',
+        created_at: 1, ended_at: null, turn_text: '' },
+      { task_id: 'task-done', run_id: 'r2', type: 'rpm', status: 'DONE', outcome: 'success',
+        name: 'RPM redis (…)', software: 'redis', version: '7.2', confirmed: true,
+        stages: [], current_stage: null, usage: null,
+        server_alias: 'redis-x', instance_id: 'i-2',
+        created_at: 2, ended_at: 3, turn_text: '' },
+    ])
+    await store.refreshTasks()
+    store.openTask('task-run')
+    expect(store.getState().sidePanel).toBe('tasks')
+    expect(store.getState().activeTaskId).toBe('task-run')
+    expect(store.runningTaskByRun('r1')?.taskId).toBe('task-run')
+    expect(store.runningTaskByRun('r2')).toBeNull() // 已完成不占运行态
+    expect(store.runningTaskByInstance({ id: 'i-1', name: '随便' })?.taskId).toBe('task-run')
+    expect(store.runningTaskByInstance({ id: 'zzz', name: 'ecs-nginx-2026091407' })?.taskId).toBe('task-run')
+    expect(store.runningTaskByInstance({ id: 'zzz', name: '别的机器' })).toBeNull()
+    store.setSidePanel('sessions')
+    expect(store.getState().sidePanel).toBe('sessions')
+  })
+})

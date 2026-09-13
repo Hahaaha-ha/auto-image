@@ -606,3 +606,101 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   border: 1px solid var(--line-1, #d0d7de); border-radius: 6px;
   background: var(--bg-2, #f6f8fa);
 }
+
+/* ---------- 任务面板（侧栏第二面板）与会话标签任务 pill ---------- */
+
+/* 会话标签上的任务 pill：镜像/RPM + 软件 + 版本；点击跳任务面板 */
+.va-tab-task {
+  flex-shrink: 0; max-width: 130px;
+  font-size: 10px; line-height: 1; padding: 2px 7px;
+  border-radius: 999px; cursor: pointer;
+  color: var(--accent, #0969da); background: transparent;
+  border: 1px solid var(--accent, #0969da);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.va-tab-task:hover { background: #0969da1a; }
+
+/* 任务行：状态点 + 名称 + 阶段流转图 + 次行（类型/token/时间）+ 会话跳转 */
+.va-task-row {
+  display: flex; align-items: flex-start; gap: 6px;
+  padding: 6px 6px 6px 4px; margin: 0 2px;
+  border-radius: 6px; border-bottom: 1px solid var(--line-2, #eaeef2);
+}
+.va-task-row:hover { background: var(--bg-2, #f6f8fa); }
+.va-task-row.on { background: var(--surface-dim, #eef1f4); }
+.va-task-main { min-width: 0; flex: 1; cursor: pointer; }
+.va-task-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.va-task-name-text {
+  font-size: 12.5px; font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.va-task-outcome { flex-shrink: 0; font-size: 10px; color: var(--ink-3, #8b949e); }
+.va-task-outcome.o-success { color: var(--ok, #1a7f37); }
+.va-task-outcome.o-failed { color: var(--bad, #cf222e); }
+.va-task-sub {
+  display: flex; align-items: baseline; gap: 8px; min-width: 0;
+  margin-top: 2px; font-size: 11px; color: var(--ink-3, #8b949e);
+}
+.va-task-chip {
+  flex-shrink: 0; padding: 0 6px; border-radius: 8px;
+  background: var(--bg-2, #f6f8fa); border: 1px solid var(--line-1, #d0d7de);
+  color: var(--ink-2, #57606a);
+}
+.va-task-ago { margin-left: auto; flex-shrink: 0; }
+.va-task-jump {
+  flex-shrink: 0; padding: 1px 8px; margin-top: 2px;
+  font-size: 10.5px; cursor: pointer; border-radius: 4px;
+  border: 1px solid var(--line-1, #d0d7de); background: var(--bg-2, #f6f8fa);
+  color: var(--ink-2, #57606a);
+}
+.va-task-jump:hover { border-color: var(--accent, #0969da); color: var(--accent, #0969da); }
+
+/* 阶段流转图：pill 序列（done ✓ 绿 / current 蓝+呼吸 / upcoming 灰），箭头衔接 */
+.va-flow {
+  display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+  margin-top: 3px;
+}
+.va-flow-seg { display: inline-flex; align-items: center; gap: 2px; }
+.va-flow-arrow { color: var(--ink-3, #8b949e); font-size: 9px; }
+.va-flow-pill {
+  font-size: 9.5px; line-height: 1; padding: 2px 6px; border-radius: 999px;
+  white-space: nowrap;
+}
+.va-flow-pill.upcoming {
+  color: var(--ink-3, #8b949e);
+  background: var(--bg-2, #f6f8fa);
+  border: 1px dashed var(--line-1, #d0d7de);
+}
+.va-flow-pill.current {
+  color: #fff; background: var(--accent, #0969da);
+  border: 1px solid var(--accent, #0969da);
+  animation: va-pulse 1.2s infinite;
+}
+.va-flow-pill.done {
+  color: var(--ok, #1a7f37); background: #dafbe1;
+  border: 1px solid #abe4b8;
+}
+
+/* 任务展开明细：键值行 */
+.va-task-detail { margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--line-1, #d0d7de); }
+.va-task-line {
+  display: flex; align-items: baseline; gap: 8px; padding: 1px 0;
+  font-size: 11px; color: var(--ink-3, #8b949e);
+}
+.va-task-line > span { flex: 0 0 56px; }
+.va-task-line code {
+  font-family: var(--mono, ui-monospace, monospace);
+  overflow-wrap: anywhere;
+}
+.va-task-note { font-size: 10px; }
+
+/* ECS 实例运行态：跑任务的机器给动作色（点击跳任务），空闲弱化 */
+.va-ecs-task {
+  margin-top: 2px; padding: 0; border: none; background: none;
+  font-size: 10.5px; text-align: left; cursor: pointer;
+  color: var(--accent, #0969da);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 100%;
+}
+.va-ecs-task:hover { text-decoration: underline; }
+.va-ecs-idle { margin-top: 2px; font-size: 10.5px; color: var(--ink-3, #8b949e); opacity: 0.75; }

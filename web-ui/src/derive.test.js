@@ -107,3 +107,22 @@ describe('obsGroups', () => {
     expect(obsGroups([{ size: 3 }, { key: '' }])).toEqual([])
   })
 })
+
+// 任务面板派生：token 格式与阶段顺序（阶段流转图的地基）
+describe('任务派生', () => {
+  it('fmtTokens：null 为 —，万级缩写，小数值原样', async () => {
+    const { fmtTokens } = await import('./derive')
+    expect(fmtTokens(null)).toBe('—')
+    expect(fmtTokens(undefined)).toBe('—')
+    expect(fmtTokens(0)).toBe('0')
+    expect(fmtTokens(999)).toBe('999')
+    expect(fmtTokens(12_345)).toBe('1.2万')
+    expect(fmtTokens(234_500_000)).toBe('2.3亿')
+  })
+
+  it('stageOrder：镜像走 INSTALL，RPM 走 BUILD', async () => {
+    const { stageOrder } = await import('./derive')
+    expect(stageOrder('image')).toEqual(['GUIDE', 'INSTALL', 'VERIFY', 'ARCHIVE'])
+    expect(stageOrder('rpm')).toEqual(['GUIDE', 'BUILD', 'VERIFY', 'ARCHIVE'])
+  })
+})

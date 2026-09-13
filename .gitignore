@@ -26,5 +26,8 @@ __pycache__/
 /rpmcheck/
 /hce/
 
+# 任务跟踪存储（每任务一个 JSON，web/tasks.py 运行时写入）
+/task/
+
 # macOS 目录元数据
 .DS_Store

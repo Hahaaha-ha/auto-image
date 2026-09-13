@@ -6,7 +6,7 @@
 // 云侧变化不经本服务事件面，刷新钮手动重拉 + 检查/建机完成后自动刷新。
 import { useEffect, useState } from 'react'
 import * as store from '../store.js'
-import { fmtAgo } from '../derive.js'
+import { fmtAgo, STAGE_LABEL } from '../derive.js'
 
 // 状态点配色：ACTIVE 绿 / BUILD·REBOOT 蓝（呼吸）/ SHUTOFF·DELETED 灰 /
 // ERROR 红 / 其余空心（未知）
@@ -31,6 +31,9 @@ function StatusDot({ status }) {
 
 function EcsRow({ inst }) {
   const createdMs = inst.created ? Date.parse(inst.created) : null
+  // 运行任务中 vs 空闲中：与进行中任务按 instance_id 精确 join（已有别名
+  // 安装路径按 ecs-<别名> 名字兜底），任务清单随摘要周期刷新保活
+  const task = store.runningTaskByInstance(inst)
   return (
     <div className="va-ecs-row" title={inst.id}>
       <StatusDot status={inst.status} />
@@ -57,6 +60,18 @@ function EcsRow({ inst }) {
           )}
           {createdMs && <span className="va-ecs-ago">{fmtAgo(createdMs)}</span>}
         </div>
+        {task ? (
+          <button
+            className="va-ecs-task"
+            onClick={() => store.openTask(task.taskId)}
+            title={`${task.name} · ${task.taskId}（点击跳到任务面板）`}
+          >
+            运行任务中：{task.software ?? '未知'}{task.version ? ` ${task.version}` : ''}
+            {' '}· {STAGE_LABEL[task.currentStage] ?? task.currentStage ?? '—'}
+          </button>
+        ) : (
+          <span className="va-ecs-idle">空闲中</span>
+        )}
       </div>
     </div>
   )

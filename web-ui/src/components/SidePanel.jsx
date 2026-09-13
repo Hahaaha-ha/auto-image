@@ -13,6 +13,7 @@ import * as store from '../store.js'
 import { tabKey } from '../tabState.js'
 import EcsPanel from './EcsPanel.jsx'
 import ObsPanel from './ObsPanel.jsx'
+import TasksPanel from './TasksPanel.jsx'
 import StageBadge from './StageBadge.jsx'
 import {
   RUN_STATUS_LABEL, STAGE_LABEL, firstPromptPreview, lastActivityAt, tabDot, fmtAgo,
@@ -233,37 +234,19 @@ function ArtifactPanel({ openFiles, activeRel }) {
   )
 }
 
-// 侧栏本体：pin 开合钮在 App 内（骑缝移动），本组件只承载两面板与切换。
-// 面板选择持久化 localStorage——刷新后仍是切过的面板（首次默认产物）。
-// 两面板的「当前对象」标记都从 tabs 派生：会话面板高亮控制面会话，
-// 产物面板高亮激活的文件标签页（弱标记则覆盖全部已开文件）。
-const SIDE_PANEL_KEY = 'va-side-panel'
-const PANELS = ['sessions', 'artifacts', 'obs', 'ecs']
-function readPanel() {
-  try {
-    const v = localStorage.getItem(SIDE_PANEL_KEY)
-    if (PANELS.includes(v)) return v
-  } catch {
-    // 存储不可用（隐私模式等）：回落默认面板
-  }
-  return 'artifacts'
-}
-
+// 侧栏本体：pin 开合钮在 App 内（骑缝移动），本组件只承载五面板与切换。
+// 面板选择在 store（localStorage 持久化——刷新后仍是切过的面板，首次默认
+// 产物）：会话标签的任务 pill 要跨面板跳到任务面板，本地 state 不够用。
+// 各面板的「当前对象」标记从 tabs 派生：会话面板高亮控制面会话，产物面板
+// 高亮激活的文件标签页（弱标记则覆盖全部已开文件）。
 export default function SidePanel() {
   const s = store.useRunState()
-  const [panel, setPanel] = useState(readPanel)
+  const panel = s.sidePanel
   const openIds = new Set(s.tabs.filter((t) => t.kind === 'session').map((t) => t.runId))
   const openFiles = new Set(s.tabs.filter((t) => t.kind === 'file').map((t) => t.relPath))
   const openObsKeys = new Set(s.tabs.filter((t) => t.kind === 'obs').map((t) => t.key))
   const activeTab = s.tabs.find((t) => tabKey(t) === s.activeKey)
-  const switchPanel = (p) => {
-    setPanel(p)
-    try {
-      localStorage.setItem(SIDE_PANEL_KEY, p)
-    } catch {
-      // 存储不可用（隐私模式等）：只丢面板选择存活，不影响使用
-    }
-  }
+  const switchPanel = (p) => store.setSidePanel(p)
   return (
     <aside className="va-side" id="task-side">
       <div className="va-side-tabs" role="tablist" aria-label="侧栏面板">
@@ -275,6 +258,15 @@ export default function SidePanel() {
           onClick={() => switchPanel('sessions')}
         >
           会话
+        </button>
+        <button
+          role="tab"
+          aria-selected={panel === 'tasks'}
+          aria-controls="va-side-panel"
+          className={panel === 'tasks' ? 'on' : ''}
+          onClick={() => switchPanel('tasks')}
+        >
+          任务
         </button>
         <button
           role="tab"
@@ -307,6 +299,8 @@ export default function SidePanel() {
       <div className="va-side-panel-wrap" id="va-side-panel" role="tabpanel">
         {panel === 'sessions' ? (
           <SessionPanel order={s.order} runs={s.runs} controlId={store.controlRunId()} openIds={openIds} />
+        ) : panel === 'tasks' ? (
+          <TasksPanel />
         ) : panel === 'obs' ? (
           <ObsPanel openKeys={openObsKeys} activeKey={activeTab?.kind === 'obs' ? activeTab.key : null} />
         ) : panel === 'ecs' ? (

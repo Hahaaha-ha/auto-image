@@ -35,6 +35,7 @@ from . import redact as redact_mod
 from . import runs as runs_mod
 from . import sdk as sdk_mod
 from . import state as state_mod
+from . import tasks as tasks_mod
 from . import title as title_mod
 from .events import EventStore
 from .runs import ENDED, RunManager
@@ -58,6 +59,8 @@ DEFAULT_ARTIFACT_ROOTS = {
 DEFAULT_DEPLOY_CONFIG = Path(__file__).resolve().parent.parent / "deploy.config.yaml"
 # 运行时真实凭据源（ak/sk/ECS 密码值进脱敏已知清单，见 redact.load_scope_secrets）
 DEFAULT_SCOPE_CONFIG = Path(__file__).resolve().parent.parent / "scope.yaml"
+# 任务跟踪存储（每任务一个 JSON，重启恢复；运行数据不入库）
+DEFAULT_TASK_DIR = Path(__file__).resolve().parent.parent / "task"
 # 恢复簿记（墓碑 + 身份映射 + 克隆链镜像；同一 HOME 下多实例共用一份）
 DEFAULT_STATE_PATH = Path.home() / ".auto-image-web" / "state.json"
 # 并发上限（数执行中回合；新建、克隆、标题生成不占名额）
@@ -71,7 +74,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
                obs_list_fn=None, obs_url_fn=None, obs_read_fn=None, obs_archive_fn=None,
                obs_upload_zip_fn=None, obs_health_fn=None,
                ecs_list_fn=None, ecs_check_fn=None, ecs_create_fn=None, ecs_defaults_fn=None,
-    state_path=None, title_factory=None, max_parallel_runs=None):
+    state_path=None, title_factory=None, max_parallel_runs=None, task_dir=None):
     """session_factory 可注入：生产为 ClaudeSDKClient 真实现（默认），
     测试注入按剧本推消息的假实现——注入边界即唯一测试缝。artifact_roots
     （根名 → 目录映射）与 deploy_config 同理注入（产物目录与文件名约定
@@ -171,6 +174,15 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
             residual_pids,
         )
 
+    # 任务跟踪（rpm-*/deploy-* 流水线）：恢复重放完成后注册观察者——重放
+    # 事件不进任务面（历史不是新事实）；重启前未收尾的任务在 recover 里按
+    # interrupted 定格。观察者异常被 EventStore 吞掉，绝不影响回合执行。
+    task_store = tasks_mod.TaskStore(
+        Path(task_dir) if task_dir is not None else DEFAULT_TASK_DIR, artifact_roots)
+    task_store.recover()
+    store.add_observer(task_store.handle_event)
+    app.state.task_store = task_store
+
     @app.get("/api/runs")
     async def list_runs():
         return {"runs": manager.summaries()}
@@ -188,6 +200,12 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     @app.get("/api/runs/{run_id}")
     async def get_run(run_id: str):
         return _get_run_or_404(manager, run_id).summary()
+
+    # 任务清单（无会话依赖，同产物清单）：rpm-*/deploy-* 流水线任务的
+    # 注册表视图，事件观察者实时维护
+    @app.get("/api/tasks")
+    async def list_tasks():
+        return {"tasks": task_store.list()}
 
     @app.post("/api/runs/{run_id}/messages")
     async def send_message(run_id: str, body: dict):
