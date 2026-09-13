@@ -546,3 +546,63 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   background: #0969da; border-color: #0969da; color: #fff;
 }
 .va-modal-actions button:disabled { opacity: 0.6; cursor: default; }
+
+/* ---------- ECS 实例面板（侧栏第四面板） ---------- */
+
+.va-ecs-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 5px 8px 5px 6px; margin: 0 2px;
+  border-radius: 6px;
+}
+.va-ecs-row:hover { background: var(--bg-2, #f6f8fa); }
+.va-ecs-status {
+  flex-shrink: 0; width: 8px; height: 8px; margin-top: 5px;
+  border-radius: 50%;
+}
+.va-ecs-status.s-active { background: var(--ok, #1a7f37); }
+.va-ecs-status.s-build { background: var(--accent, #0969da); animation: va-pulse 1.2s infinite; }
+.va-ecs-status.s-shutoff,
+.va-ecs-status.s-deleted { background: var(--ink-3, #8b949e); border-radius: 2px; }
+.va-ecs-status.s-error { background: var(--bad, #cf222e); }
+.va-ecs-status.s-other { background: transparent; border: 1.5px solid var(--ink-3, #8b949e); }
+.va-ecs-main { min-width: 0; flex: 1; }
+.va-ecs-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.va-ecs-name-text {
+  font-size: 12.5px; font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.va-ecs-status-text {
+  flex-shrink: 0; font-size: 10px; letter-spacing: 0.02em;
+  color: var(--ink-3, #8b949e);
+}
+.va-ecs-alive { flex-shrink: 0; font-size: 12px; font-weight: 600; }
+.va-ecs-alive.ok { color: var(--ok, #1a7f37); }
+.va-ecs-alive.bad { color: var(--bad, #cf222e); }
+.va-ecs-sub {
+  display: flex; align-items: baseline; gap: 8px; min-width: 0;
+  margin-top: 1px; font-size: 11px; color: var(--ink-3, #8b949e);
+}
+.va-ecs-flavor { flex-shrink: 0; }
+.va-ecs-ip {
+  font-family: var(--mono, ui-monospace, monospace);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.va-ecs-ip.none { font-style: italic; opacity: 0.8; }
+.va-ecs-ago { margin-left: auto; flex-shrink: 0; }
+
+/* 新建对话框：长请求提示条（黄底警示——已提交的创建不可撤销）+ 密码行 */
+.va-ecs-create-hint {
+  margin: 8px 0; padding: 8px 10px; border-radius: 6px; font-size: 12px;
+  background: #fff8c5; color: #9a6700; border: 1px solid #d4a72c66;
+  overflow-wrap: anywhere;
+}
+.va-ecs-pwd {
+  flex: 1; min-width: 120px; padding: 3px 8px; font-size: 12px;
+  font-family: var(--mono, ui-monospace, monospace);
+  border: 1px solid var(--line-1, #d0d7de); border-radius: 6px;
+}
+.va-ecs-pwd-btn {
+  flex-shrink: 0; padding: 2px 8px; font-size: 12px; cursor: pointer;
+  border: 1px solid var(--line-1, #d0d7de); border-radius: 6px;
+  background: var(--bg-2, #f6f8fa);
+}

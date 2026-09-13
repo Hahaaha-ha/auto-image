@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import artifacts as artifacts_mod
+from . import ecs as ecs_mod
 from . import obs as obs_mod
 from . import rebuild as rebuild_mod
 from . import redact as redact_mod
@@ -69,6 +70,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
                residual_cli_scan=None,
                obs_list_fn=None, obs_url_fn=None, obs_read_fn=None, obs_archive_fn=None,
                obs_upload_zip_fn=None, obs_health_fn=None,
+               ecs_list_fn=None, ecs_check_fn=None, ecs_create_fn=None, ecs_defaults_fn=None,
     state_path=None, title_factory=None, max_parallel_runs=None):
     """session_factory 可注入：生产为 ClaudeSDKClient 真实现（默认），
     测试注入按剧本推消息的假实现——注入边界即唯一测试缝。artifact_roots
@@ -105,6 +107,14 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     obs_archive = obs_archive_fn or (lambda items: obs_mod.upload_paths(obs_scope, items))
     obs_upload_zip = obs_upload_zip_fn or (lambda key, data: obs_mod.upload_bytes(obs_scope, key, data))
     obs_health = obs_health_fn or (lambda: obs_mod.health_check(obs_scope))
+    # ECS 实例面板：默认实现绑定同一 scope（顶层 ak/sk/region + ecs_create
+    # 段），测试注入假函数（不触云）。SDK 缺失或未配置在请求时报 503，
+    # 不影响启动与其它功能。
+    ecs_scope = obs_scope
+    ecs_list_impl = ecs_list_fn or (lambda limit=500: ecs_mod.list_instances(ecs_scope, limit))
+    ecs_check_impl = ecs_check_fn or (lambda: ecs_mod.check_all(ecs_scope))
+    ecs_create_impl = ecs_create_fn or (lambda body=None: ecs_mod.create_instance(ecs_scope, body))
+    ecs_defaults_impl = ecs_defaults_fn or (lambda: ecs_mod.resolve_defaults(ecs_scope))
     app.state.run_manager = manager
     app.state.event_store = store
     app.state.session_factory = factory
@@ -444,6 +454,68 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except obs_mod.ObsApiError as exc:
             raise HTTPException(status_code=502, detail=exc.error) from exc
+
+    # ECS 实例面板（scope 顶层凭据 + huaweicloudsdkecs）：清单 / 一键存活
+    # 检查（status==ACTIVE 且 TCP 22 可达，并发探测）/ 同步建机到就绪
+    # （长持请求，分钟级；ok:false 仍 200——机器可能已建出，id 不丢）/
+    # 新建表单默认值。未配置（SDK 缺失或凭据/必填段缺失）503、云侧失败
+    # 502、表单非法 422。SDK 是阻塞 IO——同步 def 由 FastAPI 派线程池
+    # 执行，不占事件循环。
+    @app.get("/api/ecs/instances")
+    def list_ecs_instances(limit: int = 500):
+        try:
+            return ecs_list_impl(limit=max(1, min(limit, 1000)))
+        except ecs_mod.EcsNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ecs_mod.EcsApiError as exc:
+            raise HTTPException(status_code=502, detail=exc.error) from exc
+
+    @app.post("/api/ecs/check")
+    def check_ecs_alive():
+        try:
+            return ecs_check_impl()
+        except ecs_mod.EcsNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ecs_mod.EcsApiError as exc:
+            raise HTTPException(status_code=502, detail=exc.error) from exc
+
+    @app.post("/api/ecs/create")
+    def create_ecs_instance(body: dict | None = None):
+        b = body or {}
+        clean = {}
+        name = b.get("name")
+        if name is not None:
+            if not isinstance(name, str):
+                raise HTTPException(status_code=422, detail="name must be a string")
+            name = name.strip()
+            if len(name) > 64 or "/" in name:
+                raise HTTPException(status_code=422, detail="invalid name (≤64 chars, no '/')")
+        clean["name"] = name or None
+        for field in ("flavor", "image"):
+            val = b.get(field)
+            if val is not None:
+                if not isinstance(val, str) or not val.strip():
+                    raise HTTPException(status_code=422, detail=f"invalid {field}")
+                clean[field] = val.strip()
+        for field, lo, hi in (("disk_size", 10, 1024), ("bandwidth", 1, 2000)):
+            val = b.get(field)
+            if val is not None:
+                if isinstance(val, bool) or not isinstance(val, int) or not lo <= val <= hi:
+                    raise HTTPException(
+                        status_code=422, detail=f"invalid {field} (int {lo}-{hi})")
+                clean[field] = val
+        try:
+            return ecs_create_impl(clean)
+        except ValueError as exc:  # scope/env 密码不合规等
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except ecs_mod.EcsNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ecs_mod.EcsApiError as exc:
+            raise HTTPException(status_code=502, detail=exc.error) from exc
+
+    @app.get("/api/ecs/defaults")
+    def get_ecs_defaults():
+        return ecs_defaults_impl()
 
     # per-run 事件端点收窄为纯快照：按 Last-Event-ID 重放历史（断点续传），
     # 重放完毕正常结束响应——不常驻、无心跳、无 ENDED 关流判定（终态事件

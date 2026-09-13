@@ -1,15 +1,17 @@
-// 左侧侧栏：顶部小 tab「会话 | 产物 | OBS产物」切三块面板（默认产物，切过
-// 之后 localStorage 记住选择）。会话面板 = 全部会话仪表盘（含 ENDED 与重启
-// 恢复的历史，服务端最后活跃降序平铺），点行开成（或激活既有）会话
-// 标签页——历史会话由此第一次可达。产物面板 = 原产物卡内容原样迁入
+// 左侧侧栏：顶部小 tab「会话 | 产物 | OBS产物 | ECS实例」切四块面板（默认
+// 产物，切过之后 localStorage 记住选择）。会话面板 = 全部会话仪表盘（含
+// ENDED 与重启恢复的历史，服务端最后活跃降序平铺），点行开成（或激活既有）
+// 会话标签页——历史会话由此第一次可达。产物面板 = 原产物卡内容原样迁入
 // （工具行/复选框/zip/单文件下载/默认展开最新组），点文件开成（或激活
 // 既有）文件标签页——多槽内容缓存，消息流不再被顶走。OBS产物面板 = 桶内
 // 对象在线清单（/api/obs/objects），树形同构，点对象开 OBS 标签页预览。
-// 数据请求：会话列表即摘要轮询已拉的全量，本地产物即清单刷新，OBS 启动
-// 拉一次 + 刷新钮（不随流水线事件联动）。
+// ECS实例面板 = 华为云实例清单/状态 + 一键存活检查 + 新建（无标签页，
+// 面板内完成）。数据请求：会话列表即摘要轮询已拉的全量，本地产物即清单
+// 刷新，OBS 与 ECS 启动拉一次 + 刷新钮（不随流水线事件联动）。
 import { useState } from 'react'
 import * as store from '../store.js'
 import { tabKey } from '../tabState.js'
+import EcsPanel from './EcsPanel.jsx'
 import ObsPanel from './ObsPanel.jsx'
 import StageBadge from './StageBadge.jsx'
 import {
@@ -236,7 +238,7 @@ function ArtifactPanel({ openFiles, activeRel }) {
 // 两面板的「当前对象」标记都从 tabs 派生：会话面板高亮控制面会话，
 // 产物面板高亮激活的文件标签页（弱标记则覆盖全部已开文件）。
 const SIDE_PANEL_KEY = 'va-side-panel'
-const PANELS = ['sessions', 'artifacts', 'obs']
+const PANELS = ['sessions', 'artifacts', 'obs', 'ecs']
 function readPanel() {
   try {
     const v = localStorage.getItem(SIDE_PANEL_KEY)
@@ -292,12 +294,23 @@ export default function SidePanel() {
         >
           OBS产物
         </button>
+        <button
+          role="tab"
+          aria-selected={panel === 'ecs'}
+          aria-controls="va-side-panel"
+          className={panel === 'ecs' ? 'on' : ''}
+          onClick={() => switchPanel('ecs')}
+        >
+          ECS实例
+        </button>
       </div>
       <div className="va-side-panel-wrap" id="va-side-panel" role="tabpanel">
         {panel === 'sessions' ? (
           <SessionPanel order={s.order} runs={s.runs} controlId={store.controlRunId()} openIds={openIds} />
         ) : panel === 'obs' ? (
           <ObsPanel openKeys={openObsKeys} activeKey={activeTab?.kind === 'obs' ? activeTab.key : null} />
+        ) : panel === 'ecs' ? (
+          <EcsPanel />
         ) : (
           <ArtifactPanel openFiles={openFiles} activeRel={activeTab?.kind === 'file' ? activeTab.relPath : null} />
         )}

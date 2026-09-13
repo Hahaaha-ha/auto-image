@@ -109,6 +109,8 @@ let state = {
   obsCache: {},              // OBS 对象内容多槽缓存（对象 key → 条目+content），关标签页不清
   obsArchiving: false,       // 批量归档请求进行中（按钮防重复触发）
   obsZipArchiving: false,    // 打包 zip 归档请求进行中（按钮防重复触发）
+  ecs: { instances: [], region: null, error: null, loading: false, checking: false }, // ECS 实例清单（scope 顶层凭据绑定，尽力而为）
+  ecsCreating: false,        // 建机请求进行中（分钟级长请求，对话框防重复提交）
 }
 
 // 时长走针仅在控制面会话执行期间（挂起与终态冻结，终态由事件求和定格）
@@ -877,8 +879,97 @@ export async function archiveZipToObs() {
   }
 }
 
+// ---------- ECS 实例 ----------
+
+// 502 家族 detail 是对象（服务端 SDK 错误面）：人话化成字符串供错误行/toast
+const ecsErrText = (detail, fallback) =>
+  typeof detail === 'object' && detail !== null
+    ? JSON.stringify(detail)
+    : detail || fallback
+
+// 实例清单刷新（启动即拉一次 + 面板刷新钮；尽力而为，失败落面板错误行
+// 不打断使用。云侧变化不经本服务事件面，无联动——刷新钮手动重拉。已有
+// 存活检查结果按 id 保留，✓/✗ 不被刷新清掉）
+export async function refreshEcs() {
+  if (state.ecs.loading) return
+  set({ ecs: { ...state.ecs, loading: true } })
+  try {
+    const resp = await fetch('/api/ecs/instances?limit=1000')
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      set({ ecs: { ...state.ecs, loading: false, error: ecsErrText(data.detail, `HTTP ${resp.status}`) } })
+      return
+    }
+    const prev = {}
+    state.ecs.instances.forEach((i) => {
+      if (i.checked_at != null) prev[i.id] = i
+    })
+    set({
+      ecs: {
+        instances: (data.instances ?? []).map((i) => (
+          prev[i.id]
+            ? { ...i, ssh_port_open: prev[i.id].ssh_port_open, alive: prev[i.id].alive, checked_at: prev[i.id].checked_at }
+            : i
+        )),
+        region: data.region ?? null,
+        error: null,
+        loading: false,
+      },
+    })
+  } catch (err) {
+    set({ ecs: { ...state.ecs, loading: false, error: err.message } })
+  }
+}
+
+// 一键存活检查：POST /api/ecs/check（服务端并发探测 22 端口），结果按 id
+// 合并进清单（行内 ✓/✗）；列表里已消失的实例如实清掉检查标记
+export async function checkEcs() {
+  if (state.ecs.checking) return
+  set({ ecs: { ...state.ecs, checking: true } })
+  try {
+    const data = await postJson('/api/ecs/check', {})
+    const byId = Object.fromEntries((data.instances ?? []).map((i) => [i.id, i]))
+    set({
+      ecs: {
+        ...state.ecs,
+        checking: false,
+        region: data.region ?? state.ecs.region,
+        instances: state.ecs.instances.map((i) => (
+          byId[i.id]
+            ? { ...i, ssh_port_open: byId[i.id].ssh_port_open, alive: byId[i.id].alive, checked_at: data.checked_at }
+            : i
+        )),
+      },
+    })
+    ok(`存活检查：${data.alive_count ?? 0}/${data.count ?? 0} 存活`)
+  } catch (err) {
+    set({ ecs: { ...state.ecs, checking: false } })
+    fail(`存活检查失败：${ecsErrText(err.detail, err.message)}`)
+  }
+}
+
+// 建机（分钟级长请求；fetch 无超时正是所需）。成功与未就绪（ok=false，
+// 机器可能已建出）都返回服务端契约供对话框渲染，HTTP 层失败抛错由对话
+// 框行内展示；两种收尾都刷新清单
+export async function createEcs(body) {
+  if (state.ecsCreating) throw new Error('建机请求进行中')
+  set({ ecsCreating: true })
+  try {
+    const data = await postJson('/api/ecs/create', body)
+    refreshEcs()
+    return data
+  } catch (err) {
+    fail(`创建 ECS 失败：${ecsErrText(err.detail, err.message)}`)
+    throw err
+  } finally {
+    set({ ecsCreating: false })
+  }
+}
+
 // 启动即恢复任务列表（含服务重启后经 transcript 重建的历史）与产物清单
-// （loadRuns 无历史时提前 return，产物首刷不能依赖它）；OBS 清单同样尽力拉一次
+// （loadRuns 无历史时提前 return，产物首刷不能依赖它）；OBS 清单与 ECS
+// 实例清单同样尽力拉一次
 loadRuns()
 refreshArtifacts()
 refreshObs()
+refreshEcs()

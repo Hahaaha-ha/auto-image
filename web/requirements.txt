@@ -3,3 +3,4 @@ uvicorn
 httpx
 pyyaml
 claude-agent-sdk
+huaweicloudsdkecs==3.1.208
