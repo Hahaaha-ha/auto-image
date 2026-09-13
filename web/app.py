@@ -207,6 +207,92 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     async def list_tasks():
         return {"tasks": task_store.list()}
 
+    # 手动建任务（面板「+ 新建任务」）：表单 spec → INIT 待运行态落盘；
+    # 「▶ 运行」才建会话发指令。输入非法 422。
+    @app.post("/api/tasks")
+    async def create_task(body: dict | None = None):
+        b = body or {}
+        spec = {}
+        software = b.get("software")
+        if not isinstance(software, str) or not software.strip() or len(software.strip()) > 64:
+            raise HTTPException(status_code=422, detail="software required (1-64 chars)")
+        spec["software"] = software.strip()
+        for field in ("version", "install_doc"):
+            val = b.get(field)
+            if val is not None:
+                if not isinstance(val, str) or len(val) > 512:
+                    raise HTTPException(status_code=422, detail=f"invalid {field}")
+                spec[field] = val.strip()
+        task_type = b.get("task_type", "image")
+        if task_type not in ("image", "rpm"):
+            raise HTTPException(status_code=422, detail="task_type must be image|rpm")
+        spec["task_type"] = task_type
+        ecs_mode = b.get("ecs_mode", "create")
+        if ecs_mode not in ("existing", "create"):
+            raise HTTPException(status_code=422, detail="ecs_mode must be existing|create")
+        spec["ecs_mode"] = ecs_mode
+        if ecs_mode == "existing":
+            inst = b.get("ecs_instance")
+            if (not isinstance(inst, dict)
+                    or not str(inst.get("name") or "").strip()
+                    or not str(inst.get("ip") or "").strip()):
+                raise HTTPException(
+                    status_code=422, detail="ecs_instance {name, ip} required for existing mode")
+            spec["ecs_instance"] = {
+                "id": str(inst.get("id") or "").strip() or None,
+                "name": str(inst["name"]).strip(),
+                "ip": str(inst["ip"]).strip(),
+            }
+        else:
+            params = b.get("ecs_params")
+            if params is None:
+                params = {}
+            if not isinstance(params, dict):
+                raise HTTPException(status_code=422, detail="ecs_params must be an object")
+            clean_params = {}
+            for field in ("image", "flavor", "name"):
+                val = params.get(field)
+                if val is not None:
+                    if not isinstance(val, str) or not val.strip() or len(val.strip()) > 128:
+                        raise HTTPException(status_code=422, detail=f"invalid ecs_params.{field}")
+                    clean_params[field] = val.strip()
+            for field, lo, hi in (("disk_size", 10, 1024), ("bandwidth", 1, 2000)):
+                val = params.get(field)
+                if val is not None:
+                    if isinstance(val, bool) or not isinstance(val, int) or not lo <= val <= hi:
+                        raise HTTPException(
+                            status_code=422, detail=f"invalid ecs_params.{field} (int {lo}-{hi})")
+                    clean_params[field] = val
+            spec["ecs_params"] = clean_params
+        return task_store.create_manual(spec)
+
+    # 运行 INIT 任务：新建会话 → 按表单 spec 构造部署指令发出 → 任务绑定
+    # 该会话转 RUNNING（mark_running 先于 start_turn，首个 stage.changed
+    # 即认领本任务）。非 INIT（已运行/已收尾）409；未知 404。
+    @app.post("/api/tasks/{task_id}/run")
+    async def run_task(task_id: str):
+        task = task_store.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="task not found")
+        if task.get("status") != "INIT":
+            raise HTTPException(
+                status_code=409, detail=f"task not in INIT (current: {task.get('status')})")
+        prompt = tasks_mod.build_task_prompt(task.get("spec") or {})
+        run = manager.create()
+        store.create(run.run_id)
+        store.append(run.run_id, "session.started", {})
+        try:
+            manager.begin_turn(run, prompt)
+        except runs_mod.Conflict as exc:
+            raise HTTPException(status_code=409, detail=exc.detail) from exc
+        store.append(run.run_id, "turn.started", {})
+        store.append(run.run_id, "user.message", {"text": prompt})
+        maybe_assign_title(run, prompt, True)
+        task_store.mark_running(task_id, run.run_id, prompt)
+        persist()
+        start_turn(run, prompt)
+        return {"task_id": task_id, "run_id": run.run_id, "status": "RUNNING"}
+
     @app.post("/api/runs/{run_id}/messages")
     async def send_message(run_id: str, body: dict):
         run = _get_run_or_404(manager, run_id)

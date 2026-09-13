@@ -200,4 +200,23 @@ describe('任务面板联动', () => {
     store.setSidePanel('sessions')
     expect(store.getState().sidePanel).toBe('sessions')
   })
+
+  it('runTask 起新会话并自动跳过去（tabs 含该会话标签页）', async () => {
+    fetch.mockImplementation(async (url, options = {}) => {
+      if (url === '/api/tasks' && options.method === 'POST') {
+        return { ok: true, json: async () => ({ task_id: 'task-1', status: 'INIT' }) }
+      }
+      if (url.startsWith('/api/tasks/') && url.endsWith('/run')) {
+        return { ok: true, json: async () => ({ task_id: 'task-1', run_id: 'run_manual', status: 'RUNNING' }) }
+      }
+      if (url === '/api/runs/run_manual/events') {
+        return { ok: true, text: async () => '' }
+      }
+      return { ok: false }
+    })
+    const created = await store.createTask({ software: 'nginx', version: '1.25.3' })
+    expect(created.taskId ?? created.task_id).toBeTruthy()
+    await store.runTask('task-1')
+    expect(store.getState().tabs.some((t) => t.kind === 'session' && t.runId === 'run_manual')).toBe(true)
+  })
 })

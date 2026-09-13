@@ -53,6 +53,15 @@ TURN_OUTCOMES = {
 
 TYPE_LABELS = {"image": "镜像", "rpm": "RPM"}
 
+# 手动任务 ECS 参数的展示序与中文名（build_task_prompt 的 k=v 列表用）
+ECS_PARAM_LABELS = (
+    ("image", "镜像"),
+    ("flavor", "规格"),
+    ("name", "名称"),
+    ("disk_size", "系统盘GB"),
+    ("bandwidth", "带宽Mbit/s"),
+)
+
 # 软件名+版本启发式：ASCII 词 + 少量标点/中文衔接（含「版本/version/v」）
 # + 版本号。启发式只做任务创建初期的占位，产物目录确认后覆盖。
 _SOFTWARE_RE = re.compile(
@@ -93,6 +102,48 @@ def _task_name(task):
     return f"{' '.join(parts)} ({stamp})"
 
 
+def build_task_prompt(spec):
+    """手动任务 spec → 部署指令（发给新建会话的首条 user 消息）。
+
+    指令带 deploy/rpm skill 的触发词与参数表述：类型决定流水线；已有
+    ECS 给 ssh 别名（流水线命名规约 ecs-<别名>，去前缀即别名；外来机器
+    无从确定别名，给 name+IP 让 agent 经 ssh-skill 解析）；按需创建把
+    填写过的 ECS 参数以 k=v 透传（其余用 scope 默认）。
+    """
+    software = str(spec.get("software") or "").strip()
+    version = str(spec.get("version") or "").strip() or "最新稳定版"
+    ttype = spec.get("task_type") or "image"
+    install_doc = str(spec.get("install_doc") or "").strip()
+
+    if ttype == "rpm":
+        head = f"制作 {software} {version} 的 RPM 包，并完成构建、验证与归档。"
+    else:
+        head = f"一键部署 {software} {version}，部署并打包制镜像。"
+
+    machine = ""
+    if spec.get("ecs_mode") == "existing":
+        inst = spec.get("ecs_instance") or {}
+        name = str(inst.get("name") or "").strip()
+        ip = str(inst.get("ip") or "").strip()
+        if name.startswith("ecs-") and len(name) > 4:
+            machine = f"目标服务器别名：{name[4:]}。"
+        else:
+            machine = (f"目标机器：已有 ECS「{name}」（IP {ip}）。"
+                       "请用 ssh-skill 解析其登录方式（已注册别名则用别名，"
+                       "否则按 IP 注册后再执行）。")
+    else:
+        params = spec.get("ecs_params") or {}
+        parts = [f"{label}={params[key]}" for key, label in ECS_PARAM_LABELS
+                 if params.get(key) not in (None, "")]
+        if parts:
+            machine = f"目标机器：按需创建 ECS（ECS 规格：{'；'.join(parts)}，其余用 scope 默认）。"
+        else:
+            machine = "目标机器：按需创建 ECS（规格用 scope 默认）。"
+
+    doc = f"安装文档：{install_doc}。" if install_doc else "安装文档：无现成链接，请检索官方最新稳定版文档。"
+    return f"{head}{machine}{doc}"
+
+
 class TaskStore:
     """任务注册表：事件观察者驱动 + task/ 目录持久化（每任务一个 JSON）。"""
 
@@ -103,6 +154,70 @@ class TaskStore:
         self._tasks = {}            # task_id → 任务记录
         self._active = {}           # run_id → 进行中 task_id（一个 run 同时至多一个）
         self._turn_text = {}        # run_id → 本回合指令文本（启发式解析源）
+
+    # ---- 手动任务（面板「+ 新建任务」→ INIT → 「▶ 运行」起会话）----
+
+    def get(self, task_id):
+        return self._tasks.get(task_id)
+
+    def create_manual(self, spec):
+        """表单 spec → INIT 任务（待运行；点运行才建会话发指令）。"""
+        ttype = spec.get("task_type") or "image"
+        software = str(spec.get("software") or "").strip()
+        version = str(spec.get("version") or "").strip() or None
+        now = time.time()
+        task_id = ("task-"
+                   + datetime.fromtimestamp(now).strftime("%Y%m%d%H%M%S")
+                   + "-" + secrets.token_hex(2))
+        task = {
+            "task_id": task_id,
+            "run_id": None,
+            "origin": "manual",
+            "type": ttype,
+            "status": "INIT",
+            "outcome": None,
+            "name": "",  # _task_name 填
+            "software": software or None,
+            "version": version,
+            "confirmed": bool(software),  # 手动任务的软件/版本来自表单，即权威
+            "stages": [],
+            "current_stage": None,
+            "usage": None,
+            "server_alias": None,
+            "instance_id": None,
+            "spec": {
+                "software": software,
+                "version": version,
+                "task_type": ttype,
+                "ecs_mode": spec.get("ecs_mode") or "create",
+                "ecs_instance": spec.get("ecs_instance"),
+                "ecs_params": spec.get("ecs_params"),
+                "install_doc": str(spec.get("install_doc") or "").strip() or None,
+            },
+            "turn_text": "",
+            "created_at": now,
+            "updated_at": now,
+            "ended_at": None,
+        }
+        task["name"] = _task_name(task)
+        self._tasks[task_id] = task
+        self._save(task)
+        return task
+
+    def mark_running(self, task_id, run_id, prompt):
+        """INIT → RUNNING：绑定会话并预登记观察者映射（先于 start_turn 调用，
+        首个 stage.changed 即认领本任务而非新建 auto 任务）。"""
+        task = self._tasks.get(task_id)
+        if task is None or task.get("status") != "INIT":
+            return None
+        task["status"] = "RUNNING"
+        task["run_id"] = run_id
+        task["turn_text"] = prompt
+        task["updated_at"] = time.time()
+        self._active[run_id] = task_id
+        self._turn_text[run_id] = prompt
+        self._save(task)
+        return task
 
     # ---- 事件入口（EventStore 观察者）----
 

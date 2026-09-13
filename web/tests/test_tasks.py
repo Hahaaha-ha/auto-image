@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-from web.tasks import TaskStore, parse_software_version  # noqa: E402
+from web.tasks import TaskStore, build_task_prompt, parse_software_version  # noqa: E402
 
 
 def ev(run_id, etype, payload, ts):
@@ -200,6 +200,91 @@ def test_parse_software_version_cases():
     assert parse_software_version("openEuler 22.03 LTS 下验证") == ("openEuler", "22.03")
     assert parse_software_version("聊聊今天天气") == (None, None)
     assert parse_software_version("") == (None, None)
+
+
+def test_create_manual_init_task():
+    with tempfile.TemporaryDirectory() as td:
+        store = make_store(td)
+        task = store.create_manual({
+            "software": "nginx", "version": "1.25.3", "task_type": "image",
+            "ecs_mode": "existing",
+            "ecs_instance": {"id": "i-1", "name": "ecs-nginx-20260914", "ip": "1.2.3.4"},
+            "install_doc": "https://nginx.org/en/docs.html",
+        })
+        assert task["status"] == "INIT" and task["origin"] == "manual"
+        assert task["type"] == "image"
+        assert task["software"] == "nginx" and task["version"] == "1.25.3"
+        assert task["confirmed"] is True  # 手动任务的软件/版本来自表单即权威
+        assert task["name"].startswith("镜像 nginx 1.25.3 (")
+        assert task["stages"] == [] and task["run_id"] is None
+        assert len(list(Path(td).glob("task-*.json"))) == 1
+
+
+def test_mark_running_claims_stage_events():
+    """mark_running 先于回合执行：首个 stage.changed 认领手动任务而非新建
+    auto 任务；回合收尾按既有状态机走。"""
+    with tempfile.TemporaryDirectory() as td:
+        store = make_store(td)
+        task = store.create_manual({"software": "redis", "version": "7.2",
+                                    "task_type": "rpm", "ecs_mode": "create"})
+        prompt = "制作 redis 7.2 的 RPM 包…"
+        base = 1_700_000_000.0
+        store.handle_event(ev("run_9", "user.message", {"text": prompt}, base))
+        assert store.mark_running(task["task_id"], "run_9", prompt) is not None
+        store.handle_event(stage_event("run_9", "GUIDE", "rpm-guide", base + 1))
+        store.handle_event(stage_event("run_9", "BUILD", "rpm-build", base + 2))
+        store.handle_event(ev("run_9", "turn.completed", {"result": "ok"}, base + 60))
+        tasks = store.list()
+        assert len(tasks) == 1  # 不新建第二个
+        t = tasks[0]
+        assert t["status"] == "DONE" and t["outcome"] == "success"
+        assert [s["stage"] for s in t["stages"]] == ["GUIDE", "BUILD"]
+
+
+def test_mark_running_rejects_non_init():
+    with tempfile.TemporaryDirectory() as td:
+        store = make_store(td)
+        task = store.create_manual({"software": "a"})
+        assert store.mark_running(task["task_id"], "r1", "x") is not None
+        assert store.mark_running(task["task_id"], "r2", "x") is None  # 非 INIT 拒绝
+        assert store.mark_running("task-nope", "r1", "x") is None
+
+
+def test_build_task_prompt_cases():
+    # 镜像 + 已有 ECS（流水线命名规约：ecs-<别名> → 别名直给）
+    p = build_task_prompt({"software": "nginx", "version": "1.25.3", "task_type": "image",
+                           "ecs_mode": "existing",
+                           "ecs_instance": {"name": "ecs-nginx-20260914", "ip": "1.2.3.4"},
+                           "install_doc": "https://doc.example"})
+    assert p.startswith("一键部署 nginx 1.25.3")
+    assert "目标服务器别名：nginx-20260914" in p
+    assert "安装文档：https://doc.example" in p
+    # 外来机器（无 ecs- 前缀）：name+IP 让 agent 解析
+    p = build_task_prompt({"software": "redis", "task_type": "image", "ecs_mode": "existing",
+                           "ecs_instance": {"name": "my-server", "ip": "5.6.7.8"}})
+    assert "已有 ECS「my-server」（IP 5.6.7.8）" in p and "ssh-skill" in p
+    assert "redis 最新稳定版" in p  # 版本缺省
+    assert "请检索官方最新稳定版文档" in p
+    # 按需创建：只列填写项
+    p = build_task_prompt({"software": "mysql", "version": "8.0", "task_type": "image",
+                           "ecs_mode": "create",
+                           "ecs_params": {"flavor": "c6.xlarge.2", "disk_size": 100}})
+    assert "按需创建 ECS" in p and "规格=c6.xlarge.2" in p and "系统盘GB=100" in p
+    assert "镜像=" not in p  # 未填写项不透传
+    # RPM 类型
+    p = build_task_prompt({"software": "postgresql", "version": "16.1", "task_type": "rpm",
+                           "ecs_mode": "create", "ecs_params": {}})
+    assert p.startswith("制作 postgresql 16.1 的 RPM 包") and "scope 默认" in p
+
+
+def test_recover_keeps_init():
+    with tempfile.TemporaryDirectory() as td:
+        store = make_store(td)
+        store.create_manual({"software": "nginx", "version": "1.25.3"})
+        recovered = make_store(td)
+        recovered.recover()
+        (task,) = recovered.list()
+        assert task["status"] == "INIT"  # 待运行任务不受重启影响，仍可运行
 
 
 def main():

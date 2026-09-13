@@ -166,6 +166,15 @@ function makeTask(t) {
     createdAt: t.created_at,
     endedAt: t.ended_at,
     turnText: t.turn_text,
+    origin: t.origin,
+    spec: t.spec
+      ? {
+          ecsMode: t.spec.ecs_mode,
+          ecsInstance: t.spec.ecs_instance,
+          ecsParams: t.spec.ecs_params,
+          installDoc: t.spec.install_doc,
+        }
+      : null,
   }
 }
 
@@ -186,6 +195,29 @@ export async function refreshTasks() {
 export function openTask(taskId) {
   set({ sidePanel: 'tasks', activeTaskId: taskId })
   if (!state.tasks.length) refreshTasks()
+}
+
+// 手动建任务（「+ 新建任务」表单提交）：INIT 待运行态落服务端；返回任务
+// 供对话框收尾（失败抛错由对话框行内展示）
+export async function createTask(spec) {
+  const data = await postJson('/api/tasks', spec)
+  refreshTasks()
+  return data
+}
+
+// 运行 INIT 任务：服务端新建会话并发出按表单构造的部署指令——新会话
+// 本地落位（adoptNewRun，同新建会话路径）即自动跳到该会话标签页看
+// agent 执行（用户已确认此交互）
+export async function runTask(taskId) {
+  const data = await postJson(`/api/tasks/${encodeURIComponent(taskId)}/run`, {})
+  adoptNewRun(makeRun({
+    runId: data.run_id,
+    status: data.status,
+    startedAt: Date.now(),
+  }))
+  refreshTasks()
+  ok(`任务已启动，已打开会话 ${data.run_id}`)
+  return data
 }
 
 // runId → 进行中任务（会话标签 pill 用；一个 run 同时至多一个活动任务）

@@ -1228,6 +1228,68 @@ async def test_plain_turn_creates_no_task():
         assert tasks == [], tasks
 
 
+async def test_manual_task_create_validation():
+    """POST /api/tasks 入口校验：缺软件名/坏枚举/超界参数一律 422。"""
+    app = make_app()
+    async with httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver") as client:
+        bad_bodies = [
+            {},
+            {"software": "  "},
+            {"software": "x" * 65},
+            {"software": "nginx", "task_type": "docker"},
+            {"software": "nginx", "ecs_mode": "both"},
+            {"software": "nginx", "ecs_mode": "existing"},  # 缺 ecs_instance
+            {"software": "nginx", "ecs_mode": "existing", "ecs_instance": {"name": "n"}},  # 缺 ip
+            {"software": "nginx", "ecs_params": {"disk_size": 5}},
+            {"software": "nginx", "ecs_params": {"bandwidth": 0}},
+            {"software": "nginx", "ecs_params": {"flavor": 42}},
+        ]
+        for b in bad_bodies:
+            r = await client.post("/api/tasks", json=b)
+            assert r.status_code == 422, (b, r.text)
+
+
+async def test_manual_task_run_lifecycle():
+    """手动任务全生命周期：POST 建任务（INIT）→ run 起会话发指令 → 假剧本
+    流水线推进 → 任务 DONE/success 且绑定新会话；重复 run 409、未知 404。"""
+    app = make_app()
+    async with httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver") as client:
+        r = await client.post("/api/tasks", json={
+            "software": "nginx", "version": "1.25.3", "task_type": "image",
+            "ecs_mode": "existing",
+            "ecs_instance": {"id": "i-9", "name": "ecs-nginx-20260914", "ip": "1.2.3.4"},
+            "install_doc": "https://nginx.org/en/docs.html",
+        })
+        assert r.status_code == 200, r.text
+        task = r.json()
+        assert task["status"] == "INIT" and task["origin"] == "manual"
+
+        r = await client.post(f"/api/tasks/{task['task_id']}/run")
+        assert r.status_code == 200, r.text
+        started = r.json()
+        run_id = started["run_id"]
+        # 新会话收到按表单构造的部署指令（别名推导 + 文档链接）
+        events, _ = await collect_sse(await open_stream(client, run_id))
+        texts = [e["data"]["text"] for e in events if e["event"] == "user.message"]
+        assert any("一键部署 nginx 1.25.3" in t and "目标服务器别名：nginx-20260914"
+                   in t and "https://nginx.org/en/docs.html" in t for t in texts), texts
+
+        await wait_status(client, run_id, "READY")
+        tasks = (await client.get("/api/tasks")).json()["tasks"]
+        mine = [t for t in tasks if t["task_id"] == task["task_id"]]
+        assert len(mine) == 1, tasks  # 认领本任务，未新建 auto 任务
+        t = mine[0]
+        assert t["status"] == "DONE" and t["outcome"] == "success"
+        assert t["run_id"] == run_id
+        assert [s["stage"] for s in t["stages"]] == ["GUIDE"]
+
+        # 重复运行与未知任务
+        r = await client.post(f"/api/tasks/{task['task_id']}/run")
+        assert r.status_code == 409, r.text
+        r = await client.post("/api/tasks/task-nope/run")
+        assert r.status_code == 404, r.text
+
+
 async def main():
     tests = [fn for name, fn in sorted(globals().items()) if name.startswith("test_")]
     for fn in tests:
