@@ -628,7 +628,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .va-task-row:hover { background: var(--bg-2, #f6f8fa); }
 .va-task-row.on { background: var(--surface-dim, #eef1f4); }
-.va-task-main { min-width: 0; flex: 1; cursor: pointer; }
+.va-task-main { min-width: 0; flex: 1; }
 .va-task-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .va-task-name-text {
   font-size: 12.5px; font-weight: 500;
@@ -680,19 +680,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   color: var(--ok, #1a7f37); background: #dafbe1;
   border: 1px solid #abe4b8;
 }
-
-/* 任务展开明细：键值行 */
-.va-task-detail { margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--line-1, #d0d7de); }
-.va-task-line {
-  display: flex; align-items: baseline; gap: 8px; padding: 1px 0;
-  font-size: 11px; color: var(--ink-3, #8b949e);
-}
-.va-task-line > span { flex: 0 0 56px; }
-.va-task-line code {
-  font-family: var(--mono, ui-monospace, monospace);
-  overflow-wrap: anywhere;
-}
-.va-task-note { font-size: 10px; }
 
 /* ECS 实例运行态：跑任务的机器给动作色（点击跳任务），空闲弱化 */
 .va-ecs-task {

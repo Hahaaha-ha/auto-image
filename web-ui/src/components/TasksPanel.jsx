@@ -1,9 +1,9 @@
 // 任务面板：流水线任务清单（rpm-*/deploy-* 子 agent 派发即建，服务端
 // task/ 目录持久化）。每行：状态点 + 任务名（类型+软件+版本+时间戳）+
 // 阶段流转图（done ✓ / current 呼吸 / upcoming 灰）+ token（缓存/输入/
-// 输出；进行中为 —，回合结束才采到总量）+ 机器 + 会话 chip（点击跳会话
-// 标签页）。行可展开看各阶段起止时刻。「会话标签上的任务 pill」与
-// ECS 运行态都跳/联到这里（openTask 高亮）。
+// 输出；进行中为 —，回合结束才采到总量）+ 会话 chip（点击跳会话标签
+// 页）。行主体不可点击（点击展开详情暂取消）；INIT 行给「▶ 运行」。
+// 「会话标签上的任务 pill」与 ECS 运行态都跳/联到这里（openTask 高亮）。
 import { useEffect, useState } from 'react'
 import * as store from '../store.js'
 import { fmtAgo, fmtTokens, STAGE_LABEL, TASK_OUTCOME_LABEL, TASK_TYPE_LABEL, stageOrder } from '../derive.js'
@@ -219,14 +219,12 @@ function StageFlow({ task }) {
 
 const fmtClock = (ts) => (ts ? new Date(ts * 1000).toTimeString().slice(0, 8) : '—')
 
-function TaskRow({ task, active, expanded, onToggle }) {
+function TaskRow({ task, active }) {
   const cache = task.usage ? (task.usage.cacheReadTokens ?? 0) + (task.usage.cacheCreationTokens ?? 0) : null
   const isInit = task.status === 'INIT'
   return (
     <div className={`va-task-row${active ? ' on' : ''}`}>
-      <div className="va-task-main" role="button" tabIndex={0} onClick={onToggle}
-           onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle() } }}
-           title={task.turnText || task.name}>
+      <div className="va-task-main" title={task.turnText || task.name}>
         <div className="va-task-name">
           {isInit ? (
             <span className="va-ecs-status s-other" title="待运行" />
@@ -273,60 +271,12 @@ function TaskRow({ task, active, expanded, onToggle }) {
           </button>
         )}
       </div>
-      {expanded && (
-        <div className="va-task-detail">
-          <div className="va-task-line"><span>任务 ID</span><code>{task.taskId}</code></div>
-          {task.runId && <div className="va-task-line"><span>会话</span><code>{task.runId}</code></div>}
-          {task.spec && (
-            <>
-              <div className="va-task-line">
-                <span>ECS 目标</span>
-                <code>
-                  {task.spec.ecsMode === 'existing'
-                    ? `已有：${task.spec.ecsInstance?.name ?? '—'}（${task.spec.ecsInstance?.ip ?? ''}）`
-                    : '按需创建'}
-                </code>
-              </div>
-              {task.spec.ecsMode === 'create' && task.spec.ecsParams && Object.keys(task.spec.ecsParams).length > 0 && (
-                <div className="va-task-line">
-                  <span>ECS 参数</span>
-                  <code>{Object.entries(task.spec.ecsParams).map(([k, v]) => `${k}=${v}`).join('，')}</code>
-                </div>
-              )}
-              {task.spec.installDoc && (
-                <div className="va-task-line"><span>文档</span><code>{task.spec.installDoc}</code></div>
-              )}
-            </>
-          )}
-          <div className="va-task-line">
-            <span>机器</span>
-            <code>{task.instanceId ?? task.serverAlias ?? '—'}</code>
-            {task.serverAlias && task.instanceId && <span className="va-task-note">别名 {task.serverAlias}</span>}
-          </div>
-          {(task.stages ?? []).map((s, i) => (
-            <div className="va-task-line" key={i}>
-              <span>{STAGE_LABEL[s.stage] ?? s.stage}</span>
-              <code>{fmtClock(s.startedAt)} → {s.endedAt ? fmtClock(s.endedAt) : '进行中'}</code>
-            </div>
-          ))}
-          {task.usage && (
-            <div className="va-task-line">
-              <span>token</span>
-              <code>
-                缓存读 {fmtTokens(task.usage.cacheReadTokens)} · 缓存写 {fmtTokens(task.usage.cacheCreationTokens)}
-                {' '}· 入 {fmtTokens(task.usage.inputTokens)} · 出 {fmtTokens(task.usage.outputTokens)}
-              </code>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   )
 }
 
 export default function TasksPanel() {
   const s = store.useRunState()
-  const [expanded, setExpanded] = useState({})
   const [createOpen, setCreateOpen] = useState(false)
   const running = s.tasks.filter((t) => t.status === 'RUNNING').length
   return (
@@ -359,8 +309,6 @@ export default function TasksPanel() {
           key={t.taskId}
           task={t}
           active={s.activeTaskId === t.taskId}
-          expanded={!!expanded[t.taskId]}
-          onToggle={() => setExpanded({ ...expanded, [t.taskId]: !expanded[t.taskId] })}
         />
       ))}
       {createOpen && <TaskCreateDialog onClose={() => setCreateOpen(false)} />}
