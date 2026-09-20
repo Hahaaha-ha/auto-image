@@ -17,7 +17,18 @@ from typing import Any
 from huaweicloudsdkecs.v2 import CreateServersRequest, ListServersDetailsRequest
 
 from ecs_client import DEFAULT_SCOPE_PATH, build_client, load_scope_config, resolve_credentials
-from ecs_ops import build_change_os_request, build_create_request, build_delete_request, decide_ready_ip, fixed_ip, floating_ip, mask_password
+from ecs_ops import (
+    DEFAULT_TERMINATE_HOURS,
+    MAX_TERMINATE_HOURS,
+    MIN_TERMINATE_HOURS,
+    build_change_os_request,
+    build_create_request,
+    build_delete_request,
+    decide_ready_ip,
+    fixed_ip,
+    floating_ip,
+    mask_password,
+)
 
 LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
 DEFAULT_POLL_TIMEOUT = 600
@@ -231,7 +242,7 @@ def cmd_create(args: argparse.Namespace) -> int:
     # stdout 仍保持纯 JSON —— 提示只走 stderr。
     write_log(log_file, {**log_payload, "final": {
         "ok": False, "id": server_id, "status": "CREATED",
-        "note": "已创建但轮询未完成；若进程在此中断，用 `show --id` 复查（未自动销毁）。",
+        "note": "已创建但轮询未完成；若进程在此中断，用 `show --id` 复查（未立即销毁）。",
     }})
     print(f"[ecs] created id={server_id} name={server_name}（轮询中；中断请用 show --id 复查）",
           file=sys.stderr, flush=True)
@@ -256,6 +267,7 @@ def cmd_create(args: argparse.Namespace) -> int:
         "status": status, "ssh_port_open": port_open,
         "region": creds.region, "flavor": req.body.server.flavor_ref,
         "image": req.body.server.image_ref, "job_id": getattr(resp, "job_id", ""),
+        "auto_terminate_time": req.body.server.auto_terminate_time,
     }
     # 登录鉴权方式回显：成功时附上 auth_method + 密码供下游取用
     if ready:
@@ -263,22 +275,25 @@ def cmd_create(args: argparse.Namespace) -> int:
         if req.body.server.admin_pass:
             result["admin_pass"] = req.body.server.admin_pass
     if not ready:
+        # 机器已排定定时删除：排障有时限，到点华为侧自动删（含系统盘+EIP）
+        if req.body.server.auto_terminate_time:
+            result["auto_terminate_time"] = req.body.server.auto_terminate_time
         server_status = str(getattr(server, "status", "") or "").upper() if server else ""
         if status == "TIMEOUT":
             if server_status == "ACTIVE" and has_eip:
                 result["error"] = f"轮询超时（{args.timeout}s）：已 ACTIVE 但公网浮动 IP 始终未出现"
-                result["hint"] = "请检查 EIP 配额/权限（如 eip:publicIps:create）；未自动销毁。"
+                result["hint"] = "请检查 EIP 配额/权限（如 eip:publicIps:create）；未立即销毁。",
             else:
                 result["error"] = f"轮询超时（{args.timeout}s）仍未 ACTIVE"
-                result["hint"] = "机器可能仍在创建，稍后用 `show --id` 复查；未自动销毁。"
+                result["hint"] = "机器可能仍在创建，稍后用 `show --id` 复查；未立即销毁。",
         elif status in ("ERROR", "FAILED"):
             result["error"] = f"ECS 进入 {status} 状态"
         elif not port_open:
             result["error"] = "已 ACTIVE 但 22 端口不通"
             if has_eip:
-                result["hint"] = "请确认安全组对公网放行 22；未自动销毁。"
+                result["hint"] = "请确认安全组对公网放行 22；未立即销毁。",
             else:
-                result["hint"] = "请确认该 VPC 安全组放行 22、且本机与新机同子网；未自动销毁。"
+                result["hint"] = "请确认该 VPC 安全组放行 22、且本机与新机同子 subnet；未立即销毁。",
 
     log_payload["final"] = result
     result["log"] = write_log(log_file, log_payload)
@@ -557,6 +572,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_create.add_argument("--disk-type", dest="disk_type", help="系统盘类型（覆盖 root_volume.volumetype）")
     p_create.add_argument("--disk-size", dest="disk_size", type=int, help="系统盘大小 GB（覆盖 root_volume.size）")
     p_create.add_argument("--bandwidth", type=int, help="EIP 带宽 Mbit/s（默认 5）")
+    # 互斥：编排层透传两 flag 时静默忽略一个会造成持续计费的误解——直接报错
+    term = p_create.add_mutually_exclusive_group()
+    term.add_argument("--terminate-hours", dest="terminate_hours", type=float,
+                     help=f"定时删除时长（小时；默认 {DEFAULT_TERMINATE_HOURS}，范围 {MIN_TERMINATE_HOURS}–{MAX_TERMINATE_HOURS}）")
+    term.add_argument("--no-auto-terminate", dest="no_auto_terminate", action="store_true",
+                     help="不设定时删除（长期机）；默认创建后 24h 自动删除（联删系统盘+EIP）")
     p_create.add_argument("--dry-run", action="store_true", help="仅打印解析后的请求，不调 API")
     p_create.add_argument("--validate", action="store_true", help="服务端预检(dry_run=true)，不真创建")
     p_create.add_argument("--timeout", type=int, default=DEFAULT_POLL_TIMEOUT, help=f"轮询 ACTIVE 超时秒（默认 {DEFAULT_POLL_TIMEOUT}）")

@@ -1,7 +1,7 @@
 ---
 name: ecs-skill
 version: 0.7.0
-description: "CRITICAL: 华为云 ECS 拉起/查询/切换OS/删除。把一台华为云 ECS 从无到有拉起到「就绪」（ACTIVE + 可达 IP + 22 通），纯 JSON 输出。默认带公网 EIP（公网浮动 IP 即可达）；本机与新机同 VPC 时加 --no-eip 退回私网路径。支持密钥对与密码两种登录鉴权方式（密码可自动生成）。create（拉起）+ show（查询）+ change-os（切换操作系统/系统盘镜像替换，轮询至新镜像生效 + 探 22）+ delete（级联删除 ECS + 系统盘 + EIP + 数据盘，轮询至实例消失，幂等）；非交互，--dry-run 当确认杠杆；用完保留不自动销毁。当用户要求『拉起一台 ecs』『创建华为云服务器』『开一台 ecs』『查那台 ecs 状态』『切换 ecs 操作系统』『重置 ecs 镜像』『删除 ecs』『清理 ecs』时使用。Triggers: 拉起ecs, 创建ecs, 开ecs, 华为云ecs, huawei ecs, create ecs, ecs-skill, ecs 状态, 查询ecs, 就绪, 切换os, change os, 重置镜像, change-os, 删除ecs, 删ecs, 清理ecs, delete ecs, 销毁ecs。需要：仓库根 scope.yaml 已配置（ak/sk/region + ecs_create 默认）或 HUAWEICLOUD_SDK_* 环境变量。"
+description: "CRITICAL: 华为云 ECS 拉起/查询/切换OS/删除。把一台华为云 ECS 从无到有拉起到「就绪」（ACTIVE + 可达 IP + 22 通），纯 JSON 输出。默认带公网 EIP（公网浮动 IP 即可达）；本机与新机同 VPC 时加 --no-eip 退回私网路径。支持密钥对与密码两种登录鉴权方式（密码可自动生成）。create（拉起）+ show（查询）+ change-os（切换操作系统/系统盘镜像替换，轮询至新镜像生效 + 探 22）+ delete（级联删除 ECS + 系统盘 + EIP + 数据盘，轮询至实例消失，幂等）；非交互，--dry-run 当确认杠杆；新建机默认 24h 定时删除（联删系统盘+EIP，--no-auto-terminate 关闭）。当用户要求『拉起一台 ecs』『创建华为云服务器』『开一台 ecs』『查那台 ecs 状态』『切换 ecs 操作系统』『重置 ecs 镜像』『删除 ecs』『清理 ecs』时使用。Triggers: 拉起ecs, 创建ecs, 开ecs, 华为云ecs, huawei ecs, create ecs, ecs-skill, ecs 状态, 查询ecs, 就绪, 切换os, change os, 重置镜像, change-os, 删除ecs, 删ecs, 清理ecs, delete ecs, 销毁ecs。需要：仓库根 scope.yaml 已配置（ak/sk/region + ecs_create 默认）或 HUAWEICLOUD_SDK_* 环境变量。"
 allowed-tools: Bash, Read
 keywords: 华为云, ecs, 拉起, 创建, 服务器, huawei, cloudserver, 就绪, 公网, eip, 私网, 查询, show, create, 系统盘, disk, flavor, 规格, 密码, password, 密钥, keypair, 鉴权, change-os, 切换, 重置, 镜像, 删除, delete, 清理, 销毁
 ---
@@ -11,6 +11,8 @@ keywords: 华为云, ecs, 拉起, 创建, 服务器, huawei, cloudserver, 就绪
 把一台华为云 ECS 拉起到**就绪**：`create`（创建→轮询 ACTIVE→取可达 IP→探 22）+ `show`（查询单台）+ `change-os`（切换操作系统→轮询至新镜像生效→探 22；旧系统仍 ACTIVE 时不算就绪）+ `delete`（级联删除 ECS + 系统盘 + EIP + 数据盘→轮询至实例消失）。纯 JSON 输出，`logs/` 归档。基于官方 `huaweicloudsdkecs` SDK；脚本拆为 `scripts/ecs.py`（入口/CLI/编排）+ `ecs_client.py`（客户端+凭证）+ `ecs_ops.py`（请求构造）；单测在 `tests/`，覆盖请求构造与 `--dry-run` 端到端。
 
 **默认带公网 EIP**：运行本 skill 的机器通常与新机不在同一 VPC，公网浮动 IP 是可达的唯一路径。本机恰好与新机同 VPC 时用 `--no-eip` 退回私网路径（省 EIP 费用与权限要求）。公网浮动 IP 是默认的可达路径。
+
+**默认 24h 定时删除**：新建机默认设置 `auto_terminate_time = 创建后 24h`，由华为侧到期自动删除，**系统盘随实例释放、EIP 因创建时带 `delete_on_termination=true` 一并释放**（定时删除路径只认创建时的该字段，事后不可补救；手动 `delete` 走 `delete_publicip=true` 强删，与此正交）。API 约束：仅按需实例、最短半小时、最长三年，系统每 5 分钟执行一次。`--terminate-hours <小时>` 覆盖时长，`--no-auto-terminate` 关闭（长期机）；到期前手动 `delete` 照常级联删除，不受影响。创建成功回显 `auto_terminate_time`（UTC）。新建 EIP 一律 `delete_on_termination=true`（本 skill 的 EIP 随机器走：手动 delete 走 `delete_publicip=true` 强删；长期机事后在控制台删机时 EIP 也会一并释放，如需保留 EIP 复用请在删机前先解绑）。
 
 **职责边界**：只交付**一台**就绪机器并报告其可达 IP。**不**批量创建（无 `--count`）、**不**注册 ssh-skill 别名、**不**做 deploy 编排——本 skill 是被当脚本调用的纯 CLI，怎么串步骤是调用方的事。
 
@@ -42,6 +44,10 @@ python .claude/skills/ecs-skill/scripts/ecs.py create --disk-type GPSSD --disk-s
 
 # EIP 带宽覆盖（默认 5 Mbit/s）
 python .claude/skills/ecs-skill/scripts/ecs.py create --bandwidth 10
+
+# 定时删除：默认创建后 24h 华为侧自动删除（联删系统盘+EIP）；覆盖时长或关闭
+python .claude/skills/ecs-skill/scripts/ecs.py create --terminate-hours 4
+python .claude/skills/ecs-skill/scripts/ecs.py create --no-auto-terminate
 
 # 服务端预检（dry_run=true，华为校验请求但不真创建）
 python .claude/skills/ecs-skill/scripts/ecs.py create --validate
@@ -81,6 +87,7 @@ python .claude/skills/ecs-skill/scripts/ecs.py delete --name web-01 --dry-run
 | 网络（vpc/subnet/sg/az） | CLI → scope.ecs_create.server |
 | 系统盘 | `--disk-type`/`--disk-size` → scope `root_volume`；scope 完全没给则注入默认 `{SSD,40}` |
 | EIP 带宽 | `--bandwidth` → scope `publicip.eip.bandwidth.size`（默认 5） |
+| 定时删除 | `--terminate-hours`（默认 24）→ `--no-auto-terminate` 关闭；仅按需实例 |
 | 登录密码 | `--password` → `ECS_ADMIN_PASSWORD` 环境变量 → scope.password |
 
 `--scope <路径>` 可指定其它 scope 文件。**公网可达前提**：默认带 EIP 后，目标安全组须对调用方出口 IP 放行 22。
@@ -109,7 +116,7 @@ python .claude/skills/ecs-skill/scripts/ecs.py delete --name web-01 --dry-run
 {"ok": true, "action": "create", "name": "ecs-a1b2c3", "id": "...",
  "ip": "94.74.107.97", "ip_type": "floating", "status": "ACTIVE", "ssh_port_open": true,
  "region": "...", "flavor": "...", "image": "...", "job_id": "...",
- "auth_method": "password", "admin_pass": "...",
+ "auto_terminate_time": "2026-09-21T10:30:00Z", "auth_method": "password", "admin_pass": "...",
  "log": "~/.claude/skills/ecs-skill/logs/ecs-a1b2c3-<时间>.json"}
 // create 成功（密钥对登录时不回显 admin_pass）
 {"ok": true, ..., "auth_method": "key_pair"}
@@ -154,7 +161,7 @@ python .claude/skills/ecs-skill/scripts/ecs.py delete --name web-01 --dry-run
 
 - **非交互**：`create` / `change-os` 直接执行不 prompt。先看「将提交什么」→ `--dry-run`（不调 API）或 `create --validate`（服务端预检不真创建）。真正的 go/no-go 归人或编排层。
 - **一次一台**：不支持批量，`--count` 已移除；scope 里即使写了 `count` 也不透传。
-- **用完保留**：无论成败都**不自动销毁/回滚**。失败时输出当前状态，用 `show --id` 复查或人工处置。
+- **临时机默认自动回收**：新建机默认 24h 定时删除（见上）；**过程不自动销毁/回滚**——失败时输出当前状态，用 `show --id` 复查或人工处置，排障有时限（到期即删）。
 - **change-os 不改变 EIP**：切换 OS 只替换系统盘，EIP 绑定不变。提交前先探测一次 ECS 是否带 EIP，据此决定就绪 IP 路径（浮动 IP 或私网固定 IP）。`mode` 恒为 `withStopServer`（开机状态自动关机再切换），不暴露给 CLI——切换前的清理步骤需要 ECS 开机运行，中间不应人工关机。
 - **change-os 不自动生成密码**：切换后必须能登录，故凭证不能省。`--password` 与 `--key` 互斥（同时给时密钥对优先）；都不给时从 scope `ecs_create.server.password` 兜底；仍无则报错。
 - **change-os 复用 create 的轮询逻辑**：提交后轮询 ACTIVE + 探 22 的流程与 `create` 一致（复用 `poll_until_ready` + `wait_for_port`），超时/失败均不自动回滚。

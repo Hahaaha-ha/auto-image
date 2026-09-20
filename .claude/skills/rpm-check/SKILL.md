@@ -47,7 +47,7 @@ keywords: rpm, 验证, 安装, 兼容性, openEuler, 指导, install, verify, �
    - 没给 alias → 创建路径：ecs-skill `create --image <目标OS镜像ID>`（**镜像 ID 未提供则停止并要求提供**，不猜测）+ ssh-skill 注册别名，再跑门禁。
 4. **目标 OS**（可选）：默认取配置 `rpm_check.target_os`（openEuler 22.03 LTS）；显式给出时以 prompt 为准（同时要求提供对应的 os-release 匹配值）。
 5. **ECS 规格**（可选；仅创建路径）：flavor / disk-size / bandwidth 等自由文本透传 ecs.py。**架构须与包架构一致**：aarch64 包 → ARM（鲲鹏）规格，x86_64 包 → x86 规格。
-6. **测后处置**（可选）：默认「卸载测试包 + 恢复 yum 源 + 保留 ECS」；**镜像/人工验证诉求时保留最有价值状态**——有「修复后可用」状态则保留之，否则保留忠实实测结束时的现场。用户显式要求清理时才调 ecs-skill delete（云操作不可撤销，执行前向用户复述确认）。
+6. **测后处置**（可选）：默认「卸载测试包 + 恢复 yum 源 + 保留 ECS 至 24h 自动删除」；**镜像/人工验证诉求时保留最有价值状态**——有「修复后可用」状态则保留之，否则保留忠实实测结束时的现场。用户显式要求清理时才调 ecs-skill delete（云操作不可撤销，执行前向用户复述确认）。
 7. **修复尝试开关**（可选）：默认开启（步骤 4.5）；用户要求「只测不修」时跳过。
 
 ## 配置文件
@@ -125,7 +125,7 @@ python <scripts>/ssh_config_manager_v3.py create --alias <别名> --host <IP> --
    不匹配 → **停止**，整体结论 ⊘ 环境不匹配（报告写明当前 OS 与目标 OS），提示出路：换正确机器，或给 instance_id 经 ecs-skill change-os 切换（云操作不可逆，须用户确认后才执行）。
 3. **架构门禁**：`uname -m` vs 包架构——`.aarch64` 须 aarch64、`.x86_64` 须 x86_64、`.noarch` 皆可。不符 → 同上停止。
 4. **环境快照**（合并一次调用，写入报告）：`cat /etc/os-release; uname -m; df -h / /home; free -h; nproc; rpm -qa | grep -i <软件名> || echo NONE`。预装同名包 → 记为初始发现并先卸载（清理动作记录在案）；卸载失败 → 相关方式标记「跳过：已预装且无法卸载」。
-5. **创建路径**（无别名时）：ecs-skill `create --name rpmcheck-<software>-<rand> --image <目标OS镜像ID> [规格参数]` → 取 JSON 的 `ip`/`admin_pass`/`id` → `ssh_config_manager_v3 create` 注册别名（密码只进命令参数）→ 回到 2 跑门禁。机器默认保留，报告注明 alias / instance_id / IP / 基础镜像（镜像 ID + 名称）。
+5. **创建路径**（无别名时）：ecs-skill `create --name rpmcheck-<software>-<rand> --image <目标OS镜像ID> [规格参数]` → 取 JSON 的 `ip`/`admin_pass`/`id` → `ssh_config_manager_v3 create` 注册别名（密码只进命令参数）→ 回到 2 跑门禁。机器保留至 24h 后自动删除（ecs-skill 临时机默认；须更长保留时 create 加 `--no-auto-terminate`），报告注明 alias / instance_id / IP / 基础镜像（镜像 ID + 名称）。
 
 ### 步骤 2 — 逐安装方式实测（忠实执行，不偏离）
 
@@ -219,7 +219,7 @@ python <scripts>/ssh_config_manager_v3.py create --alias <别名> --host <IP> --
 ### 步骤 5 — 恢复现场与报告落盘
 
 1. **恢复**（默认执行，逐条记录）：卸载测试包（`rpm -e <包名>`）；恢复 yum 源（`tar xzf` 备份回 `/`，并 diff 校验）；删除 `/home` 下指导下载的 rpm 文件。**有镜像/人工验证诉求时按输入 6 保留最有价值状态**（修复后可用 > 忠实实测现场），并在报告中写明保留的是哪个状态、包含哪些变更。
-2. **ECS**：默认保留，报告注明 alias / instance_id / IP 与清理命令（`ecs.py delete --id …`）；用户显式要求清理 → 先复述不可撤销，确认后执行 delete + 删 ssh 别名。
+2. **ECS**：默认保留至 24h 后自动删除（ecs-skill 临时机默认），报告注明 alias / instance_id / IP 与清理命令（`ecs.py delete --id …`，等不及到期可立即删）；须更长保留 → ecs.py 加 `--no-auto-terminate` 重建或在到期前处理；用户显式要求清理 → 先复述不可撤销，确认后执行 delete + 删 ssh 别名。
 3. **Write** `<result_file>`（+ 有问题时 `<issues_file>`，问题须含修复尝试与结果）。
 4. 对话回复：**整体结论（含修复后状态）+ 报告路径 + 问题文件路径**。
 
@@ -338,4 +338,4 @@ python <scripts>/ssh_config_manager_v3.py create --alias <别名> --host <IP> --
 
 > rpm-check 验证这份指导的 rpm 包在 openEuler 22.03 LTS 能否安装，镜像 ID：<image-id>，指导：<全文>
 
-自动 ecs-skill create（aarch64 包选 ARM 规格）+ 注册别名 + 门禁 + 同上流程；报告注明保留的 ECS（alias/instance_id/ip）与清理命令。
+自动 ecs-skill create（aarch64 包选 ARM 规格）+ 注册别名 + 门禁 + 同上流程；报告注明保留的 ECS（alias/instance_id/ip，24h 后自动删除）与清理命令。
