@@ -33,6 +33,7 @@ ecs_create:
     root_volume:
       volumetype: SSD            # 系统盘类型；CLI --disk-type 可覆盖（SSD/GPSSD/SAS...）
       size: 40                   # 系统盘大小 GB；不给则退到镜像最小磁盘要求（Ubuntu 24.04 为 10 GB，偏小）
+    terminate_hours: 24          # 定时删除时长（小时，API 范围 0.5-26280）；CLI --terminate-hours 可覆盖，--no-auto-terminate 关闭。默认 24。
     # 登录鉴权方式为密钥对与密码二选一。留空 key_name + 留空/不写 password → 自动生成强密码。
     key_name: ""                 # 已有密钥对时填入；CLI --key 可覆盖。留空走密码通道。
     key_file: ""                 # 密钥对对应的本地私钥路径（如 ~/.ssh/ecs_key.pem）。deploy-install 消费此字段注册 ssh-skill 的 IdentityFile；ecs-skill 不感知此字段。

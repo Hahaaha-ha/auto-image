@@ -262,18 +262,27 @@ def _require_fields(spec: dict[str, Any], args: Namespace) -> None:
         )
 
 
-def resolve_auto_terminate_time(args: Namespace) -> str | None:
+def resolve_auto_terminate_time(scope: dict[str, Any], args: Namespace) -> str | None:
     """定时删除时刻：UTC ISO8601（yyyy-MM-ddTHH:mm:ssZ），秒归零。
 
-    --no-auto-terminate 关闭；--terminate-hours 覆盖时长（默认 24h）。
-    边界对齐 API：最短半小时后、最长三年；不合规早炸不发 API。
-    ``args._now`` 为可注入时钟（测试缝），缺省取真实当前时刻。
+    --no-auto-terminate 关闭；时长优先级 CLI --terminate-hours > scope
+    ecs_create.server.terminate_hours > 默认 24h。边界对齐 API：最短半小时后、
+    最长三年；不合规早炸不发 API。``args._now`` 为可注入时钟（测试缝），
+    缺省取真实当前时刻。
     """
     if getattr(args, "no_auto_terminate", False):
         return None
     hours = getattr(args, "terminate_hours", None)
     if hours is None:
-        hours = DEFAULT_TERMINATE_HOURS
+        raw = _server_spec(scope).get("terminate_hours")
+        if raw is None:
+            hours = DEFAULT_TERMINATE_HOURS
+        elif isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise ValueError(
+                f"scope ecs_create.server.terminate_hours 须为数字（小时），实得 {raw!r}。"
+            )
+        else:
+            hours = raw
     # math.isnan 在 both-comparisons-false 时漏网，显式拦下
     if hours != hours or hours < MIN_TERMINATE_HOURS or hours > MAX_TERMINATE_HOURS:
         raise ValueError(
@@ -288,6 +297,10 @@ def resolve_auto_terminate_time(args: Namespace) -> str | None:
         at = at.replace(second=0, microsecond=0) + timedelta(minutes=1)
     else:
         at = at.replace(second=0, microsecond=0)
+    # 真机冒烟（Ecs.0005）证实恰 30:00 被拒：服务端按自身时钟严格比较，且与本地
+    # 存在秒级偏差。下界附近补 1 分钟缓冲，只影响 0.5h 附近的请求。
+    if at - now <= timedelta(minutes=30):
+        at += timedelta(minutes=1)
     return at.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -328,7 +341,7 @@ def build_create_request(scope: dict[str, Any], args: Namespace) -> CreateServer
 
     server = PrePaidServer(
         name=name,
-        auto_terminate_time=resolve_auto_terminate_time(args),
+        auto_terminate_time=resolve_auto_terminate_time(scope, args),
         image_ref=args.image or spec.get("imageRef"),
         flavor_ref=args.flavor or spec.get("flavorRef"),
         vpcid=vpcid,

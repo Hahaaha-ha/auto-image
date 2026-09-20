@@ -384,6 +384,46 @@ def test_dry_run_terminate_flags_mutually_exclusive():
     assert payload is None, f"stdout 应为空，实得 {payload!r}"
 
 
+def test_terminate_hours_from_scope():
+    """CLI 不给 → 用 scope server.terminate_hours（默认 24 进 scope 可配）。"""
+    scope = make_scope(terminate_hours=48)
+    req = build_create_request(scope, make_args(_now=datetime(2026, 9, 20, 10, 30, 0)))
+    assert req.body.server.auto_terminate_time == "2026-09-22T10:30:00Z", \
+        f"实得 {req.body.server.auto_terminate_time!r}"
+
+
+def test_cli_terminate_hours_overrides_scope():
+    """CLI --terminate-hours 压过 scope terminate_hours。"""
+    scope = make_scope(terminate_hours=48)
+    req = build_create_request(scope, make_args(terminate_hours=4, _now=datetime(2026, 9, 20, 10, 30, 0)))
+    assert req.body.server.auto_terminate_time == "2026-09-20T14:30:00Z", \
+        f"实得 {req.body.server.auto_terminate_time!r}"
+
+
+def test_scope_invalid_terminate_hours_raises():
+    """scope terminate_hours 非数字/bool → 早炸，不发 API。"""
+    for bad in ("abc", True):
+        scope = make_scope(terminate_hours=bad)
+        try:
+            build_create_request(scope, make_args())
+        except ValueError as e:
+            assert "terminate_hours" in str(e), f"报错应点名 terminate_hours，实得：{e}"
+        else:
+            raise AssertionError(f"scope terminate_hours={bad!r} 应抛 ValueError")
+
+
+def test_scope_terminate_hours_bounds_still_enforced():
+    """scope 配的越界值同样被边界校验拦下。"""
+    for bad in (0.1, 24 * 365 * 3 + 1):
+        scope = make_scope(terminate_hours=bad)
+        try:
+            build_create_request(scope, make_args())
+        except ValueError as e:
+            assert "定时删除" in str(e), f"报错应说明定时删除，实得：{e}"
+        else:
+            raise AssertionError(f"scope terminate_hours={bad} 应抛 ValueError")
+
+
 # ---- 缝 B：命令行入口的 dry-run 端到端 ----
 def test_dry_run_contract():
     """create --dry-run：stdout 是纯 JSON、标记 dry_run、退出码 0。"""
@@ -1338,14 +1378,14 @@ def test_terminate_hours_bounds():
 
 
 def test_min_half_hour_kept_after_ceil():
-    """0.5h 下界 + 秒非零：取整向后进位，实际提前量不跌破半小时（API 硬约束）。"""
+    """0.5h 下界：取整 + 1 分钟缓冲后，实际提前量严格大于半小时（真机 Ecs.0005 证实恰 30:00 被拒）。"""
     for sec in (0, 1, 30, 59):
         req = build_create_request(
             make_scope(), make_args(terminate_hours=0.5, _now=datetime(2026, 9, 20, 10, 30, sec)))
         got = datetime.strptime(req.body.server.auto_terminate_time, "%Y-%m-%dT%H:%M:%SZ")
         base = datetime(2026, 9, 20, 10, 30, 0)
-        assert (got - base) >= timedelta(minutes=30), \
-            f"秒={sec} 时提前量不足半小时，实得 {req.body.server.auto_terminate_time!r}"
+        assert (got - base) > timedelta(minutes=30), \
+            f"秒={sec} 时提前量须严格大于半小时（服务端按自身时钟严格比较），实得 {req.body.server.auto_terminate_time!r}"
 
 
 def test_publicip_delete_on_termination_true():

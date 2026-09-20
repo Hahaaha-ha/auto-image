@@ -87,7 +87,7 @@ python .claude/skills/ecs-skill/scripts/ecs.py delete --name web-01 --dry-run
 | 网络（vpc/subnet/sg/az） | CLI → scope.ecs_create.server |
 | 系统盘 | `--disk-type`/`--disk-size` → scope `root_volume`；scope 完全没给则注入默认 `{SSD,40}` |
 | EIP 带宽 | `--bandwidth` → scope `publicip.eip.bandwidth.size`（默认 5） |
-| 定时删除 | `--terminate-hours`（默认 24）→ `--no-auto-terminate` 关闭；仅按需实例 |
+| 定时删除 | `--terminate-hours` → scope `ecs_create.server.terminate_hours`（默认 24）→ `--no-auto-terminate` 关闭；仅按需实例 |
 | 登录密码 | `--password` → `ECS_ADMIN_PASSWORD` 环境变量 → scope.password |
 
 `--scope <路径>` 可指定其它 scope 文件。**公网可达前提**：默认带 EIP 后，目标安全组须对调用方出口 IP 放行 22。
