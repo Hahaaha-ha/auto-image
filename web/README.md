@@ -26,10 +26,20 @@ WEB_HOST=0.0.0.0 WEB_PORT=8123 python -m web   # 外部可访问（见下）
 WEB_STATE_PATH=/tmp/x.json python -m web       # 簿记隔离（同 HOME 多实例并行）
 ```
 
-默认只监听 127.0.0.1（无认证服务，能访问即能触发真实云操作）。
-需要外部机器的浏览器访问时，`WEB_HOST=0.0.0.0` 绑定全部网卡，
-经 `http://<本机IP>:<端口>/` 访问——暴露面由运行者的网络策略
-（安全组/防火墙）控制，风险自担。
+登录制多用户：`users.yaml`（范本 `users.yaml.example`）放仓库根，用户名 +
+PBKDF2 哈希 + 启用状态，按 mtime 热载；Cookie 登录态（HttpOnly、
+SameSite=Lax、HMAC 签名、7 天绝对过期）。会话控制面按 owner 隔离：登录
+用户的会话列表、摘要、事件快照与发送、停止、Fork、结束都按 owner 授权
+（他人与未知 run 同一 404，不泄露存在性）；Fork 继承源 owner；重启后归属
+随簿记恢复，legacy 无 owner 历史会话归 `WEB_DEFAULT_OWNER`（缺省
+`admin`）。控制审计落 `~/.auto-image-web/audit/`（按天轮转、默认留
+90 天）；审计写失败时控制动作 503 不执行。改密/禁用即时撤销该用户登录
+态；`WEB_AUTH_SECRET` 轮换全体失效。全局事件流按 owner 过滤尚未实现
+（后续切片）；此前不要把 `/api/stream` 暴露给不互信的用户。
+
+默认只监听 127.0.0.1。需要外部机器的浏览器访问时，`WEB_HOST=0.0.0.0`
+绑定全部网卡，经 `http://<本机IP>:<端口>/` 访问——暴露面由运行者的网络
+策略（安全组/防火墙）控制，风险自担。
 
 前端两种打开方式：
 
@@ -70,6 +80,7 @@ python web/tests/test_events.py     # 事件存储、快照与全局订阅
 python web/tests/test_fixture_isolation.py # 通用 fixture 的生产依赖哨兵
 python web/tests/test_history.py    # 列表摘要、可续聊约束、假 transcript 驱动的重启重放
 python web/tests/test_normalize.py  # 消息映射与阶段推导纯函数断言
+python web/tests/test_owner_acl.py  # owner 会话隔离（双认证客户端互不可见/不可控）
 python web/tests/test_redact.py     # 事件出口脱敏（形状正则 + 已知值清单）
 python web/tests/test_sdk.py        # options 契约（身份、Fork、系统提示词、无值守写权限）
 python web/tests/test_state.py      # 身份映射、墓碑与 Fork 来源簿记
@@ -82,15 +93,17 @@ cd web-ui && npm test && npm run build    # 前端完整测试与生产构建
 
 | 文件 | 职责 |
 | --- | --- |
-| `app.py` | FastAPI 应用工厂、API 路由（含 `GET /api/runs` 列表）、SSE 通道两条（全局流常驻广播 + per-run 快照：id=seq、Last-Event-ID 重放、重放完即断）、启动接线（重放恢复 + 残留 CLI 告警） |
-| `runs.py` | 会话状态机（READY/RUNNING/ENDED 三态、无全局门禁）、回合计数（`WEB_MAX_PARALLEL_RUNS`）、Fork（内部 `clone` 路由）/end 校验与 409 判定收敛（turn_in_progress / session_running / parallel_limit_reached / session_not_active） |
+| `app.py` | FastAPI 应用工厂、API 路由（含 `GET /api/runs` 列表，按当前登录用户过滤 owner）、SSE 通道两条（全局流常驻广播 + per-run 快照：id=seq、Last-Event-ID 重放、重放完即断）、启动接线（重放恢复 + legacy 归属迁移 + 残留 CLI 告警） |
+| `auth.py` | 文件用户清单（`users.yaml`，mtime 热载）与 Cookie 登录态：PBKDF2 口令校验、HMAC 签名令牌（携带密码版本指纹——改密/禁用即撤销该用户 Cookie）、认证密钥解析（`WEB_AUTH_SECRET`，缺省机器派生） |
+| `audit.py` | 控制审计（本地追加 JSONL，按天轮转默认留 90 天）：登录/登出与会话控制动作，带 actor、动作、run id、run owner、结果、拒绝原因与 request id；写失败抛 `AuditWriteError` 由控制动作 503 阻断 |
+| `runs.py` | 会话状态机（READY/RUNNING/ENDED 三态、无全局门禁）、owner 归属（创建注入、Fork 继承）、校验/置位分离（check_* 纯校验 + commit 置位，控制动作审计前置用）、回合计数（`WEB_MAX_PARALLEL_RUNS`）、Fork/end 校验与 409 判定收敛（turn_in_progress / session_running / parallel_limit_reached / session_not_active） |
 | `events.py` | 进程内事件存储：seq 递增、快照重放、全局订阅唤醒 |
 | `session.py` | 回合执行（send 起回合级 asyncio.Task，SDK 连接只包住一个回合；停止意图覆盖连接建立前与 query 前的启动窗口） |
 | `normalize.py` | SDK 消息 → 内部事件映射、阶段推导 |
 | `artifacts.py` | deploy/ + rpm/ 多根全量产物浏览（目录分组 + 最新落盘排序，约定文件带阶段徽标）、内容读取、单文件下载与批量 zip、路径约束 |
 | `redact.py` | 事件出口脱敏（运行时已知值清单 + AK/SK、密码字段、私钥块形状正则） |
-| `rebuild.py` | 服务重启后的恢复（单一流程）：全量 transcript 按 session 粒度重放 + state 簿记叠加——身份映射命中的沿用原 run_id，墓碑会话标 ENDED；其余重放会话 READY 可续聊，未收尾回合（transcript 推导 turn_open）补 `turn.interrupted` 不伪造完成 |
-| `state.py` | 恢复簿记（`~/.auto-image-web/state.json`，全量原子替换）：墓碑（用户 ENDED 的 session_id 集合）+ 身份映射（run_id ↔ session_id）+ Fork 来源镜像（session_id → 来源 run_id），仅此三样（stage/title/first_prompt 从 transcript 重放推导）；损坏降级为空簿记重放，不阻断启动 |
+| `rebuild.py` | 服务重启后的恢复（单一流程）：全量 transcript 按 session 粒度重放 + state 簿记叠加——身份映射命中的沿用原 run_id 并恢复 owner 归属，墓碑会话标 ENDED；其余重放会话 READY 可续聊，未收尾回合（transcript 推导 turn_open）补 `turn.interrupted` 不伪造完成 |
+| `state.py` | 恢复簿记（`~/.auto-image-web/state.json`，全量原子替换）：墓碑（用户 ENDED 的 session_id 集合）+ 身份映射（run_id ↔ session_id）+ Fork 来源镜像（session_id → 来源 run_id）+ owner 归属（run_id → 用户；与身份映射同生命周期登记）（stage/title/first_prompt 从 transcript 重放推导）；损坏降级为空簿记重放，不阻断启动 |
 | `title.py` | 会话标题 LLM 生成（Codex 同构，research/codex-session-title.md）：首条指令到达即起一次性无工具会话生成，成功落 run.title + `session.title_changed` 事件 + transcript custom-title 行；失败静默维持截断标题；Fork 会话继承源标题不再生成 |
 | `sdk.py` | ClaudeSDKClient 生产实现：目标身份/上下文来源/Fork 启动意图、options 全配、消息形状适配、工厂、历史读取包装 |
 | `fake.py` | 脚本化假会话（默认剧本含敏感样例），测试注入用 |

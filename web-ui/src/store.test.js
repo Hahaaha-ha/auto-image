@@ -126,6 +126,30 @@ describe('认证态', () => {
     expect(store.getState().user).toBeNull()
   })
 
+  it('登出清空会话视图：同浏览器换账号不残留上一个用户的会话', async () => {
+    // bob 登录并「看到」自己的会话（列表 + 标签页 + 草稿）
+    const bobSession = {
+      run_id: 'run_bob', status: 'READY', stage: null, first_prompt: 'bob 的部署',
+      title: null, started_at: 1, ended_at: null, last_event_at: 2, resumed_from: null,
+    }
+    mockFetch(async (url) => {
+      if (url === '/api/auth/me') return { ok: true, json: async () => ({ username: 'bob' }) }
+      if (url === '/api/runs') return { ok: true, json: async () => ({ runs: [bobSession] }) }
+      if (url === '/api/tasks') return { ok: true, json: async () => ({ tasks: [] }) }
+      return { ok: true, json: async () => ({}) }
+    })
+    await store.initAuth()
+    await vi.waitFor(() => expect(store.getState().order).toContain('run_bob'))
+    store.setDraft('run_bob', 'bob 未发出的草稿')
+
+    mockFetch(async () => ({ ok: true, json: async () => ({}) }))
+    await store.logout()
+    // 会话列表、序、草稿全清——登录壳不持有任何会话数据
+    expect(store.getState().runs).toEqual({})
+    expect(store.getState().order).toEqual([])
+    expect(store.draftOf('run_bob')).toBe('')
+  })
+
   it('登出→再登录：轮询计时器重建（同页不掉轮询）', async () => {
     const loggedIn = async (url) => {
       if (url === '/api/auth/me') return { ok: true, json: async () => ({ username: 'bob' }) }

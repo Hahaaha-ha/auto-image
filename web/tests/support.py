@@ -17,11 +17,16 @@ from web.fake import FakeSessionFactory
 
 
 TEST_HEARTBEAT = 0.05
-# 测试默认用户清单：tester 可登录，ghost 预置禁用（撤销类测试现成素材）
+# 测试默认用户清单：tester 可登录，alice/bob 是两个普通用户（owner ACL
+# 测试的对立双方），ghost 预置禁用（撤销类测试现成素材），admin 供 legacy
+# 迁移归属
 TEST_PASSWORD = "test-password"
 TEST_USERS = {
     "tester": TEST_PASSWORD,
+    "alice": TEST_PASSWORD,
+    "bob": TEST_PASSWORD,
     "ghost": TEST_PASSWORD,
+    "admin": TEST_PASSWORD,
 }
 
 
@@ -65,6 +70,9 @@ def make_test_app(*, session_factory=None, title_factory=None, **overrides):
         "task_dir": test_root / "task",
         "users_path": test_root / "users.yaml",
         "audit_dir": test_root / "audit",
+        # legacy 迁移归属默认给 tester：既有主缝测试以 tester 登录，重启
+        # 恢复的无 owner 历史会话对其可见（多用户 ACL 测试可显式覆盖）
+        "default_owner": "tester",
         # 产物根也隔离到临时目录：任务跟踪的产物确认扫描会读 deploy/rpm 树，
         # 不能被真实仓库的运行时产物污染（个别测试显式覆盖时以此为准）
         "artifact_roots": {name: test_root / name for name in ("deploy", "rpm", "rpmcheck", "hce")},

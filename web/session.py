@@ -5,7 +5,7 @@
 （生产包装 ClaudeSDKClient，测试注入脚本化假实现），工厂收到明确的目标
 身份、上下文来源和 Fork 意图，返回支持 async with 的对象。
 
-停止的服务端语义：request_stop 置 stop_requested 后，已有 live adapter
+停止的服务端语义：stop_requested 置位后，已有 live adapter
 由 HTTP 层调 interrupt；尚在连接窗口的意图由 run_turn 在 query 前消费。
 回合收尾按该标记区分 turn.stopped 与 turn.completed（真 SDK 被打断的
 回合以 result=None 的 error Result 收尾，但判定以本端标记为权威）。
@@ -137,7 +137,7 @@ def _finish(run, store, message):
     """回合收尾：停止请求优先（turn.stopped）；Result 的错误 subtype 以
     TurnFailure 抛给 run_turn 的异常收尾（turn.failed）。
 
-    与 request_stop 的标记置位同为同步块，在单线程事件循环上互斥执行，
+    与停止标记置位同为同步块，在单线程事件循环上互斥执行，
     不存在「半停半完成」的交错。subtype 判定取兜底：只有 success 是正常
     完成，其余（error_max_turns、执行错误等文案不可穷尽）一律失败。
     """

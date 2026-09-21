@@ -48,11 +48,12 @@ def open_turn_transcript():
     ]
 
 
-def write_state(path, ended_sessions=(), sessions=None, clone_sources=None):
+def write_state(path, ended_sessions=(), sessions=None, clone_sources=None, owners=None):
     path.write_text(json.dumps({
         "ended_sessions": list(ended_sessions),
         "sessions": sessions or {},
         "clone_sources": clone_sources or {},
+        "owners": owners or {},
     }, ensure_ascii=False), encoding="utf-8")
 
 
@@ -92,17 +93,17 @@ async def test_save_load_roundtrip_tombstones_and_id_map():
         # 损坏/形状不对：空册降级，不阻断
         (Path(d) / "corrupt.json").write_text("not json{", encoding="utf-8")
         assert load_state(Path(d) / "corrupt.json") == {
-            "ended_sessions": set(), "sessions": {}, "clone_sources": {}}
+            "ended_sessions": set(), "sessions": {}, "clone_sources": {}, "owners": {}}
         (Path(d) / "badshape.json").write_text(
             json.dumps({"ended_sessions": "x", "sessions": [1]}), encoding="utf-8")
         assert load_state(Path(d) / "badshape.json") == {
-            "ended_sessions": set(), "sessions": {}, "clone_sources": {}}
+            "ended_sessions": set(), "sessions": {}, "clone_sources": {}, "owners": {}}
         # 部分损坏整体弃册（半份无从判真）：墓碑损坏时不挑拣保留映射
         (Path(d) / "partial.json").write_text(json.dumps(
             {"ended_sessions": "x", "sessions": {"run_1": "sess_live"},
              "clone_sources": {}}), encoding="utf-8")
         assert load_state(Path(d) / "partial.json") == {
-            "ended_sessions": set(), "sessions": {}, "clone_sources": {}}
+            "ended_sessions": set(), "sessions": {}, "clone_sources": {}, "owners": {}}
 
 
 async def test_old_state_format_discarded_not_parsed():

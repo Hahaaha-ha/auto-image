@@ -1,9 +1,9 @@
 """控制审计：本地追加式 JSONL 文件，按天轮转，默认保留 90 天。
 
 每条记录：time（ISO 本地时）、actor、action、result、request_id 必填，
-run_id / run_owner / reason 按动作带上。审计不写 Cookie、密码、AK/SK、
-完整 prompt 或 OBS 对象内容——调用方只传元数据（发送指令只记长度与
-摘要 hash，后续接线时约定）。
+run_id / run_owner / reason（拒绝原因）/ meta（动作元数据，如发送指令
+只记长度与摘要 hash）按动作带上。审计不写 Cookie、密码、AK/SK、
+完整 prompt 或 OBS 对象内容——调用方只传元数据。
 
 写入失败抛 AuditWriteError：控制动作（登录成功、登出等状态变更类）先落
 审计再执行，审计失败即 503 不放行；只读路径的审计失败不阻断（如常返回）。
@@ -86,9 +86,11 @@ class ControlAudit:
         self._prune(now_ts)
 
     def record(self, *, actor, action, result, request_id,
-               run_id=None, run_owner=None, reason=None):
+               run_id=None, run_owner=None, reason=None, meta=None):
         """追加一条审计。失败抛 AuditWriteError（由调用方决定 503 与否）；
-        记录内容不含敏感值——调用方约定。"""
+        reason 是拒绝原因（拒绝类记录专用），meta 是动作元数据（如发送
+        指令的长度与摘要 hash）——两者不混用同一字段。记录内容不含敏感值
+        ——调用方约定。"""
         now = time.time()
         record = {
             "time": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
@@ -103,6 +105,8 @@ class ControlAudit:
             record["run_owner"] = run_owner
         if reason is not None:
             record["reason"] = reason
+        if meta is not None:
+            record["meta"] = meta
         self._write({"day": time.strftime("%Y-%m-%d", time.localtime(now)),
                      "_ts": now, "record": record})
 

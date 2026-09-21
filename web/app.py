@@ -5,7 +5,7 @@
 结束响应；全局流常驻广播全部会话的实时事件，空闲按 heartbeat_interval
 发 `: ping` 注释行保活。
 
-停止的执行动作（session.interrupt）在 request_stop 置标记之后由 HTTP 层
+停止的执行动作（session.interrupt）在 stop_requested 置位之后由 HTTP 层
 调用；连接仍在建立时只保留停止意图，run_turn 会在 query 前消费。标记与
 回合收尾在单线程事件循环上互斥，interrupt 晚于回合结束时停止目标已达成，
 无需把失败放大成错误。
@@ -15,6 +15,7 @@ end 的收尾序列（RUNNING 中）：end 校验 → 取消在飞回合任务�
 不替前端判终态：session.ended 本身在历史里，重放完毕自然断开。
 """
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -72,6 +73,8 @@ DEFAULT_MAX_PARALLEL_RUNS = 10
 # 用户清单与控制审计（多用户隔离基础；审计按天轮转默认留 90 天）
 DEFAULT_USERS_PATH = auth_mod.DEFAULT_USERS_PATH
 DEFAULT_AUDIT_DIR = Path.home() / ".auto-image-web" / "audit"
+# legacy 无 owner 会话的迁移归属（部署配置显式指定；不从用户清单推断）
+DEFAULT_OWNER = os.environ.get("WEB_DEFAULT_OWNER", "admin")
 
 # 认证旁路：登录端点与静态壳（index.html/JS/CSS——不含业务数据，前端壳
 # 加载后自己查 /api/auth/me 决定登录壳还是数据面）；其余一切 API、全局
@@ -83,6 +86,7 @@ PUBLIC_PATH_PREFIXES = ("/api/auth/login",)
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 # 拒绝原因判定值（审计 reason 与测试断言同源引用）；actor 未知时的占位
 REASON_CROSS_ORIGIN = "cross_origin"
+REASON_NOT_OWNER = "not_owner"
 UNKNOWN_ACTOR = "-"
 
 
@@ -94,7 +98,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
                obs_upload_zip_fn=None, obs_health_fn=None,
                ecs_list_fn=None, ecs_check_fn=None, ecs_create_fn=None, ecs_defaults_fn=None,
     state_path=None, title_factory=None, max_parallel_runs=None, task_dir=None,
-    users_path=None, audit_dir=None, auth_secret=None):
+    users_path=None, audit_dir=None, auth_secret=None, default_owner=None):
     """session_factory 可注入：生产为 ClaudeSDKClient 真实现（默认），
     测试注入按剧本推消息的假实现——注入边界即唯一测试缝。artifact_roots
     （根名 → 目录映射）与 deploy_config 同理注入（产物目录与文件名约定
@@ -111,7 +115,9 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     缺省 10；测试注入收紧）。
     users_path 为用户清单（默认项目根 users.yaml；mtime 热载），audit_dir
     为控制审计目录（默认 HOME 下固定位置），auth_secret 为认证签名密钥
-    （默认 WEB_AUTH_SECRET，再缺省机器派生——三者皆为测试缝）。"""
+    （默认 WEB_AUTH_SECRET，再缺省机器派生——三者皆为测试缝）。default_owner
+    为 legacy 无 owner 会话的迁移归属（默认 WEB_DEFAULT_OWNER，再缺省
+    admin；测试缝）。"""
     # 已知凭据值入脱敏清单（幂等；scope 缺失时只剩形状正则防线）
     redact_mod.load_scope_secrets(scope_config or DEFAULT_SCOPE_CONFIG)
     app = FastAPI(title="auto-image deploy web")
@@ -229,7 +235,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
 
     def maybe_assign_title(run, text, is_first):
         """新对话的首条指令到达即起标题生成（Codex 同构：不等回合完成）。
-        is_first 由调用方在 begin_turn 前快照（begin_turn 首条指令写
+        is_first 由调用方在回合开卷前快照（commit_turn 首条指令写
         first_prompt，事后无法判定）——续聊/克隆/重启恢复的老会话一律不再
         生成（否则续聊指令被总结成「继续执行任务」类标题）。"""
         if is_first:
@@ -239,7 +245,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         return None
 
     def start_turn(run, text):
-        """起回合任务（begin_turn 校验通过后调用）：按回合开合连接，
+        """起回合任务（回合校验通过并置位后调用）：按回合开合连接，
         收尾即散；任务引用挂 run 供 stop / end 定向。"""
         run.turn_task = asyncio.create_task(run_turn(run, text, factory, store, on_change=persist))
 
@@ -257,6 +263,12 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     )
     if restored:
         logging.getLogger("web").info("服务重启后重放恢复 %d 条会话（可续聊）", len(restored))
+    # legacy 迁移：簿记无 owner 记录的重放会话归默认 owner（历史数据有确定
+    # 归属）；现代记录缺 owner 的严格化处理归后续恢复切片
+    legacy_owner = default_owner or DEFAULT_OWNER
+    for r in restored:
+        if r.owner is None:
+            r.owner = legacy_owner
     residual_pids = (residual_cli_scan or residual_cli_processes)()
     if residual_pids:
         logging.getLogger("web").warning(
@@ -324,6 +336,29 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         except audit_mod.AuditWriteError:
             raise HTTPException(status_code=503, detail="audit unavailable")
 
+    def _audit_denied(request: Request, action: str, run=None, reason: str = REASON_NOT_OWNER):
+        """被拒绝的控制动作入审计（尽力而为）：写失败只告警，拒绝响应照常
+        返回——拒绝不改变状态，审计不可用不能把拒绝放大成 500。默认场景是
+        owner 校验拒绝（404），状态机拒绝（409）由调用方带 reason。"""
+        audit_best_effort(actor=request.state.username, action=action,
+                          result="denied", request_id=request_id(request),
+                          run_id=run.run_id if run is not None else None,
+                          run_owner=run.owner if run is not None else None,
+                          reason=reason)
+
+    def _owned_run_or_404(request: Request, run_id: str, action: str | None = None):
+        """owner 校验统一入口：未知 run 与非 owner run 同一 404（不泄露会话
+        存在性）。action 给定时是控制入口（发送/停止/Fork/结束）——拒绝先入
+        审计（尽力而为）再 404；只读入口（摘要/快照）不产生拒绝审计。
+        审计里区分未知 run 与他人 run 没有意义（对外同为 404），统一
+        not_owner。"""
+        run = manager.get(run_id)
+        if run is None or run.owner != request.state.username:
+            if action is not None:
+                _audit_denied(request, action, run=run)
+            raise HTTPException(status_code=404, detail="run not found")
+        return run
+
     async def _json_body(request: Request):
         try:
             body = await request.json()
@@ -332,12 +367,18 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         return body if isinstance(body, dict) else {}
 
     @app.get("/api/runs")
-    async def list_runs():
-        return {"runs": manager.summaries()}
+    async def list_runs(request: Request):
+        return {"runs": manager.summaries(owner=request.state.username)}
 
     @app.post("/api/runs")
-    async def create_run(body: dict | None = None):
-        run = manager.create()
+    async def create_run(request: Request, body: dict | None = None):
+        # owner 由服务端从登录身份注入（客户端请求体任何字段都不构成归属
+        # 声明）；draft 不注册，审计成功才入册——审计失败不留下半创建会话
+        run = manager.draft(owner=request.state.username)
+        _audit_or_503(actor=request.state.username, action="create_run",
+                      result="success", request_id=request_id(request),
+                      run_id=run.run_id, run_owner=run.owner)
+        manager.register(run)
         store.create(run.run_id)
         # 会话流同步开卷：session.started 先行（无历史转录——续接语义已由
         # clone 承担，新建即全新会话）
@@ -346,8 +387,9 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         return {"run_id": run.run_id, "status": run.status, "resumed_from": run.resumed_from}
 
     @app.get("/api/runs/{run_id}")
-    async def get_run(run_id: str):
-        return _get_run_or_404(manager, run_id).summary()
+    async def get_run(run_id: str, request: Request):
+        run = _owned_run_or_404(request, run_id)
+        return run.summary()
 
     # 任务清单（无会话依赖，同产物清单）：rpm-*/deploy-* 流水线任务的
     # 注册表视图，事件观察者实时维护
@@ -418,7 +460,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     # 该会话转 RUNNING（mark_running 先于 start_turn，首个 stage.changed
     # 即认领本任务）。非 INIT（已运行/已收尾）409；未知 404。
     @app.post("/api/tasks/{task_id}/run")
-    async def run_task(task_id: str):
+    async def run_task(task_id: str, request: Request):
         task = task_store.get(task_id)
         if task is None:
             raise HTTPException(status_code=404, detail="task not found")
@@ -426,13 +468,25 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
             raise HTTPException(
                 status_code=409, detail=f"task not in INIT (current: {task.get('status')})")
         prompt = tasks_mod.build_task_prompt(task.get("spec") or {})
-        run = manager.create()
+        # 会话创建与首回合：owner 注入 + 审计前置（与 create_run / send 同构）
+        run = manager.draft(owner=request.state.username)
+        try:
+            manager.check_turn(run)
+        except runs_mod.Conflict as exc:
+            _audit_denied(request, "create_run", run, reason=exc.detail)
+            raise HTTPException(status_code=409, detail=exc.detail) from exc
+        _audit_or_503(actor=request.state.username, action="create_run",
+                      result="success", request_id=request_id(request),
+                      run_id=run.run_id, run_owner=run.owner)
+        manager.register(run)
         store.create(run.run_id)
         store.append(run.run_id, "session.started", {})
-        try:
-            manager.begin_turn(run, prompt)
-        except runs_mod.Conflict as exc:
-            raise HTTPException(status_code=409, detail=exc.detail) from exc
+        manager.commit_turn(run, prompt)
+        # 首回合发送与 send 同构：send 审计前置（此时回合已必然可开——
+        # 新建会话刚创建，check_turn 已过）
+        _audit_or_503(actor=request.state.username, action="send", result="success",
+                      request_id=request_id(request), run_id=run.run_id,
+                      run_owner=run.owner, meta=_prompt_meta(prompt))
         store.append(run.run_id, "turn.started", {})
         store.append(run.run_id, "user.message", {"text": prompt})
         maybe_assign_title(run, prompt, True)
@@ -442,16 +496,23 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         return {"task_id": task_id, "run_id": run.run_id, "status": "RUNNING"}
 
     @app.post("/api/runs/{run_id}/messages")
-    async def send_message(run_id: str, body: dict):
-        run = _get_run_or_404(manager, run_id)
+    async def send_message(run_id: str, request: Request, body: dict):
+        actor = request.state.username
+        run = _owned_run_or_404(request, run_id, action="send")
         text = (body or {}).get("text")
         if not isinstance(text, str) or not text.strip():
             raise HTTPException(status_code=422, detail="text required")
-        is_first = run.first_prompt is None  # 快照先于 begin_turn（它写 first_prompt）
+        is_first = run.first_prompt is None  # 快照先于 commit_turn（它写 first_prompt）
         try:
-            manager.begin_turn(run, text)
+            manager.check_turn(run)
         except runs_mod.Conflict as exc:
+            _audit_denied(request, "send", run, reason=exc.detail)
             raise HTTPException(status_code=409, detail=exc.detail) from exc
+        # 发送审计：指令内容不入审计，只记长度与摘要 hash（meta）
+        _audit_or_503(actor=actor, action="send", result="success",
+                      request_id=request_id(request), run_id=run.run_id,
+                      run_owner=run.owner, meta=_prompt_meta(text))
+        manager.commit_turn(run, text)
         # 接受指令与开卷事件是同一个同步段：成功响应一旦返回，随后到达的
         # stop 必然排在这两条事实之后，不依赖异步回合任务是否已获调度。
         store.append(run.run_id, "turn.started", {})
@@ -462,23 +523,35 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         return {"run_id": run.run_id, "status": run.status}
 
     @app.post("/api/runs/{run_id}/stop")
-    async def stop_run(run_id: str, body: dict | None = None):
-        run = _get_run_or_404(manager, run_id)
+    async def stop_run(run_id: str, request: Request, body: dict | None = None):
+        actor = request.state.username
+        run = _owned_run_or_404(request, run_id, action="stop")
         try:
-            manager.request_stop(run)
+            manager.check_stop(run)
         except runs_mod.Conflict as exc:
+            _audit_denied(request, "stop", run, reason=exc.detail)
             raise HTTPException(status_code=409, detail=exc.detail) from exc
+        _audit_or_503(actor=actor, action="stop", result="success",
+                      request_id=request_id(request), run_id=run.run_id,
+                      run_owner=run.owner)
+        manager.commit_stop(run)
         persist()
         await _interrupt_if_requested(run)
         return {"run_id": run.run_id, "status": run.status}
 
     @app.post("/api/runs/{run_id}/clone")
-    async def clone_run(run_id: str):
-        run = _get_run_or_404(manager, run_id)
+    async def clone_run(run_id: str, request: Request):
+        actor = request.state.username
+        run = _owned_run_or_404(request, run_id, action="clone")
         try:
-            new = manager.clone(run)
+            new = manager.clone_draft(run)  # owner 继承源：归属不因 Fork 跨越
         except runs_mod.Conflict as exc:
+            _audit_denied(request, "clone", run, reason=exc.detail)
             raise HTTPException(status_code=409, detail=exc.detail) from exc
+        _audit_or_503(actor=actor, action="clone", result="success",
+                      request_id=request_id(request), run_id=run.run_id,
+                      run_owner=run.owner, meta=f"to:{new.run_id}")
+        manager.register(new)
         store.create(new.run_id)
         store.append(new.run_id, "session.started", {})
         # 源流转录进新会话（seq 重新编号、ts 原样透传——实时事件的 ts 本就是
@@ -496,12 +569,18 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         return {"run_id": new.run_id, "status": new.status, "resumed_from": run.run_id}
 
     @app.post("/api/runs/{run_id}/end")
-    async def end_run(run_id: str):
-        run = _get_run_or_404(manager, run_id)
+    async def end_run(run_id: str, request: Request):
+        actor = request.state.username
+        run = _owned_run_or_404(request, run_id, action="end")
         try:
-            manager.end(run)
+            manager.check_end(run)
         except runs_mod.Conflict as exc:
+            _audit_denied(request, "end", run, reason=exc.detail)
             raise HTTPException(status_code=409, detail=exc.detail) from exc
+        _audit_or_503(actor=actor, action="end", result="success",
+                      request_id=request_id(request), run_id=run.run_id,
+                      run_owner=run.owner)
+        # 在飞回合的取消与收尾（manager.end 校验已在上面完成）
         if run.turn_task is not None:
             run.turn_task.cancel()
             try:
@@ -774,7 +853,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     # session.ended 本身在历史里，快照一次给完；实时事件由全局流续接）
     @app.get("/api/runs/{run_id}/events")
     async def event_stream(run_id: str, request: Request):
-        _get_run_or_404(manager, run_id)  # 未知 run 404
+        _owned_run_or_404(request, run_id)  # 未知/非 owner 404
         seen = _parse_last_event_id(request.headers.get("Last-Event-ID"))
 
         async def generate():
@@ -858,11 +937,11 @@ def _parse_last_event_id(value):
         return 0
 
 
-def _get_run_or_404(manager, run_id):
-    run = manager.get(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="run not found")
-    return run
+
+
+def _prompt_meta(text):
+    """发送指令的审计元数据：长度 + 摘要 hash——指令内容不进审计。"""
+    return f"len:{len(text)},sha256:{hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]}"
 
 
 def residual_cli_processes():

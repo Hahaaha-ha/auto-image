@@ -12,6 +12,8 @@
 重放会话一律恢复 READY（可续聊，回合连接按回合开合、由下一条指令起）；
 重启前未收尾的回合以 turn.interrupted 如实呈现（transcript 推导 turn_open
 即截断），不自动重跑——已提交的云操作不可重复执行，续聊由用户指令驱动。
+owner 归属随簿记恢复（owners 映射）；无 owner 记录的旧会话归默认 owner
+（app 侧注入，legacy 迁移语义），后续切片再收紧为版本化迁移。
 
 transcript 里没有 Result 消息：回合边界由「下一条真实用户输入」推导，回合
 汇总取该回合最后一条 agent 文本（CLI 的 result 同源于此）。重放流不补
@@ -33,8 +35,8 @@ def recover_sessions(manager, store, list_sessions, get_session_messages, state,
     """启动时重放全部可找回的 transcript 会话，返回恢复的 run 列表（最新
     修改的在前）。
 
-    state 为落盘簿记整册（{ended_sessions, sessions, clone_sources}，见
-    state.load_state）。transcript_times 为会话时刻对齐表读取器（uuid →
+    state 为落盘簿记整册（{ended_sessions, sessions, clone_sources, owners}，
+    见 state.load_state）。transcript_times 为会话时刻对齐表读取器（uuid →
     epoch 秒；重放事件的时刻透传源，缺省不透传、ts 回退当下）。历史读取
     失败只跳过对应会话（空 transcript、损坏文件），不阻断服务启动——恢复
     是找回尽量多的历史，不是启动的前置条件。
@@ -48,6 +50,7 @@ def recover_sessions(manager, store, list_sessions, get_session_messages, state,
     reversed_map = {sid: rid for rid, sid in id_map.items()}
     resumed_from = state["clone_sources"]
     ended_sessions = state["ended_sessions"]
+    owners = state["owners"]
     restored = []
     for info in infos:
         try:
@@ -64,7 +67,8 @@ def recover_sessions(manager, store, list_sessions, get_session_messages, state,
             logger.warning("读取会话 %s 的时刻对齐表失败，ts 回退当下", info.session_id, exc_info=True)
             times = {}
         try:
-            restored.append(_recover_run(manager, store, info, messages, reversed_map, ended_sessions, resumed_from, times))
+            restored.append(_recover_run(manager, store, info, messages, reversed_map,
+                                         ended_sessions, resumed_from, owners, times))
         except Exception:  # noqa: BLE001 —— 重放中途的任何异常只丢该条
             logger.warning("重放会话 %s 失败，跳过该会话", info.session_id, exc_info=True)
             continue
@@ -91,10 +95,11 @@ def user_prompt_text(message):
     return text or None
 
 
-def _recover_run(manager, store, info, messages, reversed_map, ended_sessions, resumed_from, times):
+def _recover_run(manager, store, info, messages, reversed_map, ended_sessions, resumed_from, owners, times):
     """单条 transcript 会话 → 内存 run + 事件流重放。
 
-    身份映射命中的沿用原 run_id；墓碑命中标 ENDED；克隆链镜像命中找回
+    身份映射命中的沿用原 run_id 并恢复簿记里的 owner 归属（transcript 里
+    没有归属，重启后会话仍归原用户）；墓碑命中标 ENDED；克隆链镜像命中找回
     resumed_from。turn_open 重放补 turn.interrupted（重启截断的未收尾回合，
     删除伪造 turn.completed 的行为）。事件时刻按 times（uuid 对齐表）
     透传源 transcript 行——消息 uuid 不在表内回退 append 当下；创建与末
@@ -103,7 +108,7 @@ def _recover_run(manager, store, info, messages, reversed_map, ended_sessions, r
     run_id = reversed_map.get(info.session_id)
     if run_id is None or run_id in manager.runs:
         run_id = _derived_run_id(manager, info.session_id)
-    run = Run(run_id)
+    run = Run(run_id, owner=owners.get(run_id))
     run.status = ENDED if info.session_id in ended_sessions else READY
     run.session_id = info.session_id
     run.session_confirmed = True

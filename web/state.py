@@ -1,4 +1,4 @@
-"""落盘的 run 簿记（薄）：墓碑 + 身份映射 + 克隆链镜像，仅此三样。
+"""落盘的 run 簿记（薄）：墓碑 + 身份映射 + 克隆链镜像 + owner 归属。
 
 对话内容的单一事实源是 CLI 侧 transcript（~/.claude/projects）——
 stage/title/first_prompt/created_at 全部可从 transcript 重放推导（title 本就
@@ -11,7 +11,9 @@ stage/title/first_prompt/created_at 全部可从 transcript 重放推导（title
   未发首条指令的空会话身份天然丢失，按接受处理（无内容可恢复）；
 - 克隆链镜像（clone_sources）：session_id → 来源 run_id——transcript 里
   没有克隆血缘，重放会话凭镜像找回克隆链父指针 resumed_from（前端
-  「⑂ 克隆自」标记）。
+  「⑂ 克隆自」标记）；
+- owner 归属（owners）：run_id → 归属用户——与身份映射同生命周期登记，
+  重启后会话仍归原用户（transcript 里没有归属）。
 
 写入为全量原子替换（tmp + rename），每次状态变更即写。文件缺失/损坏/
 形状不对一律返回空册，服务照常启动（降级为无墓碑无映射的重放，不阻断）。
@@ -34,6 +36,9 @@ def save_state(runs, path, clone_sources=None):
     告警不抛——落盘是恢复增强，不能反过来打断会话执行。"""
     ended = sorted(r.session_id for r in runs if r.status == ENDED and r.session_id)
     sessions = {r.run_id: r.session_id for r in runs if r.session_id}
+    # owner 随身份映射同界登记（无 session_id 的空会话不承诺跨重启存在，
+    # owner 无从找回；恢复时这类会话本就不回来）
+    owners = {r.run_id: r.owner for r in runs if r.session_id and r.owner}
     target = Path(path)
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -44,6 +49,7 @@ def save_state(runs, path, clone_sources=None):
                     "ended_sessions": ended,
                     "sessions": sessions,
                     "clone_sources": clone_sources or {},
+                    "owners": owners,
                 }, f, ensure_ascii=False)
             os.replace(tmp, target)
         except BaseException:
@@ -55,9 +61,11 @@ def save_state(runs, path, clone_sources=None):
 
 def load_state(path):
     """读回 {ended_sessions: set, sessions: {run_id: session_id}, clone_sources:
-    {session_id: 来源 run_id}}；文件缺失/损坏/形状不对一律整体空册（降级，
-    不阻断启动；部分损坏不挑拣——簿记是一份一体的小文件，半份无从判真）。"""
-    empty = {"ended_sessions": set(), "sessions": {}, "clone_sources": {}}
+    {session_id: 来源 run_id}, owners: {run_id: 归属用户}}；文件缺失/损坏/
+    形状不对一律整体空册（降级，不阻断启动；部分损坏不挑拣——簿记是一份
+    一体的小文件，半份无从判真）。owners 缺失（旧版簿记）按空映射读回，
+    归属迁移规则见 rebuild。"""
+    empty = {"ended_sessions": set(), "sessions": {}, "clone_sources": {}, "owners": {}}
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -65,13 +73,17 @@ def load_state(path):
     ended = data.get("ended_sessions") if isinstance(data, dict) else None
     sessions = data.get("sessions") if isinstance(data, dict) else None
     clones = data.get("clone_sources") if isinstance(data, dict) else None
+    owners = data.get("owners") if isinstance(data, dict) else None
     well_formed = (
         isinstance(ended, list) and all(isinstance(s, str) and s for s in ended)
         and isinstance(sessions, dict) and all(
             isinstance(k, str) and isinstance(v, str) and k and v for k, v in sessions.items())
         and isinstance(clones, dict) and all(
             isinstance(k, str) and isinstance(v, str) and k and v for k, v in clones.items())
+        and (owners is None or (isinstance(owners, dict) and all(
+            isinstance(k, str) and isinstance(v, str) and k and v for k, v in owners.items())))
     )
     if not well_formed:
         return empty
-    return {"ended_sessions": set(ended), "sessions": sessions, "clone_sources": clones}
+    return {"ended_sessions": set(ended), "sessions": sessions,
+            "clone_sources": clones, "owners": owners or {}}

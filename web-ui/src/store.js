@@ -416,7 +416,10 @@ function refreshOpenSnapshots() {
 let globalStream = null
 
 // 认证失效统一出口：回登录壳并关停数据面。SSE onerror / 401 响应都会
-// 走这里；EventSource 关闭后浏览器不再自动重连（不无限重连的权威手段）
+// 走这里；EventSource 关闭后浏览器不再自动重连（不无限重连的权威手段）。
+// 会话视图一并清空——同一浏览器随后换账号登录时，上一个用户的会话
+// 列表/标签页/草稿不残留（服务端列表本就按 owner 过滤，这里是客户端
+// 不暂存他人数据的收尾）
 function deauthed(reasonText) {
   if (globalStream) {
     const stream = globalStream
@@ -425,7 +428,15 @@ function deauthed(reasonText) {
   }
   for (const id of timersRef) clearInterval(id)
   timersRef.clear()
-  set({ auth: 'anonymous', user: null, connection: 'connecting' })
+  for (const key of Object.keys(drafts)) delete drafts[key]
+  set({
+    auth: 'anonymous', user: null, connection: 'connecting',
+    runs: {}, order: [],
+    tabs: [], activeKey: null, lastSessionKey: null,
+    tasks: [], activeTaskId: null,
+    drafts: {},
+  })
+  persistTabs()
   if (reasonText) fail(reasonText)
 }
 
