@@ -29,5 +29,8 @@ __pycache__/
 # 任务跟踪存储（每任务一个 JSON，web/tasks.py 运行时写入）
 /task/
 
+# Web 登录用户清单（真实密码哈希，复制自 users.yaml.example）
+/users.yaml
+
 # macOS 目录元数据
 .DS_Store

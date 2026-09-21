@@ -5,29 +5,51 @@ httpx 自带的 ASGITransport 会把整个响应体收完才返回，SSE 这种
 响应对象以异步迭代器消费，aclose 时取消应用协程（等效客户端断开）。
 """
 import asyncio
+import json
 import tempfile
 from pathlib import Path
 
 import httpx
 
 from web.app import create_app
+from web.auth import COOKIE_NAME, hash_password
 from web.fake import FakeSessionFactory
 
 
 TEST_HEARTBEAT = 0.05
+# 测试默认用户清单：tester 可登录，ghost 预置禁用（撤销类测试现成素材）
+TEST_PASSWORD = "test-password"
+TEST_USERS = {
+    "tester": TEST_PASSWORD,
+    "ghost": TEST_PASSWORD,
+}
+
+
+def write_test_users(path):
+    """写测试用户清单（低迭代 PBKDF2，保测试速度）。ghost 恒为禁用。"""
+    users = {}
+    for name, password in TEST_USERS.items():
+        users[name] = {
+            "password_hash": hash_password(password, 1000),
+            "enabled": name != "ghost",
+        }
+    path.write_text(json.dumps({"users": users}), encoding="utf-8")
+    return path
 
 
 def make_test_app(*, session_factory=None, title_factory=None, **overrides):
     """用完全本地的安全默认依赖装配 Web 应用。
 
     部署与标题各用一套可独立观察的假会话；历史、transcript 时刻和残留
-    CLI 扫描默认均为空。每个应用拥有自己的临时 state 与空凭据配置。
-    专门测试某条边界时可通过同名参数显式覆盖。
+    CLI 扫描默认均为空。每个应用拥有自己的临时 state、空凭据配置、用户
+    清单（tester/ghost）与审计目录。专门测试某条边界时可通过同名参数显式
+    覆盖。
     """
     test_directory = tempfile.TemporaryDirectory(prefix="auto-image-web-test-")
     test_root = Path(test_directory.name)
     scope_config = test_root / "scope.yaml"
     scope_config.write_text("{}\n", encoding="utf-8")
+    write_test_users(test_root / "users.yaml")
     deployment = session_factory if session_factory is not None else FakeSessionFactory()
     titles = title_factory if title_factory is not None else FakeSessionFactory(script=[])
     options = {
@@ -41,6 +63,8 @@ def make_test_app(*, session_factory=None, title_factory=None, **overrides):
         "scope_config": scope_config,
         "state_path": test_root / "state.json",
         "task_dir": test_root / "task",
+        "users_path": test_root / "users.yaml",
+        "audit_dir": test_root / "audit",
         # 产物根也隔离到临时目录：任务跟踪的产物确认扫描会读 deploy/rpm 树，
         # 不能被真实仓库的运行时产物污染（个别测试显式覆盖时以此为准）
         "artifact_roots": {name: test_root / name for name in ("deploy", "rpm", "rpmcheck", "hce")},
@@ -53,9 +77,28 @@ def make_test_app(*, session_factory=None, title_factory=None, **overrides):
     return app
 
 
-def async_client(app):
-    """app → 挂真流式 ASGI 传输的 AsyncClient（各主缝测试共用的装配）。"""
-    return httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver")
+def async_client(app, username="tester", password=TEST_PASSWORD):
+    """app → 挂真流式 ASGI 传输的 AsyncClient（各主缝测试共用的装配）。
+
+    默认以 tester 登录（业务请求直接可用）；username=None 保留未登录形态
+    （401 面测试用）。登录失败按未登录继续——禁用用户的撤销类测试靠热载
+    前的既有 Cookie，不需要这一步成功。
+    """
+
+    async def _login(client):
+        if username is not None:
+            resp = await client.post("/api/auth/login",
+                                     json={"username": username, "password": password})
+            del resp  # 失败即按未登录用（调用方断言 401 就是断言这个）
+        return client
+
+    class _LoggedInClient(httpx.AsyncClient):
+        async def __aenter__(self):
+            await super().__aenter__()
+            return await _login(self)
+
+    return _LoggedInClient(transport=StreamingASGITransport(app=app),
+                           base_url="http://testserver")
 
 
 class StreamingASGITransport(httpx.AsyncBaseTransport):

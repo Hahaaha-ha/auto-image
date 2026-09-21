@@ -16,6 +16,13 @@ from web.fake import FakeSessionFactory
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8199
+    users_path = Path("/tmp/auto-image-smoke-users.yaml")
+    if not users_path.exists():
+        from web.auth import hash_password
+        import json
+        users_path.write_text(json.dumps({"users": {
+            "smoke": {"password_hash": hash_password("smoke-password", 1000), "enabled": True},
+        }}), encoding="utf-8")
     app = create_app(
         session_factory=FakeSessionFactory(delay=0.3),
         title_factory=FakeSessionFactory(
@@ -26,8 +33,11 @@ def main():
             "deploy": Path("/tmp/auto-image-smoke-artifacts/deploy"),
             "rpm": Path("/tmp/auto-image-smoke-artifacts/rpm"),
         },
+        users_path=users_path,
+        audit_dir=Path("/tmp/auto-image-smoke-audit"),
     )
     print(f"smoke server on http://127.0.0.1:{port}（假 SDK，state/artifacts 落 /tmp）")
+    print("登录用户：smoke / smoke-password（清单落 /tmp/auto-image-smoke-users.yaml）")
     uvicorn.run(app, host="127.0.0.1", port=port)
 
 

@@ -6,7 +6,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // store 模块级副作用重：SSE EventSource、轮询 setInterval、loadRuns——
-// 全部 stub 掉，模块隔离成纯状态容器
+// 全部 stub 掉，模块隔离成纯状态容器。initAuth 也 stub：认证流在
+// 「认证」describe 里单独驱动。
 vi.mock('./store.js', async () => {
   const actual = await vi.importActual('./store.js')
   return actual
@@ -14,12 +15,15 @@ vi.mock('./store.js', async () => {
 
 const sseListeners = {}
 let globalSource = null
+let eventSourceCount = 0
 global.EventSource = class {
   constructor() {
     this.readyState = 0
     globalSource = this
+    eventSourceCount += 1
   }
   addEventListener(type, fn) { (sseListeners[type] ??= []).push(fn) }
+  close() { this.readyState = 2 }
   onopen() {}
   onerror() {}
 }
@@ -31,6 +35,96 @@ const store = await import('./store.js')
 
 afterEach(() => {
   store.clearDraft('r1')
+})
+
+describe('认证态', () => {
+  const mockFetch = (impl) => { fetch.mockImplementation(impl) }
+
+  const okLogin = (url) => url === '/api/auth/login'
+
+  it('未认证启动不建 EventSource、不拉业务清单；登录成功后建流 + 拉清单', async () => {
+    // 启动身份确认：401 → 登录壳（零数据面动作）
+    let meCalls = 0
+    mockFetch(async (url) => {
+      if (url === '/api/auth/me') { meCalls += 1; return { ok: false, status: 401 } }
+      throw new Error(`unexpected fetch ${url}`)
+    })
+    await store.initAuth()
+    expect(store.getState().auth).toBe('anonymous')
+    expect(eventSourceCount).toBe(0)
+
+    // 登录成功：身份就位、建流、初始清单拉取（runs/tasks/artifacts/obs/ecs）
+    const fetched = []
+    mockFetch(async (url) => {
+      if (okLogin(url)) return { ok: true, json: async () => ({ username: 'alice' }) }
+      if (url === '/api/stream') return { ok: true }
+      fetched.push(url)
+      if (url === '/api/runs') return { ok: true, json: async () => ({ runs: [] }) }
+      if (url === '/api/tasks') return { ok: true, json: async () => ({ tasks: [] }) }
+      return { ok: true, json: async () => ({}) }
+    })
+    await store.login('alice', 'pw')
+    expect(store.getState().auth).toBe('user')
+    expect(store.getState().user).toBe('alice')
+    expect(eventSourceCount).toBe(1)
+    await vi.waitFor(() => expect(fetched).toEqual(
+      expect.arrayContaining(['/api/runs', '/api/tasks'])))
+  })
+
+  it('启动已登录：initAuth 直接进入数据面', async () => {
+    mockFetch(async (url) => {
+      if (url === '/api/auth/me') return { ok: true, json: async () => ({ username: 'bob' }) }
+      if (url === '/api/runs') return { ok: true, json: async () => ({ runs: [] }) }
+      if (url === '/api/tasks') return { ok: true, json: async () => ({ tasks: [] }) }
+      return { ok: true, json: async () => ({}) }
+    })
+    await store.initAuth()
+    expect(store.getState().auth).toBe('user')
+    expect(store.getState().user).toBe('bob')
+    expect(eventSourceCount).toBeGreaterThanOrEqual(1)
+  })
+
+  it('SSE 被服务端关闭且身份已失效：回登录壳，流关闭不再重连', async () => {
+    mockFetch(async (url) => {
+      if (url === '/api/auth/me') return { ok: true, json: async () => ({ username: 'bob' }) }
+      if (url === '/api/runs') return { ok: true, json: async () => ({ runs: [] }) }
+      if (url === '/api/tasks') return { ok: true, json: async () => ({ tasks: [] }) }
+      return { ok: true, json: async () => ({}) }
+    })
+    await store.initAuth()
+    const sourceAtLogin = globalSource
+    expect(sourceAtLogin).toBeTruthy()
+
+    // 身份失效（401）后流被服务端关闭：回登录壳且 EventSource.close 被调
+    mockFetch(async () => ({ ok: false, status: 401 }))
+    let closed = false
+    sourceAtLogin.close = () => { closed = true; sourceAtLogin.readyState = 2 }
+    // 测试桩的 EventSource 没有类常量：onerror 分支按数字 2（CLOSED）判定
+    sourceAtLogin.readyState = 2
+    const EventSourceCtor = sourceAtLogin.constructor
+    Object.defineProperty(EventSourceCtor, 'CLOSED', { value: 2, configurable: true })
+    await sourceAtLogin.onerror()
+    await vi.waitFor(() => expect(store.getState().auth).toBe('anonymous'))
+    expect(closed).toBe(true)
+  })
+
+  it('登出：清身份回登录壳，流关闭', async () => {
+    mockFetch(async (url) => {
+      if (url === '/api/auth/me') return { ok: true, json: async () => ({ username: 'bob' }) }
+      if (url === '/api/runs') return { ok: true, json: async () => ({ runs: [] }) }
+      if (url === '/api/tasks') return { ok: true, json: async () => ({ tasks: [] }) }
+      return { ok: true, json: async () => ({}) }
+    })
+    await store.initAuth()
+    const sourceAtLogin = globalSource
+    let closed = false
+    sourceAtLogin.close = () => { closed = true }
+    mockFetch(async () => ({ ok: true, json: async () => ({}) }))
+    await store.logout()
+    expect(store.getState().auth).toBe('anonymous')
+    expect(closed).toBe(true)
+    expect(store.getState().user).toBeNull()
+  })
 })
 
 describe('输入草稿', () => {

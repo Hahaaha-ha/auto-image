@@ -257,6 +257,56 @@ function Stream({ run }) {
   )
 }
 
+// 登录壳：未认证时的唯一界面（数据面不启动——不建流、不拉清单）
+function LoginShell() {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  const onSubmit = async (e) => {
+    e.preventDefault()
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await store.login(username.trim(), password)
+    } catch (err) {
+      setError(err.status === 401 ? '用户名或密码错误，或账号已禁用' : `登录失败：${err.message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="va-login">
+      <form className="va-login-card" onSubmit={onSubmit}>
+        <div className="va-login-title">auto-image 部署会话</div>
+        <input
+          className="va-login-input"
+          placeholder="用户名"
+          value={username}
+          autoComplete="username"
+          onChange={(e) => setUsername(e.target.value)}
+          autoFocus
+        />
+        <input
+          className="va-login-input"
+          type="password"
+          placeholder="密码"
+          value={password}
+          autoComplete="current-password"
+          onChange={(e) => setPassword(e.target.value)}
+        />
+        <button className="va-login-submit" type="submit" disabled={busy || !username.trim()}>
+          {busy ? '登录中…' : '登录'}
+        </button>
+        {error && <div className="va-login-error">{error}</div>}
+      </form>
+    </div>
+  )
+}
+
 export default function App() {
   const s = store.useRunState()
   const control = store.useControlRun()
@@ -298,6 +348,20 @@ export default function App() {
     return () => window.removeEventListener('resize', onResize)
   }, [])
 
+  // 登录态分叉：身份未定（checking）显示等待壳，未登录显示登录壳——
+  // 都不进数据面（不建流、不拉清单）
+  if (s.auth !== 'user') {
+    return (
+      <div className="va-root">
+        {s.auth === 'anonymous' ? <LoginShell /> : (
+          <div className="va-login">
+            <div className="va-login-card va-login-waiting">正在确认登录状态…</div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="va-root">
       <header className="va-head">
@@ -322,6 +386,10 @@ export default function App() {
         {s.connection === 'reconnecting' && (
           <span className="va-conn">事件流连接断开，重连中（恢复后自动追平）…</span>
         )}
+        <span className="va-user" title="当前登录用户">{s.user}</span>
+        <button className="va-logout" onClick={() => store.logout()} title="退出登录">
+          登出
+        </button>
       </header>
 
       <div className="va-body" style={{ '--side-w': `${sideW}px` }}>

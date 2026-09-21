@@ -104,6 +104,8 @@ function readSidePanel() {
 // 标签页——激活文件标签页时控制面（header/输入条）仍绑定它。
 const restored = restoreTabs()
 let state = {
+  auth: 'checking',             // 认证态：checking → anonymous | user（登录壳 vs 数据面）
+  user: null,                   // 当前用户名（auth === 'user' 时非空）
   runs: {},
   order: [],
   tabs: restored.openTabs.map((runId) => ({ kind: 'session', runId })),
@@ -234,10 +236,16 @@ export function runningTaskByInstance(inst) {
   )) ?? null
 }
 
-// 时长走针仅在控制面会话执行期间（挂起与终态冻结，终态由事件求和定格）
-setInterval(() => {
+// 时长走针仅在控制面会话执行期间（挂起与终态冻结，终态由事件求和定格）；
+// 计时器统一登记（deauthed 关停数据面时一并清掉）
+const timersRef = new Set()
+function registerTimer(id) {
+  timersRef.add(id)
+  return id
+}
+registerTimer(setInterval(() => {
   if (state.runs[controlRunId()]?.status === RUNNING) set({ now: Date.now() })
-}, 1000)
+}, 1000))
 
 function set(patch) {
   state = { ...state, ...patch }
@@ -400,17 +408,108 @@ function refreshOpenSnapshots() {
   for (const runId of openRunIds()) loadSnapshot(runId)
 }
 
-// 全局流：应用启动即建一条、永不主动关闭。断线由浏览器自动重连，
-// 恢复（onopen，含首次连上）对打开的会话标签页逐个重拉快照追平——
-// 断线期间错过的事件全靠快照补，重连本身不带断点。
-const globalStream = new EventSource('/api/stream')
-for (const type of EVENT_TYPES) globalStream.addEventListener(type, onBroadcastFrame)
-globalStream.onopen = () => {
-  set({ connection: 'live' })
-  refreshOpenSnapshots()
+// ---------- 认证 ----------
+
+// auth：'checking'（启动确认中）→ 'anonymous'（未登录，登录壳）/'user'
+// （已登录，username 就位）。未登录期间一切数据面（EventSource、轮询、
+// 初始拉取）不启动——未认证客户端读不到任何业务数据。
+let globalStream = null
+
+// 认证失效统一出口：回登录壳并关停数据面。SSE onerror / 401 响应都会
+// 走这里；EventSource 关闭后浏览器不再自动重连（不无限重连的权威手段）
+function deauthed(reasonText) {
+  if (globalStream) {
+    const stream = globalStream
+    globalStream = null
+    stream.close()
+  }
+  if (timersRef) {
+    for (const id of timersRef) clearInterval(id)
+    timersRef.clear()
+  }
+  set({ auth: 'anonymous', user: null, connection: 'connecting' })
+  if (reasonText) fail(reasonText)
 }
-globalStream.onerror = () => {
-  if (globalStream.readyState !== EventSource.CLOSED) set({ connection: 'reconnecting' })
+
+// 登录成功后的数据面启动：建全局流（一次）+ 各初始拉取（幂等——已登录
+// 状态下的重复调用不重复建流）
+function startDataPlane() {
+  if (globalStream) return
+  globalStream = new EventSource('/api/stream')
+  for (const type of EVENT_TYPES) globalStream.addEventListener(type, onBroadcastFrame)
+  globalStream.onopen = () => {
+    set({ connection: 'live' })
+    refreshOpenSnapshots()
+  }
+  globalStream.onerror = async () => {
+    if (globalStream?.readyState === EventSource.CLOSED) {
+      // 服务端主动关流：401（登录过期/被禁用）还是网络断，先重新确认身份
+      // 再决定——认证失效回登录壳，网络断走重连态。关流顺序：先 close
+      // （防浏览器自动重连）再查身份，查完才清理全局引用。
+      const stream = globalStream
+      stream.close()
+      globalStream = null
+      if (!await confirmIdentity()) {
+        deauthed('登录已失效，请重新登录')
+        return
+      }
+      set({ connection: 'reconnecting' })
+      return
+    }
+    set({ connection: 'reconnecting' })
+  }
+  loadRuns()
+  refreshArtifacts()
+  refreshObs()
+  refreshEcs()
+  refreshTasks()
+}
+
+// 当前身份确认：200 → true；401/其他 → false（登录壳）
+async function confirmIdentity() {
+  try {
+    const resp = await fetch('/api/auth/me')
+    if (!resp.ok) return false
+    const data = await resp.json().catch(() => null)
+    if (!data?.username) return false
+    set({ auth: 'user', user: data.username })
+    return true
+  } catch {
+    return false
+  }
+}
+
+// 启动身份检查：通过即带用户名进入数据面；否则登录壳（不建 EventSource）
+export async function initAuth() {
+  set({ auth: 'checking' })
+  if (await confirmIdentity()) startDataPlane()
+  else set({ auth: 'anonymous' })
+}
+
+// 登录：成功后带用户名进入数据面（登录壳表单提交入口）
+export async function login(username, password) {
+  const resp = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  const data = await resp.json().catch(() => ({}))
+  if (!resp.ok) throw Object.assign(new Error(data.detail || `HTTP ${resp.status}`), {
+    status: resp.status, detail: data.detail,
+  })
+  set({ auth: 'user', user: data.username })
+  startDataPlane()
+  return data
+}
+
+// 登出：清服务端 Cookie 后回登录壳（数据面关停由 deauthed 完成）
+export async function logout() {
+  try {
+    await fetch('/api/auth/logout', { method: 'POST' })
+  } catch {
+    // 网络失败也照样回登录壳（本地态为准）
+  }
+  deauthed(null)
 }
 
 // ---------- HTTP ----------
@@ -501,7 +600,7 @@ function mergeSummary(run, s) {
 
 // 摘要轮询：驱动非查看中标签页的状态点与排序（全局流只覆盖打开的标签
 // 页，他人会话或重启新会话只有列表最知道）。轻字段覆盖，不动 events。
-setInterval(() => pollSummaries(), 5000)
+registerTimer(setInterval(() => pollSummaries(), 5000))
 
 async function pollSummaries() {
   try {
@@ -1095,9 +1194,6 @@ export async function createEcs(body) {
 
 // 启动即恢复任务列表（含服务重启后经 transcript 重建的历史）与产物清单
 // （loadRuns 无历史时提前 return，产物首刷不能依赖它）；OBS 清单、ECS
-// 实例与流水线任务清单同样尽力拉一次
-loadRuns()
-refreshArtifacts()
-refreshObs()
-refreshEcs()
-refreshTasks()
+// 实例与流水线任务清单同样尽力拉一次——全部挪进登录后的数据面启动
+// （startDataPlane），未认证不拉任何业务数据
+initAuth()

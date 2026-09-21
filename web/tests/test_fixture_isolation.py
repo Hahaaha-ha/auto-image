@@ -11,7 +11,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from web import app as app_mod  # noqa: E402
-from web.tests.support import StreamingASGITransport  # noqa: E402
+from web.tests.support import async_client  # noqa: E402
 from web.tests.test_api import make_app as api_app, wait_status  # noqa: E402
 from web.tests.test_artifacts import make_app as artifacts_app  # noqa: E402
 from web.tests.test_history import history_app, plain_app  # noqa: E402
@@ -27,9 +27,7 @@ def forbidden(name):
 
 
 async def exercise_first_turn(name, app, instruction):
-    async with httpx.AsyncClient(
-        transport=StreamingASGITransport(app=app), base_url="http://testserver"
-    ) as client:
+    async with async_client(app) as client:
         assert (await client.get("/api/runs")).json()["runs"] == [], name
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         response = await client.post(

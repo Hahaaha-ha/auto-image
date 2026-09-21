@@ -18,16 +18,19 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import artifacts as artifacts_mod
+from . import audit as audit_mod
+from . import auth as auth_mod
 from . import ecs as ecs_mod
 from . import obs as obs_mod
 from . import rebuild as rebuild_mod
@@ -65,6 +68,18 @@ DEFAULT_TASK_DIR = Path(__file__).resolve().parent.parent / "task"
 DEFAULT_STATE_PATH = Path.home() / ".auto-image-web" / "state.json"
 # 并发上限（数执行中回合；新建、克隆、标题生成不占名额）
 DEFAULT_MAX_PARALLEL_RUNS = 10
+# 用户清单与控制审计（多用户隔离基础；审计按天轮转默认留 90 天）
+DEFAULT_USERS_PATH = auth_mod.DEFAULT_USERS_PATH
+DEFAULT_AUDIT_DIR = Path.home() / ".auto-image-web" / "audit"
+
+# 认证旁路：登录端点与静态壳（index.html/JS/CSS——不含业务数据，前端壳
+# 加载后自己查 /api/auth/me 决定登录壳还是数据面）；其余一切 API、全局
+# SSE、产物、OBS、ECS 端点默认 401
+PUBLIC_PATH_PREFIXES = ("/api/auth/login",)
+
+# 状态修改请求的同源判定：Host 头与 Origin 不同源即 403（Cookie SameSite=Lax
+# 之外的服务端防线）。非浏览器客户端不带 Origin，不受约束。
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
 def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
@@ -74,7 +89,8 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
                obs_list_fn=None, obs_url_fn=None, obs_read_fn=None, obs_archive_fn=None,
                obs_upload_zip_fn=None, obs_health_fn=None,
                ecs_list_fn=None, ecs_check_fn=None, ecs_create_fn=None, ecs_defaults_fn=None,
-    state_path=None, title_factory=None, max_parallel_runs=None, task_dir=None):
+    state_path=None, title_factory=None, max_parallel_runs=None, task_dir=None,
+    users_path=None, audit_dir=None, auth_secret=None):
     """session_factory 可注入：生产为 ClaudeSDKClient 真实现（默认），
     测试注入按剧本推消息的假实现——注入边界即唯一测试缝。artifact_roots
     （根名 → 目录映射）与 deploy_config 同理注入（产物目录与文件名约定
@@ -88,10 +104,73 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     title_factory 为标题生成会话工厂（测试缝；生产为独立 cwd 的隔离配置，
     transcript 不落项目根、不进重启恢复的发现层）。
     max_parallel_runs 为并发上限（默认 WEB_MAX_PARALLEL_RUNS 环境变量，
-    缺省 10；测试注入收紧）。"""
+    缺省 10；测试注入收紧）。
+    users_path 为用户清单（默认项目根 users.yaml；mtime 热载），audit_dir
+    为控制审计目录（默认 HOME 下固定位置），auth_secret 为认证签名密钥
+    （默认 WEB_AUTH_SECRET，再缺省机器派生——三者皆为测试缝）。"""
     # 已知凭据值入脱敏清单（幂等；scope 缺失时只剩形状正则防线）
     redact_mod.load_scope_secrets(scope_config or DEFAULT_SCOPE_CONFIG)
     app = FastAPI(title="auto-image deploy web")
+    # 认证与控制审计基础：文件用户清单（热载）+ HMAC Cookie + 追加式审计
+    roster = auth_mod.UserRoster(users_path or DEFAULT_USERS_PATH)
+    secret = auth_mod.resolve_secret(auth_secret)
+    audit = audit_mod.ControlAudit(audit_dir or DEFAULT_AUDIT_DIR)
+    app.state.users = roster
+    app.state.auth_secret = secret
+    app.state.audit = audit
+
+    @app.middleware("http")
+    async def auth_gate(request: Request, call_next):
+        """统一认证入口：除登录端点与静态壳外一切请求都要求有效登录
+        Cookie——未认证客户端读不到任何业务数据（壳本身不含数据）。
+
+        状态修改请求（非安全方法）另做同源 Origin 校验。/api/auth/me 不在
+        旁路名单——它就是「当前身份」探针，未登录 401 即答案本身。
+        """
+        path = request.url.path
+        if path.startswith(PUBLIC_PATH_PREFIXES):
+            return await _login_guard(request, call_next)
+        if not path.startswith("/api/"):
+            # 静态资源（登录壳的载体）放行；业务面全在 /api/ 下
+            return await call_next(request)
+        cookie = request.cookies.get(auth_mod.COOKIE_NAME)
+        username, reason = (None, auth_mod.REASON_BAD_COOKIE)
+        if cookie:
+            username, reason = auth_mod.verify_token(secret, cookie, roster)
+        if username is None:
+            return _unauthorized(reason)
+        request.state.username = username
+        if request.method not in SAFE_METHODS and not _same_origin(request):
+            return JSONResponse(status_code=403, content={"detail": "cross-origin rejected"})
+        return await call_next(request)
+
+    def _unauthorized(reason):
+        # 401 响应带可识别原因（前端据此回登录页，不无限重连 SSE）
+        return JSONResponse(status_code=401, content={"detail": reason})
+
+    def _same_origin(request: Request) -> bool:
+        origin = request.headers.get("origin")
+        if not origin:
+            return True  # 非浏览器客户端（curl / SDK）无 Origin，放行
+        host = request.headers.get("host", "")
+        from urllib.parse import urlparse
+        try:
+            parsed = urlparse(origin)
+        except ValueError:
+            return False
+        return parsed.netloc == host and origin == f"{parsed.scheme}://{parsed.netloc}"
+
+    async def _login_guard(request: Request, call_next):
+        """登录端点：不要求 Cookie，但要求同源（被拒尝试入审计）。"""
+        if request.method == "POST" and not _same_origin(request):
+            audit.record(actor="-", action="login", result="failure",
+                         request_id=request_id(request), reason="cross_origin")
+            return JSONResponse(status_code=403, content={"detail": "cross-origin rejected"})
+        return await call_next(request)
+
+    def request_id(request: Request) -> str:
+        return request.headers.get("x-request-id") or secrets.token_hex(8)
+
     limit = max_parallel_runs if max_parallel_runs is not None else int(
         os.environ.get("WEB_MAX_PARALLEL_RUNS", DEFAULT_MAX_PARALLEL_RUNS))
     manager = RunManager(max_parallel=limit)
@@ -182,6 +261,68 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     task_store.recover()
     store.add_observer(task_store.handle_event)
     app.state.task_store = task_store
+
+    # ---------- 认证端点 ----------
+
+    # 登录：口令校验通过先落审计（审计写失败 503、不发 Cookie），再签发
+    # Cookie。失败统一 401（不区分用户不存在/口令错/禁用，防探测；原因
+    # 只入审计）。
+    @app.post("/api/auth/login")
+    async def login(request: Request):
+        body = await _json_body(request)
+        username = body.get("username")
+        password = body.get("password")
+        if not isinstance(username, str) or not isinstance(password, str) or not username:
+            raise HTTPException(status_code=422, detail="username and password required")
+        entry = roster.get(username)
+        ok = (entry is not None and entry.get("enabled", True)
+              and auth_mod.verify_password(password, entry.get("password_hash", "")))
+        if not ok:
+            reason = (auth_mod.REASON_DISABLED if entry is not None and not entry.get("enabled", True)
+                      else auth_mod.REASON_BAD_CREDENTIALS)
+            audit.record(actor=username, action="login", result="failure",
+                         request_id=request_id(request), reason=reason)
+            raise HTTPException(status_code=401, detail="invalid credentials")
+        _audit_or_503(actor=username, action="login", result="success",
+                      request_id=request_id(request))
+        token = auth_mod.issue_token(secret, username, roster.fingerprint(username),
+                                     auth_mod.COOKIE_TTL_SECONDS)
+        response = JSONResponse({"username": username})
+        response.set_cookie(
+            auth_mod.COOKIE_NAME, token,
+            max_age=auth_mod.COOKIE_TTL_SECONDS, httponly=True, samesite="lax",
+        )
+        return response
+
+    # 登出：清 Cookie（过期即弃）并审计；审计写失败同样 503（状态变更类）
+    @app.post("/api/auth/logout")
+    async def logout(request: Request):
+        _audit_or_503(actor=request.state.username, action="logout", result="success",
+                      request_id=request_id(request))
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(auth_mod.COOKIE_NAME)
+        return response
+
+    # 当前身份探针：前端启动先问它，200 才建全局流；未登录 401（middleware
+    # 已拦，这里只会是已登录分支）
+    @app.get("/api/auth/me")
+    async def whoami(request: Request):
+        return {"username": request.state.username}
+
+    def _audit_or_503(**kwargs):
+        """状态变更类动作的审计前置：写失败抛 503（HTTPException 由调用方
+        向上冒泡），动作不执行。"""
+        try:
+            audit.record(**kwargs)
+        except audit_mod.AuditWriteError:
+            raise HTTPException(status_code=503, detail="audit unavailable")
+
+    async def _json_body(request: Request):
+        try:
+            body = await request.json()
+        except ValueError:
+            return {}
+        return body if isinstance(body, dict) else {}
 
     @app.get("/api/runs")
     async def list_runs():
