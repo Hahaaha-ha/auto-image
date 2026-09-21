@@ -23,6 +23,7 @@ import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -80,6 +81,9 @@ PUBLIC_PATH_PREFIXES = ("/api/auth/login",)
 # 状态修改请求的同源判定：Host 头与 Origin 不同源即 403（Cookie SameSite=Lax
 # 之外的服务端防线）。非浏览器客户端不带 Origin，不受约束。
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+# 拒绝原因判定值（审计 reason 与测试断言同源引用）；actor 未知时的占位
+REASON_CROSS_ORIGIN = "cross_origin"
+UNKNOWN_ACTOR = "-"
 
 
 def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
@@ -153,18 +157,25 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         if not origin:
             return True  # 非浏览器客户端（curl / SDK）无 Origin，放行
         host = request.headers.get("host", "")
-        from urllib.parse import urlparse
         try:
             parsed = urlparse(origin)
         except ValueError:
             return False
         return parsed.netloc == host and origin == f"{parsed.scheme}://{parsed.netloc}"
 
+    def audit_best_effort(**kwargs):
+        """尽力而为审计（登录失败/被拒类无状态变更动作）：写失败只告警，
+        拒绝响应照常返回——审计不可用不能把拒绝变成 500。"""
+        try:
+            audit.record(**kwargs)
+        except audit_mod.AuditWriteError:
+            logging.getLogger("web").warning("审计写入失败（尽力而为路径）", exc_info=True)
+
     async def _login_guard(request: Request, call_next):
         """登录端点：不要求 Cookie，但要求同源（被拒尝试入审计）。"""
         if request.method == "POST" and not _same_origin(request):
-            audit.record(actor="-", action="login", result="failure",
-                         request_id=request_id(request), reason="cross_origin")
+            audit_best_effort(actor=UNKNOWN_ACTOR, action="login", result="failure",
+                              request_id=request_id(request), reason=REASON_CROSS_ORIGIN)
             return JSONResponse(status_code=403, content={"detail": "cross-origin rejected"})
         return await call_next(request)
 
@@ -274,14 +285,10 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         password = body.get("password")
         if not isinstance(username, str) or not isinstance(password, str) or not username:
             raise HTTPException(status_code=422, detail="username and password required")
-        entry = roster.get(username)
-        ok = (entry is not None and entry.get("enabled", True)
-              and auth_mod.verify_password(password, entry.get("password_hash", "")))
+        ok, reason = roster.check_password(username, password)
         if not ok:
-            reason = (auth_mod.REASON_DISABLED if entry is not None and not entry.get("enabled", True)
-                      else auth_mod.REASON_BAD_CREDENTIALS)
-            audit.record(actor=username, action="login", result="failure",
-                         request_id=request_id(request), reason=reason)
+            audit_best_effort(actor=username, action="login", result="failure",
+                              request_id=request_id(request), reason=reason)
             raise HTTPException(status_code=401, detail="invalid credentials")
         _audit_or_503(actor=username, action="login", result="success",
                       request_id=request_id(request))

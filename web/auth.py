@@ -6,10 +6,10 @@
 运维改文件（禁用/改密/增删用户）即时生效，无需重启。
 
 Cookie 是自包含 HMAC 签名令牌 v1.<payload_b64url>.<sig_b64url>：payload
-携带用户名、签发/过期时刻和密码版本指纹（清单内容哈希的前 16 hex——改密
-或任何清单变化都会让指纹漂移，旧 Cookie 即刻失效）。密钥经 WEB_AUTH_SECRET
- 显式配置；缺省按机器稳定属性派生（同机重启不掉登录；换机或改配置即全体
-失效，等效轮换）。7 天绝对过期、HttpOnly、SameSite=Lax。
+携带用户名、签发/过期时刻和密码版本指纹（该用户条目的稳定短哈希——改密
+或禁用让指纹漂移，该用户旧 Cookie 即刻失效，其他用户不受牵连）。密钥经
+WEB_AUTH_SECRET 显式配置；缺省按机器稳定属性派生（同机重启不掉登录；
+换值即全体失效，等效轮换）。7 天绝对过期、HttpOnly、SameSite=Lax。
 """
 import base64
 import hashlib
@@ -34,8 +34,16 @@ REASON_BAD_COOKIE = "bad_cookie"
 REASON_EXPIRED = "expired"
 REASON_NO_USER = "no_such_user"
 REASON_DISABLED = "disabled_user"
-REASON_STALE_FINGERPRINT = "password_changed"
+REASON_STALE_FINGERPRINT = "stale_fingerprint"
 REASON_BAD_CREDENTIALS = "bad_credentials"
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+
+def _unb64url(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
 def hash_password(password, iterations=DEFAULT_ITERATIONS):
@@ -43,16 +51,15 @@ def hash_password(password, iterations=DEFAULT_ITERATIONS):
     运维工具共用；盐每词随机）。"""
     salt = os.urandom(16)
     dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
-    b64 = lambda b: base64.urlsafe_b64encode(b).decode("ascii").rstrip("=")
-    return f"pbkdf2_sha256${iterations}${b64(salt)}${b64(dk)}"
+    return f"pbkdf2_sha256${iterations}${_b64url(salt)}${_b64url(dk)}"
 
 
 def verify_password(password, encoded):
     """口令校验（常数时间比较）。哈希串形状不对按不匹配处理，不抛。"""
     try:
         _scheme, iters, salt_b64, dk_b64 = encoded.split("$")
-        salt = base64.urlsafe_b64decode(salt_b64 + "=" * (-len(salt_b64) % 4))
-        want = base64.urlsafe_b64decode(dk_b64 + "=" * (-len(dk_b64) % 4))
+        salt = _unb64url(salt_b64)
+        want = _unb64url(dk_b64)
         if _scheme != "pbkdf2_sha256":
             return False
         got = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, int(iters))
@@ -69,7 +76,7 @@ class UserRoster:
         self.path = Path(path)
         self._mtime = None
         self._data = None
-        self._fingerprint = None
+        self._fingerprints = {}
         self._reload()
 
     def _reload(self):
@@ -79,7 +86,7 @@ class UserRoster:
         except OSError:
             if self._data is None:
                 logger.warning("用户清单 %s 不可读，服务以无用户启动（登录被拒）", self.path)
-            self._data, self._fingerprint = {}, None
+            self._data, self._fingerprints = {}, {}
             self._mtime = None
             return
         users = {}
@@ -93,9 +100,14 @@ class UserRoster:
             else:
                 logger.warning("用户清单 %s 形状不对（缺 users 映射），按无用户处理", self.path)
         self._data = users
-        self._fingerprint = hashlib.sha256(
-            json.dumps(users, sort_keys=True, ensure_ascii=False).encode("utf-8")
-        ).hexdigest()[:16]
+        # 密码版本指纹按用户条目独立：改密/禁用只撤销该用户的 Cookie，
+        # 其他用户的登录态不受清单任何变动（如新增用户）牵连
+        self._fingerprints = {
+            name: hashlib.sha256(
+                json.dumps(cfg, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()[:16]
+            for name, cfg in users.items()
+        }
         self._mtime = mtime
 
     def _maybe_refresh(self):
@@ -111,25 +123,35 @@ class UserRoster:
         self._maybe_refresh()
         return self._data.get(username)
 
+    def check_password(self, username, password):
+        """登录口令校验：用户存在、启用且口令匹配才通过。返回 (ok, reason)；
+        reason 判定值见模块顶常量（审计用），通过时为 None。"""
+        entry = self.get(username)
+        if entry is None:
+            return False, REASON_NO_USER
+        if entry.get("enabled", True) is False:
+            return False, REASON_DISABLED
+        if not verify_password(password, entry.get("password_hash", "")):
+            return False, REASON_BAD_CREDENTIALS
+        return True, None
+
     def fingerprint(self, username):
-        """密码版本指纹：整个清单内容的稳定短哈希——任何用户条目变化（改密、
-        禁用、增删）都使指纹漂移。用户不存在返回 None。"""
+        """密码版本指纹：该用户条目（password_hash + enabled）的稳定短哈希
+        ——改密、禁用使指纹漂移，旧 Cookie 即刻失效；其他用户不受牵连。
+        用户不存在返回 None。"""
         self._maybe_refresh()
-        return self._fingerprint if username in self._data else None
+        return self._fingerprints.get(username)
 
 
-def _b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
-
-
-def _unb64url(text: str) -> bytes:
-    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+def _hmac_key(secret):
+    """secret 归一为 HMAC 键 bytes（str/bytes 皆可）。"""
+    return secret if isinstance(secret, bytes) else secret.encode("utf-8")
 
 
 def issue_token(secret: str, username: str, fingerprint: str | None, ttl: float):
     """签发自包含令牌：v1.<payload>.<sig>。payload 为 JSON（用户名、签发、
-    过期、指纹），HMAC-SHA256 签名覆盖整段前缀。secret 为 str 或 bytes。"""
-    key = secret if isinstance(secret, bytes) else secret.encode("utf-8")
+    过期、指纹），HMAC-SHA256 签名覆盖整段前缀。"""
+    key = _hmac_key(secret)
     now = time.time()
     payload = {
         "u": username,
@@ -145,7 +167,7 @@ def issue_token(secret: str, username: str, fingerprint: str | None, ttl: float)
 def verify_token(secret: str, token: str, roster: "UserRoster"):
     """校验令牌并回查清单。返回 (username, None) 或 (None, reason)；reason
     判定值见模块顶常量。"""
-    key = secret if isinstance(secret, bytes) else secret.encode("utf-8")
+    key = _hmac_key(secret)
     try:
         version, body, sig = token.split(".")
         if version != "v1":

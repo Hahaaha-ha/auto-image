@@ -125,6 +125,26 @@ describe('认证态', () => {
     expect(closed).toBe(true)
     expect(store.getState().user).toBeNull()
   })
+
+  it('登出→再登录：轮询计时器重建（同页不掉轮询）', async () => {
+    const loggedIn = async (url) => {
+      if (url === '/api/auth/me') return { ok: true, json: async () => ({ username: 'bob' }) }
+      if (url === '/api/runs') return { ok: true, json: async () => ({ runs: [] }) }
+      if (url === '/api/tasks') return { ok: true, json: async () => ({ tasks: [] }) }
+      return { ok: true, json: async () => ({}) }
+    }
+    mockFetch(loggedIn)
+    await store.initAuth()
+    // 模块加载时只登记过两组计时器（时长针 + 摘要轮询，均随数据面启动）
+    const timersAfterLogin = timers.length
+    mockFetch(async () => ({ ok: true, json: async () => ({}) }))
+    await store.logout()
+    expect(timers.length).toBe(timersAfterLogin) // 登出只 clearInterval，数组不缩
+    mockFetch(loggedIn)
+    await store.login('bob', 'pw')
+    // 再登录重建一组（时长针 + 轮询），轮询恢复
+    expect(timers.length).toBeGreaterThan(timersAfterLogin)
+  })
 })
 
 describe('输入草稿', () => {

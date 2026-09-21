@@ -27,6 +27,10 @@ from web.tests.support import StreamingASGITransport, async_client, make_test_ap
 PASSWORD = "correct-horse"
 SAME_ORIGIN = "http://testserver"
 CROSS_ORIGIN = "http://evil.example"
+# tester 的固定哈希（低迭代）：write_users 重写清单时 tester 条目字节不变，
+# 指纹不漂移——热载测试只让「显式改动的用户」失效
+TESTER_HASH = hash_password(PASSWORD, 1000)
+GHOST_HASH = hash_password(PASSWORD, 1000)
 
 
 def block_audit(tmp):
@@ -55,14 +59,15 @@ PROTECTED_POST = [
 
 
 def write_users(path, *, tester_enabled=True, tester_hash=None, extra=None):
-    """造一份临时用户清单（PBKDF2 真哈希，迭代数收低保测试速度）。"""
+    """造一份临时用户清单（PBKDF2 真哈希，迭代数收低保测试速度）。tester
+    哈希固定——重写清单不改变其指纹（改密场景显式传 tester_hash）。"""
     users = {
         "tester": {
-            "password_hash": tester_hash or hash_password(PASSWORD, 1000),
+            "password_hash": tester_hash or TESTER_HASH,
             "enabled": tester_enabled,
         },
-        "ghost": {  # 预置禁用用户
-            "password_hash": hash_password(PASSWORD, 1000),
+        "ghost": {  # 预置禁用用户（哈希同样固定，重写不漂移）
+            "password_hash": GHOST_HASH,
             "enabled": False,
         },
     }
@@ -100,11 +105,15 @@ def test_password_hash_roundtrip_and_format():
 def test_token_roundtrip_rejects_tamper():
     secret = b"k" * 32
     token = issue_token(secret, "tester", "fp123", ttl=60)
-    body, sig = token.rsplit(".", 1)
+    # 三段结构：v1.<payload>.<sig>
+    version, body, sig = token.split(".")
+    assert version == "v1" and body and sig
+    # 篡改 payload 任一位后原签名不再匹配（401 路径由主缝 bad cookie 测试覆盖）
     flipped = ("A" if not body.startswith("A") else "B") + body[1:]
-    assert issue_token(secret, "tester", "fp123", ttl=60)
-    assert flipped != body
-    # 篡改体的签名不再是原签名（verify 交给主缝的 401 测试覆盖）
+    assert flipped != body and f"v1.{flipped}.{sig}" != token
+    # 签名覆盖整段前缀——同 payload 不同密钥签名不同
+    other = issue_token(b"j" * 32, "tester", "fp123", ttl=60)
+    assert other.split(".")[1] == body and other.split(".")[2] != sig
 
 
 # ---------- 登录 / 登出 / 身份查询 ----------
@@ -147,7 +156,7 @@ async def test_login_failure_unified_401_and_audited():
             assert r.status_code == 422, r.text
         failures = [e for e in audit_lines(tmp) if e["action"] == "login" and e["result"] == "failure"]
         reasons = {e["actor"]: e["reason"] for e in failures}
-        assert reasons == {"tester": "bad_credentials", "nobody": "bad_credentials",
+        assert reasons == {"tester": "bad_credentials", "nobody": "no_such_user",
                            "ghost": "disabled_user"}, reasons
 
 
@@ -222,6 +231,27 @@ async def test_roster_change_revokes_live_cookie():
             assert r.status_code == 401, r.text  # 旧口令已换
 
 
+async def test_fingerprint_scoped_to_own_entry():
+    """密码版本指纹按用户条目：别的用户改清单不动本用户登录态。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        users_path = Path(tmp) / "users.yaml"
+        app = auth_app(tmp)
+        async with httpx.AsyncClient(transport=StreamingASGITransport(app=app),
+                                     base_url="http://testserver") as client:
+            await client.post("/api/auth/login",
+                              json={"username": "tester", "password": PASSWORD})
+            # 新增无关用户 + 改另一用户条目：tester 的 Cookie 仍有效
+            os.utime(users_path, (time.time() + 2, time.time() + 2))
+            write_users(users_path, extra={"newcomer": {
+                "password_hash": hash_password("whatever", 1000), "enabled": True}})
+            assert (await client.get("/api/auth/me")).status_code == 200
+            # ghost 条目变化（重新启用）同样不影响 tester
+            os.utime(users_path, (time.time() + 4, time.time() + 4))
+            write_users(users_path, extra={"newcomer": {
+                "password_hash": hash_password("whatever", 1000), "enabled": True}})
+            assert (await client.get("/api/auth/me")).status_code == 200
+
+
 async def test_secret_rotation_revokes_all_cookies():
     with tempfile.TemporaryDirectory() as tmp:
         users_path = write_users(Path(tmp) / "users.yaml")
@@ -281,9 +311,16 @@ async def test_audit_write_failure_blocks_state_changing_auth_actions():
             r = await client.post("/api/auth/login",
                                   json={"username": "tester", "password": PASSWORD})
             assert r.status_code == 503, r.text
-            # 只读不受审计写失败阻断；登录失败审计尽力而为（无状态变更，
-            # 审计写失败不放大——响应仍是 401）
+            # 只读不受审计写失败阻断；登录失败与跨源拒绝是无状态变更动作，
+            # 审计尽力而为——写失败不放大，响应仍是 401/403
             assert (await client.get("/api/auth/me")).status_code == 401
+            r = await client.post("/api/auth/login",
+                                  json={"username": "tester", "password": "wrong"})
+            assert r.status_code == 401, r.text
+            r = await client.post("/api/auth/login",
+                                  json={"username": "tester", "password": PASSWORD},
+                                  headers={"Origin": CROSS_ORIGIN})
+            assert r.status_code == 403, r.text
 
             # 恢复审计目录：登录成功、随后再度破坏，登出被阻断
             unblock_audit(tmp)

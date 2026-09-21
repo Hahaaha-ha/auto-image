@@ -237,15 +237,15 @@ export function runningTaskByInstance(inst) {
 }
 
 // 时长走针仅在控制面会话执行期间（挂起与终态冻结，终态由事件求和定格）；
-// 计时器统一登记（deauthed 关停数据面时一并清掉）
+// 轮询计时器统一由 startTimers 登记（deauthed 清停、再登录重建——同页
+// 登出→登录后轮询不丢）
 const timersRef = new Set()
-function registerTimer(id) {
-  timersRef.add(id)
-  return id
+function startTimers() {
+  timersRef.add(setInterval(() => {
+    if (state.runs[controlRunId()]?.status === RUNNING) set({ now: Date.now() })
+  }, 1000))
+  timersRef.add(setInterval(() => pollSummaries(), 5000))
 }
-registerTimer(setInterval(() => {
-  if (state.runs[controlRunId()]?.status === RUNNING) set({ now: Date.now() })
-}, 1000))
 
 function set(patch) {
   state = { ...state, ...patch }
@@ -423,10 +423,8 @@ function deauthed(reasonText) {
     globalStream = null
     stream.close()
   }
-  if (timersRef) {
-    for (const id of timersRef) clearInterval(id)
-    timersRef.clear()
-  }
+  for (const id of timersRef) clearInterval(id)
+  timersRef.clear()
   set({ auth: 'anonymous', user: null, connection: 'connecting' })
   if (reasonText) fail(reasonText)
 }
@@ -434,6 +432,7 @@ function deauthed(reasonText) {
 // 登录成功后的数据面启动：建全局流（一次）+ 各初始拉取（幂等——已登录
 // 状态下的重复调用不重复建流）
 function startDataPlane() {
+  startTimers()
   if (globalStream) return
   globalStream = new EventSource('/api/stream')
   for (const type of EVENT_TYPES) globalStream.addEventListener(type, onBroadcastFrame)
@@ -600,8 +599,7 @@ function mergeSummary(run, s) {
 
 // 摘要轮询：驱动非查看中标签页的状态点与排序（全局流只覆盖打开的标签
 // 页，他人会话或重启新会话只有列表最知道）。轻字段覆盖，不动 events。
-registerTimer(setInterval(() => pollSummaries(), 5000))
-
+// （注册在 startTimers——随登录态开合）
 async function pollSummaries() {
   try {
     await fetchSummaries()
