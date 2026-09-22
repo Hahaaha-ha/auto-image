@@ -552,17 +552,10 @@ def _update_obs_block(text, updates):
     return "\n".join(lines[:obs_idx + 1] + new_seg + tail) + "\n"
 
 
-def save_config(scope_path, ak=None, sk=None, region=None, bucket=None, endpoint=None):
-    """配置保存（面板「配置」按钮的写路径）：ak/sk 一律密文落盘
-    （ak_enc/sk_enc），obs 段明文 ak/sk 键自动删除（无论本次是否提交新
-    凭据——历史明文一并清掉）；bucket/region/endpoint 明文，endpoint
-    未提交时按（新）region 推导重写，domain 按 桶+region 重写，避免
-    改 region 后旧值残留生效。
-
-    保存后：该 scope 的客户端缓存失效（新配置即时生效无需重启）；新
-    凭据明文登记进脱敏已知清单（此后任何事件流文本出现即被遮蔽——
-    明文已不落盘，这是内存里的最后一道防线）。返回脱敏配置视图（同
-    get_config，明文永不回传）。输入全空/非字符串 → ValueError（422）。"""
+def clean_config_input(ak=None, sk=None, region=None, bucket=None, endpoint=None):
+    """配置保存的入口清洗（端点预检与 save_config 共用同一份校验）：
+    None 跳过、字符串去空白、空值剔除；非字符串或全空抛 ValueError
+    （端点 422 语义）。返回 {字段: 清洗后值}。"""
     clean = {}
     for name, val in (("ak", ak), ("sk", sk), ("region", region),
                       ("bucket", bucket), ("endpoint", endpoint)):
@@ -575,6 +568,21 @@ def save_config(scope_path, ak=None, sk=None, region=None, bucket=None, endpoint
             clean[name] = val
     if not clean:
         raise ValueError("nothing to save (at least one of ak/sk/region/bucket/endpoint)")
+    return clean
+
+
+def save_config(scope_path, ak=None, sk=None, region=None, bucket=None, endpoint=None):
+    """配置保存（面板「配置」按钮的写路径）：ak/sk 一律密文落盘
+    （ak_enc/sk_enc），obs 段明文 ak/sk 键自动删除（无论本次是否提交新
+    凭据——历史明文一并清掉）；bucket/region/endpoint 明文，endpoint
+    未提交时按（新）region 推导重写，domain 按 桶+region 重写，避免
+    改 region 后旧值残留生效。
+
+    保存后：该 scope 的客户端缓存失效（新配置即时生效无需重启）；新
+    凭据明文登记进脱敏已知清单（此后任何事件流文本出现即被遮蔽——
+    明文已不落盘，这是内存里的最后一道防线）。返回脱敏配置视图（同
+    get_config，明文永不回传）。输入全空/非字符串 → ValueError（422）。"""
+    clean = clean_config_input(ak=ak, sk=sk, region=region, bucket=bucket, endpoint=endpoint)
     path = Path(scope_path)
     text = path.read_text(encoding="utf-8") if path.is_file() else ""
 

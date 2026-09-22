@@ -34,7 +34,11 @@ SameSite=Lax、HMAC 签名、7 天绝对过期）。会话控制面按 owner 隔
 随簿记恢复，legacy 无 owner 历史会话归 `WEB_DEFAULT_OWNER`（缺省
 `admin`）。控制审计落 `~/.auto-image-web/audit/`（按天轮转、默认留
 90 天）；审计写失败时控制动作 503 不执行。改密/禁用即时撤销该用户登录
-态；`WEB_AUTH_SECRET` 轮换全体失效。全局事件流按 owner 过滤尚未实现
+态；`WEB_AUTH_SECRET` 轮换全体失效。产物与 OBS 对所有登录用户共享：清
+单、内容、下载、归档（本地产物与 zip 打包直传）不按 owner 过滤，归档与
+OBS 配置修改先审计后执行；OBS 全局配置（凭据/桶/endpoint）只有部署管理
+员（`WEB_DEFAULT_OWNER`，缺省 `admin`）可写，普通用户 403、配置视图只读
+（`can_write: false`）。全局事件流按 owner 过滤尚未实现
 （后续切片）；此前不要把 `/api/stream` 暴露给不互信的用户。
 
 默认只监听 127.0.0.1。需要外部机器的浏览器访问时，`WEB_HOST=0.0.0.0`
@@ -82,6 +86,7 @@ python web/tests/test_history.py    # 列表摘要、可续聊约束、假 trans
 python web/tests/test_normalize.py  # 消息映射与阶段推导纯函数断言
 python web/tests/test_owner_acl.py  # owner 会话隔离（双认证客户端互不可见/不可控）
 python web/tests/test_redact.py     # 事件出口脱敏（形状正则 + 已知值清单）
+python web/tests/test_shared_resources.py # 产物/OBS 共享读取、归档审计、OBS 配置 admin-only
 python web/tests/test_sdk.py        # options 契约（身份、Fork、系统提示词、无值守写权限）
 python web/tests/test_state.py      # 身份映射、墓碑与 Fork 来源簿记
 python web/tests/test_title.py      # 标题生成（prompt/清洗/一次性会话/幂等/写回）

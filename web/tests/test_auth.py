@@ -54,7 +54,8 @@ PROTECTED_GET = [
 PROTECTED_POST = [
     "/api/runs", "/api/runs/run_1/messages", "/api/runs/run_1/stop",
     "/api/runs/run_1/clone", "/api/runs/run_1/end", "/api/auth/logout",
-    "/api/obs/archive", "/api/ecs/check",
+    "/api/obs/archive", "/api/obs/archive-zip", "/api/obs/config",
+    "/api/ecs/check",
 ]
 
 

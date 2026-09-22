@@ -87,6 +87,7 @@ SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 # 拒绝原因判定值（审计 reason 与测试断言同源引用）；actor 未知时的占位
 REASON_CROSS_ORIGIN = "cross_origin"
 REASON_NOT_OWNER = "not_owner"
+REASON_NOT_ADMIN = "not_admin"
 UNKNOWN_ACTOR = "-"
 
 
@@ -264,8 +265,12 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     if restored:
         logging.getLogger("web").info("服务重启后重放恢复 %d 条会话（可续聊）", len(restored))
     # legacy 迁移：簿记无 owner 记录的重放会话归默认 owner（历史数据有确定
-    # 归属）；现代记录缺 owner 的严格化处理归后续恢复切片
+    # 归属，部署配置显式指定、不从用户清单推断）；现代记录缺 owner 的严格化
+    # 处理归后续恢复切片
     legacy_owner = default_owner or DEFAULT_OWNER
+    # OBS 全局配置的唯一写权限人（部署管理员）：与 legacy 迁移归属同一
+    # 显式配置，缺省 admin。普通用户读共享、写 403
+    obs_admin = legacy_owner
     for r in restored:
         if r.owner is None:
             r.owner = legacy_owner
@@ -692,10 +697,11 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     # 本地产物批量归档到 OBS：paths（根前缀相对路径，与 zip 端点同形状）→
     # 服务端 resolve（路径约束复用——服务不是任意文件上传器）后逐个 putFile，
     # 对象名 = 产物相对路径（目录结构原样保留，与桶内既有 key 同构）。
-    # 缺失/越界项如实跳过并计数，一个都收不到 404；未配置 503、云失败 502。
+    # 共享资源写：不按会话 owner 过滤（任何登录用户可归档），先审计后执行
+    # （审计失败 503 不上传）。缺失/越界项如实跳过并计数，一个都收不到
+    # 404；未配置 503、云失败 502。
     @app.post("/api/obs/archive")
-    def archive_to_obs(body: dict | None = None):  # 函数名不叫 obs_archive——避免遮蔽同名闭包（默认实现 lambda）自递归
-
+    def archive_to_obs(request: Request, body: dict | None = None):  # 函数名不叫 obs_archive——避免遮蔽同名闭包（默认实现 lambda）自递归
         paths = (body or {}).get("paths")
         if not isinstance(paths, list) or not paths or not all(
             isinstance(p, str) and p for p in paths
@@ -708,6 +714,9 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
                 items.append((rel, found[1]))
         if not items:
             raise HTTPException(status_code=404, detail="no artifacts to archive")
+        _audit_or_503(actor=request.state.username, action="obs_archive",
+                      result="success", request_id=request_id(request),
+                      meta=f"items:{len(items)},skipped:{len(paths) - len(items)}")
         try:
             result = obs_archive(items)
         except obs_mod.ObsNotConfigured as exc:
@@ -718,10 +727,11 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
 
     # 多选产物打包 zip 归档到 OBS：paths（与 zip 下载端点同形状）在服务端
     # 内存打包（artifacts.zip_files 复用，不落盘）后 putContent 直传，对象名
-    # 固定 zip/ 前缀 + 自定义包名（normalize_zip_name 清洗）。无有效产物 404、
-    # 包名/paths 非法 422、未配置 503、云失败 502。
+    # 固定 zip/ 前缀 + 自定义包名（normalize_zip_name 清洗）。共享资源写：
+    # 任何登录用户可用，先审计后执行（审计失败 503 不上传）。无有效产物
+    # 404、包名/paths 非法 422、未配置 503、云失败 502。
     @app.post("/api/obs/archive-zip")
-    def archive_zip_to_obs(body: dict | None = None):
+    def archive_zip_to_obs(request: Request, body: dict | None = None):
         paths = (body or {}).get("paths")
         if not isinstance(paths, list) or not paths or not all(
             isinstance(p, str) and p for p in paths
@@ -734,6 +744,9 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         stream, count = artifacts_mod.zip_files(artifact_roots, file_stages, paths)
         if stream is None:
             raise HTTPException(status_code=404, detail="no artifacts to zip")
+        _audit_or_503(actor=request.state.username, action="obs_archive_zip",
+                      result="success", request_id=request_id(request),
+                      meta=f"key:zip/{name},items:{count}")
         try:
             result = obs_upload_zip(f"zip/{name}", stream.getvalue())
         except obs_mod.ObsNotConfigured as exc:
@@ -743,17 +756,35 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         return {**result, "zipped": count, "sources": paths}
 
     # OBS 配置查看（GET，脱敏视图：明文 ak/sk 永不出服务，只回脱敏形 +
-    # 来源 + endpoint/bucket/region）与保存（POST）：ak/sk 服务端加密
+    # 来源 + endpoint/bucket/region；can_write 标当前用户有无修改权——前端
+    # 据此展示只读态）与保存（POST，仅部署管理员）：ak/sk 服务端加密
     # （enc:v1）落 scope.yaml 的 obs 段、明文键自动删除，其余内容逐行
     # 保留；保存后尽力健康检查（失败不回滚，结果如实带回由用户决断）。
-    # 输入非法 422、加密依赖缺失 503。
+    # 输入非法 422、非管理员 403、加密依赖缺失 503；写动作先审计后执行
+    # （审计失败 503 不落盘）。
     @app.get("/api/obs/config")
-    def get_obs_config():
-        return obs_mod.get_config(obs_scope)
+    def get_obs_config(request: Request):
+        return {**obs_mod.get_config(obs_scope),
+                "can_write": request.state.username == obs_admin}
 
     @app.post("/api/obs/config")
-    def save_obs_config(body: dict | None = None):
+    def save_obs_config(request: Request, body: dict | None = None):
         b = body or {}
+        if request.state.username != obs_admin:
+            _audit_denied(request, "obs_config", reason=REASON_NOT_ADMIN)
+            raise HTTPException(
+                status_code=403, detail=f"obs config is admin-only ({obs_admin})")
+        try:  # 入口预检与 save_config 同一份清洗（非法输入 422 先于审计）
+            clean = obs_mod.clean_config_input(
+                ak=b.get("ak"), sk=b.get("sk"),
+                region=b.get("region"), bucket=b.get("bucket"),
+                endpoint=b.get("endpoint"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        _audit_or_503(actor=request.state.username, action="obs_config",
+                      result="success", request_id=request_id(request),
+                      meta="fields:" + ",".join(sorted(clean)))
         try:
             view = obs_mod.save_config(
                 obs_scope,

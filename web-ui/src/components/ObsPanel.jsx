@@ -102,12 +102,15 @@ function ObsDir({ node, toggles, setToggles, defaultOpen, openKeys, activeKey })
 // config：ak/sk 服务端加密（enc:v1）落 scope.yaml 的 obs 段、明文键自动
 // 删除，改 region 时 endpoint/domain 服务端重推；保存后尽力健康检查，
 // 结果行内反馈（失败不回滚，由使用者决断），成功即刷新对象清单。
+// can_write=false（非管理员）只读：改表单不出现，提示这是全局管理能力。
 function ObsConfigDialog({ onClose }) {
   const [cfg, setCfg] = useState(null)
   const [loadErr, setLoadErr] = useState(null)
   const [form, setForm] = useState({ ak: '', sk: '', bucket: '', region: '', endpoint: '' })
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState(null) // {kind: 'ok'|'warn'|'err', text}
+
+  const canWrite = cfg?.can_write === true
 
   useEffect(() => {
     fetch('/api/obs/config')
@@ -226,27 +229,35 @@ function ObsConfigDialog({ onClose }) {
                 <span className="va-cfg-sub">{cfg.enc_key?.file}</span>
               </span>
             </div>
-            <div className="va-cfg-sec">修改（ak/sk 提交后加密落盘，明文自动删除；留空不改）</div>
-            <div className="va-cfg-fields">
-              {field('ak', 'AK', 'password')}
-              {field('sk', 'SK', 'password')}
-              {field('bucket', 'bucket')}
-              {field('region', 'region')}
-              {field('endpoint', 'endpoint')}
+            <div className="va-cfg-sec">
+              {canWrite
+                ? '修改（ak/sk 提交后加密落盘，明文自动删除；留空不改）'
+                : '修改仅限管理员（共享桶的全局凭据，普通用户只读）'}
             </div>
+            {canWrite && (
+              <div className="va-cfg-fields">
+                {field('ak', 'AK', 'password')}
+                {field('sk', 'SK', 'password')}
+                {field('bucket', 'bucket')}
+                {field('region', 'region')}
+                {field('endpoint', 'endpoint')}
+              </div>
+            )}
           </>
         )}
         {msg && <div className={`va-cfg-msg ${msg.kind}`}>{msg.text}</div>}
         <div className="va-modal-actions">
           <button className="va-cfg-cancel" onClick={onClose} disabled={saving}>关闭</button>
-          <button
-            className="va-cfg-save"
-            onClick={save}
-            disabled={saving || !cfg}
-            title="保存（ak/sk 密文落盘）后自动做一次健康检查"
-          >
-            {saving ? '保存中…' : '保存'}
-          </button>
+          {canWrite && (
+            <button
+              className="va-cfg-save"
+              onClick={save}
+              disabled={saving || !cfg}
+              title="保存（ak/sk 密文落盘）后自动做一次健康检查"
+            >
+              {saving ? '保存中…' : '保存'}
+            </button>
+          )}
         </div>
       </div>
     </div>
