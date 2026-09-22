@@ -3,9 +3,13 @@
 httpx 自带的 ASGITransport 会把整个响应体收完才返回，SSE 这种
 挂起会话上的无限流会挂死；这里换成边推边读——响应体块进 asyncio.Queue，
 响应对象以异步迭代器消费，aclose 时取消应用协程（等效客户端断开）。
+
+另有各认证/ACL/共享资源测试共用的审计桩（读取、封堵与解除——封堵即把
+目录换成同名文件，audit.record 的 open(a) 必然失败）。
 """
 import asyncio
 import json
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -179,3 +183,23 @@ class StreamingASGITransport(httpx.AsyncBaseTransport):
 
         headers = [(k.decode("latin-1"), v.decode("latin-1")) for k, v in state["headers"]]
         return httpx.Response(state["status"], headers=headers, content=body_iter(), request=request)
+
+
+def audit_lines(audit_dir):
+    """读出全部审计记录（跨天文件按文件名序拼接）。"""
+    lines = []
+    for f in sorted(Path(audit_dir).glob("audit-*.jsonl")):
+        lines.extend(json.loads(l) for l in f.read_text(encoding="utf-8").splitlines() if l)
+    return lines
+
+
+def block_audit(audit_dir):
+    """封堵审计：目录换成同名文件，写路径必失败（503 阻断测试用）。"""
+    d = Path(audit_dir)
+    if d.is_dir():
+        shutil.rmtree(d)
+    d.write_text("blocked", encoding="utf-8")
+
+
+def unblock_audit(audit_dir):
+    Path(audit_dir).unlink()

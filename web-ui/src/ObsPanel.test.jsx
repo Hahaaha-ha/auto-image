@@ -1,5 +1,6 @@
-// OBS 面板共享性测试：面板对普通用户保留共享资源浏览与配置入口；
-// 配置对话框的写面（改表单/保存钮）按 can_write 门控，普通用户只读提示。
+// OBS 面板共享性与配置写权限测试：面板对普通用户保留共享资源浏览与
+// 配置入口；写权限判定 canWriteOf fail-closed（缺键/非布尔一律只读），
+// 普通用户文案与术语哨兵钉住。
 import { readFileSync } from 'node:fs'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
@@ -24,6 +25,7 @@ vi.mock('./store.js', () => ({
 }))
 
 import ObsPanel from './components/ObsPanel.jsx'
+import { canWriteOf } from './components/ObsPanel.jsx'
 
 describe('OBS 面板（共享资源）', () => {
   it('普通用户面板保留共享清单浏览与配置入口（不按 owner 隐藏）', () => {
@@ -36,18 +38,18 @@ describe('OBS 面板（共享资源）', () => {
   })
 })
 
-describe('OBS 配置写权限门控', () => {
-  const source = readFileSync(new URL('components/ObsPanel.jsx', import.meta.url), 'utf-8')
-
-  it('改表单与保存钮都在 canWrite 门内（非管理员无写入口）', () => {
-    expect(source).toContain('canWrite && (')
-    // 门控覆盖字段区与保存钮两处
-    const gated = source.match(/\{canWrite && \(/g) ?? []
-    expect(gated.length).toBe(2)
+describe('OBS 配置写权限判定', () => {
+  it('can_write 为 true 才可见写面；缺键/非布尔一律只读（fail closed）', () => {
+    expect(canWriteOf({ can_write: true })).toBe(true)
+    for (const cfg of [null, undefined, {}, { can_write: false },
+      { can_write: 'true' }, { can_write: 1 }]) {
+      expect(canWriteOf(cfg), `${JSON.stringify(cfg)} 应只读`).toBe(false)
+    }
   })
 
-  it('can_write 来自服务端视图，普通用户有只读说明文案', () => {
-    expect(source).toContain("cfg?.can_write === true")
-    expect(source).toContain('仅限管理员')
+  it('组件源码只经 canWriteOf 判定写权限（不旁路布尔转换）', () => {
+    const source = readFileSync(new URL('components/ObsPanel.jsx', import.meta.url), 'utf-8')
+    expect(source).toContain('const canWrite = canWriteOf(cfg)')
+    expect(source).toContain('仅限部署管理员')  // 普通用户只读说明文案
   })
 })

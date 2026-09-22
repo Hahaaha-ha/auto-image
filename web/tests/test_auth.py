@@ -11,7 +11,6 @@
 import asyncio
 import json
 import os
-import shutil
 import sys
 import tempfile
 import time
@@ -22,7 +21,10 @@ import httpx
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 from web.auth import COOKIE_NAME, hash_password, issue_token, verify_password  # noqa: E402
 from web.audit import ControlAudit  # noqa: E402
-from web.tests.support import StreamingASGITransport, async_client, make_test_app  # noqa: E402
+from web.tests.support import (  # noqa: E402
+    StreamingASGITransport, audit_lines, async_client, block_audit, make_test_app,
+    unblock_audit,
+)
 
 PASSWORD = "correct-horse"
 SAME_ORIGIN = "http://testserver"
@@ -33,16 +35,9 @@ TESTER_HASH = hash_password(PASSWORD, 1000)
 GHOST_HASH = hash_password(PASSWORD, 1000)
 
 
-def block_audit(tmp):
-    """审计目录占位成普通文件（mkdir 必失败）。"""
-    d = Path(tmp, "audit")
-    if d.is_dir():
-        shutil.rmtree(d)
-    d.write_text("blocked", encoding="utf-8")
+def audit_dir_of(tmp):
+    return Path(tmp) / "audit"
 
-
-def unblock_audit(tmp):
-    Path(tmp, "audit").unlink()
 
 # 受保护面抽样：业务 API、全局 SSE、产物、OBS、ECS（未登录一律 401）
 PROTECTED_GET = [
@@ -82,13 +77,6 @@ def auth_app(tmp, **overrides):
     users_path = write_users(Path(tmp) / "users.yaml")
     return make_test_app(users_path=users_path, audit_dir=Path(tmp) / "audit",
                          **overrides)
-
-
-def audit_lines(tmp):
-    lines = []
-    for f in sorted(Path(tmp, "audit").glob("audit-*.jsonl")):
-        lines.extend(json.loads(l) for l in f.read_text(encoding="utf-8").splitlines() if l)
-    return lines
 
 
 # ---------- 口令哈希与 Cookie 签名的单元行为 ----------
@@ -140,7 +128,7 @@ async def test_login_me_logout_flow_and_cookie_attributes():
             r = await client.get("/api/auth/me")
             assert r.status_code == 401, r.text
             # 登录成功与登出都入审计
-            actions = [(e["action"], e["result"]) for e in audit_lines(tmp)]
+            actions = [(e["action"], e["result"]) for e in audit_lines(audit_dir_of(tmp))]
             assert ("login", "success") in actions and ("logout", "success") in actions, actions
 
 
@@ -155,7 +143,7 @@ async def test_login_failure_unified_401_and_audited():
                 assert r.status_code == 401, (username, r.text)
             r = await client.post("/api/auth/login", json={"username": "tester"})
             assert r.status_code == 422, r.text
-        failures = [e for e in audit_lines(tmp) if e["action"] == "login" and e["result"] == "failure"]
+        failures = [e for e in audit_lines(audit_dir_of(tmp)) if e["action"] == "login" and e["result"] == "failure"]
         reasons = {e["actor"]: e["reason"] for e in failures}
         assert reasons == {"tester": "bad_credentials", "nobody": "no_such_user",
                            "ghost": "disabled_user"}, reasons
@@ -295,7 +283,7 @@ async def test_cross_origin_state_changing_requests_403():
                                   json={"username": "tester", "password": PASSWORD},
                                   headers={"Origin": CROSS_ORIGIN})
             assert r.status_code == 403, r.text
-        rejected = [e for e in audit_lines(tmp)
+        rejected = [e for e in audit_lines(audit_dir_of(tmp))
                     if e["action"] == "login" and e["result"] == "failure"]
         assert any(e["reason"] == "cross_origin" for e in rejected), rejected
 
@@ -308,7 +296,7 @@ async def test_audit_write_failure_blocks_state_changing_auth_actions():
         async with httpx.AsyncClient(transport=StreamingASGITransport(app=app),
                                      base_url="http://testserver") as client:
             # 审计目录被占位成普通文件：写入必失败
-            block_audit(tmp)
+            block_audit(audit_dir_of(tmp))
             r = await client.post("/api/auth/login",
                                   json={"username": "tester", "password": PASSWORD})
             assert r.status_code == 503, r.text
@@ -324,11 +312,11 @@ async def test_audit_write_failure_blocks_state_changing_auth_actions():
             assert r.status_code == 403, r.text
 
             # 恢复审计目录：登录成功、随后再度破坏，登出被阻断
-            unblock_audit(tmp)
+            unblock_audit(audit_dir_of(tmp))
             r = await client.post("/api/auth/login",
                                   json={"username": "tester", "password": PASSWORD})
             assert r.status_code == 200, r.text
-            block_audit(tmp)
+            block_audit(audit_dir_of(tmp))
             r = await client.post("/api/auth/logout")
             assert r.status_code == 503, r.text
 
@@ -345,7 +333,7 @@ async def test_audit_entries_shape_and_no_secrets():
         raw = "".join(f.read_text(encoding="utf-8")
                       for f in Path(tmp, "audit").glob("audit-*.jsonl"))
         assert PASSWORD not in raw and token not in raw, raw
-        for entry in audit_lines(tmp):
+        for entry in audit_lines(audit_dir_of(tmp)):
             assert {"time", "actor", "action", "result", "request_id"} <= set(entry), entry
             assert entry["actor"] == "tester"
             assert entry["request_id"], entry

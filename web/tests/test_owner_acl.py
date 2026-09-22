@@ -11,7 +11,6 @@ app），覆盖列表过滤、单 run 404 不泄露、控制动作 owner 校验�
 import asyncio
 import json
 import os
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -19,7 +18,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 from web.fake import DEFAULT_SCRIPT, FakeSessionFactory  # noqa: E402
 from web.tests.support import (  # noqa: E402
-    StreamingASGITransport, TEST_PASSWORD, async_client, make_test_app, write_test_users,
+    StreamingASGITransport, TEST_PASSWORD, audit_lines, async_client,
+    block_audit, make_test_app, unblock_audit, write_test_users,
 )
 
 PASSWORD = TEST_PASSWORD
@@ -35,22 +35,8 @@ def owner_app(tmp, factory=None):
     )
 
 
-def audit_lines(tmp):
-    lines = []
-    for f in sorted(Path(tmp, "audit").glob("audit-*.jsonl")):
-        lines.extend(json.loads(l) for l in f.read_text(encoding="utf-8").splitlines() if l)
-    return lines
-
-
-def block_audit(tmp):
-    d = Path(tmp, "audit")
-    if d.is_dir():
-        shutil.rmtree(d)
-    d.write_text("blocked", encoding="utf-8")
-
-
-def unblock_audit(tmp):
-    Path(tmp, "audit").unlink()
+def audit_dir_of(tmp):
+    return Path(tmp) / "audit"
 
 
 async def create_run_as(client):
@@ -172,7 +158,7 @@ async def test_control_actions_audited_with_owner_and_denials():
             await bob.post(f"/api/runs/{a_run}/messages", json={"text": "越权"})
             await alice.post(f"/api/runs/{fork}/messages", json={"text": "已结束"})  # session_not_active
 
-        entries = audit_lines(tmp)
+        entries = audit_lines(audit_dir_of(tmp))
         by_action = {}
         for e in entries:
             by_action.setdefault((e["action"], e["result"]), []).append(e)
@@ -199,7 +185,7 @@ async def test_audit_failure_blocks_control_actions():
         app = owner_app(tmp)
         async with async_client(app, username="alice") as alice:
             first = await create_run_as(alice)  # 审计正常时建得起来
-            block_audit(tmp)
+            block_audit(audit_dir_of(tmp))
 
             r = await alice.post("/api/runs", json={})
             assert r.status_code == 503, r.text

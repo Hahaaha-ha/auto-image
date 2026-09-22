@@ -12,9 +12,7 @@
 """
 import asyncio
 import io
-import json
 import os
-import shutil
 import sys
 import tempfile
 import zipfile
@@ -23,7 +21,10 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-from web.tests.support import async_client, make_test_app  # noqa: E402
+from web.app import REASON_NOT_ADMIN  # noqa: E402
+from web.tests.support import (  # noqa: E402
+    audit_lines, async_client, block_audit, make_test_app, unblock_audit,
+)
 
 FIXTURE_LIST = {
     "bucket": "test-image-gen", "region": "ap-southeast-1",
@@ -67,22 +68,8 @@ def write_scope(app, obs=None):
         yaml.safe_dump(data), encoding="utf-8")
 
 
-def audit_lines(tmp):
-    lines = []
-    for f in sorted(Path(tmp, "audit").glob("audit-*.jsonl")):
-        lines.extend(json.loads(l) for l in f.read_text(encoding="utf-8").splitlines() if l)
-    return lines
-
-
-def block_audit(tmp):
-    d = Path(tmp, "audit")
-    if d.is_dir():
-        shutil.rmtree(d)
-    d.write_text("blocked", encoding="utf-8")
-
-
-def unblock_audit(tmp):
-    Path(tmp, "audit").unlink()
+def audit_dir_of(tmp):
+    return Path(tmp) / "audit"
 
 
 async def test_artifact_reads_shared_by_two_users():
@@ -155,7 +142,7 @@ async def test_archive_shared_by_any_user_and_audited():
             r = await bob.post("/api/obs/archive-zip", json={"paths": [REL], "name": "bob-bundle"})
             assert r.status_code == 200 and r.json()["key"] == "zip/bob-bundle.zip", r.text
         assert ("files", (REL,)) in calls and ("zip", "zip/bob-bundle.zip") in calls, calls
-        entries = audit_lines(tmp)
+        entries = audit_lines(audit_dir_of(tmp))
         assert any(e["actor"] == "alice" and e["action"] == "obs_archive"
                    and e["result"] == "success" for e in entries), entries
         assert any(e["actor"] == "bob" and e["action"] == "obs_archive_zip"
@@ -176,10 +163,10 @@ async def test_non_admin_config_write_denied_403():
             # 落盘不动：桶名未被改写
             scope = yaml.safe_load((app.state.test_root / "scope.yaml").read_text(encoding="utf-8"))
             assert scope["obs"]["bucket"] == "old-bucket", scope
-        entries = [e for e in audit_lines(tmp)
+        entries = [e for e in audit_lines(audit_dir_of(tmp))
                    if e["action"] == "obs_config" and e["actor"] == "alice"]
         assert entries and entries[0]["result"] == "denied", entries
-        assert entries[0]["reason"] == "not_admin", entries[0]
+        assert entries[0]["reason"] == REASON_NOT_ADMIN, entries[0]
 
 
 async def test_admin_config_write_succeeds_and_audited():
@@ -195,7 +182,7 @@ async def test_admin_config_write_succeeds_and_audited():
         scope = yaml.safe_load((app.state.test_root / "scope.yaml").read_text(encoding="utf-8"))
         assert scope["obs"]["bucket"] == "new-bucket", scope
         assert any(e["actor"] == "admin" and e["action"] == "obs_config"
-                   and e["result"] == "success" for e in audit_lines(tmp))
+                   and e["result"] == "success" for e in audit_lines(audit_dir_of(tmp)))
 
 
 async def test_audit_failure_blocks_shared_writes():
@@ -215,7 +202,7 @@ async def test_audit_failure_blocks_shared_writes():
         write_scope(app, obs={"bucket": "old-bucket"})
         async with async_client(app, username="alice") as alice, \
                 async_client(app, username="admin") as admin:
-            block_audit(tmp)
+            block_audit(audit_dir_of(tmp))
             r = await alice.post("/api/obs/archive", json={"paths": [REL]})
             assert r.status_code == 503, r.text
             r = await alice.post("/api/obs/archive-zip", json={"paths": [REL], "name": "x"})
@@ -228,7 +215,7 @@ async def test_audit_failure_blocks_shared_writes():
             # 读取不受审计阻断
             assert (await alice.get("/api/obs/config")).status_code == 200
 
-            unblock_audit(tmp)
+            unblock_audit(audit_dir_of(tmp))
             r = await alice.post("/api/obs/archive", json={"paths": [REL]})
             assert r.status_code == 200, r.text
             assert calls == ["archive"], calls

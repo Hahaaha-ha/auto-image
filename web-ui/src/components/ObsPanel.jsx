@@ -97,20 +97,25 @@ function ObsDir({ node, toggles, setToggles, defaultOpen, openKeys, activeKey })
   )
 }
 
+// 配置视图 can_write → 写面可见；缺键/非布尔一律只读（fail closed——
+// 服务端视图漂移时普通用户不会多拿到写入口）
+export const canWriteOf = (cfg) => cfg?.can_write === true
+
 // 配置对话框：打开即拉当前配置（GET /api/obs/config 脱敏视图——ak/sk
 // 只显头尾几位 + 来源与长度，明文永不出服务）；提交走 POST /api/obs/
 // config：ak/sk 服务端加密（enc:v1）落 scope.yaml 的 obs 段、明文键自动
 // 删除，改 region 时 endpoint/domain 服务端重推；保存后尽力健康检查，
 // 结果行内反馈（失败不回滚，由使用者决断），成功即刷新对象清单。
 // can_write=false（非管理员）只读：改表单不出现，提示这是全局管理能力。
-function ObsConfigDialog({ onClose }) {
+// 具名导出：测试渲染 can_write 两种视图（store mock 之外唯一的外部缝）。
+export function ObsConfigDialog({ onClose }) {
   const [cfg, setCfg] = useState(null)
   const [loadErr, setLoadErr] = useState(null)
   const [form, setForm] = useState({ ak: '', sk: '', bucket: '', region: '', endpoint: '' })
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState(null) // {kind: 'ok'|'warn'|'err', text}
 
-  const canWrite = cfg?.can_write === true
+  const canWrite = canWriteOf(cfg)
 
   useEffect(() => {
     fetch('/api/obs/config')
@@ -232,7 +237,7 @@ function ObsConfigDialog({ onClose }) {
             <div className="va-cfg-sec">
               {canWrite
                 ? '修改（ak/sk 提交后加密落盘，明文自动删除；留空不改）'
-                : '修改仅限管理员（共享桶的全局凭据，普通用户只读）'}
+                : '修改仅限部署管理员（共享桶的全局凭据，普通用户只读）'}
             </div>
             {canWrite && (
               <div className="va-cfg-fields">

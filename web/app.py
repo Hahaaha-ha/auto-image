@@ -269,8 +269,9 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     # 处理归后续恢复切片
     legacy_owner = default_owner or DEFAULT_OWNER
     # OBS 全局配置的唯一写权限人（部署管理员）：与 legacy 迁移归属同一
-    # 显式配置，缺省 admin。普通用户读共享、写 403
-    obs_admin = legacy_owner
+    # 显式配置源（WEB_DEFAULT_OWNER，缺省 admin），语义独立——普通用户
+    # 读共享、写 403
+    obs_admin = default_owner or DEFAULT_OWNER
     for r in restored:
         if r.owner is None:
             r.owner = legacy_owner
@@ -786,12 +787,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
                       result="success", request_id=request_id(request),
                       meta="fields:" + ",".join(sorted(clean)))
         try:
-            view = obs_mod.save_config(
-                obs_scope,
-                ak=b.get("ak"), sk=b.get("sk"),
-                region=b.get("region"), bucket=b.get("bucket"),
-                endpoint=b.get("endpoint"),
-            )
+            view = obs_mod.save_config(obs_scope, **clean)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except obs_mod.ObsNotConfigured as exc:
