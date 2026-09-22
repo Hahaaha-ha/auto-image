@@ -374,7 +374,11 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
 
     @app.get("/api/runs")
     async def list_runs(request: Request):
-        return {"runs": manager.summaries(owner=request.state.username)}
+        # 容量是匿名全局口径：running_count 数全部用户的 RUNNING 回合、
+        # max_parallel 是并发上限——跨用户负载可见，但不带任何他人会话细节
+        return {"runs": manager.summaries(owner=request.state.username),
+                "running_count": manager.running_count(),
+                "max_parallel": manager.max_parallel}
 
     @app.post("/api/runs")
     async def create_run(request: Request, body: dict | None = None):
@@ -893,25 +897,55 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    # 全局事件流：一条连接广播全部会话的实时事件（帧带 run_id），零连接
-    # 状态——无 Last-Event-ID 断点、无连接簿记、无 TTL，增量游标是流自身
-    # 的局部变量；连接前的事件不重放（历史由快照补），断线重连靠快照重拉
-    # + per-run seq 去重吸收。永不因会话终态主动关闭：终态后不再产事件，
-    # 天然静默，空闲按 heartbeat_interval 心跳保活
+    # 全局事件流：一条连接广播当前用户自己的会话实时事件（帧带 run_id），
+    # 零连接状态——无 Last-Event-ID 断点、无连接簿记、无 TTL，增量游标是流
+    # 自身的局部变量；连接前的事件不重放（历史由快照补），断线重连靠快照
+    # 重拉 + per-run seq 去重吸收。发送帧按 run 表里的 owner 过滤（游标照常
+    # 推进，他人事件直接跳过），心跳周期重验登录身份——禁用/改密/Cookie
+    # 过期后关流（前端先重新确认身份再决定回登录页）。永不因会话终态主动
+    # 关闭：终态后不再产事件，天然静默，空闲按 heartbeat_interval 心跳保活
     @app.get("/api/stream")
-    async def global_stream():
+    async def global_stream(request: Request):
+        # 连接建立时的登录身份（middleware 已验过一次）；重验以此为基准，
+        # 签名/过期/禁用/密码版本任一失配（含 Cookie 被换成其他用户的）即
+        # 视为撤销。仍在有效期内的旧 Cookie 换不掉这条连接的归属——那是
+        # 前端登出/关页的职责
+        actor = request.state.username
+        cookie = request.cookies.get(auth_mod.COOKIE_NAME)
+
+        def identity_revoked():
+            # verify_token 单点覆盖签名、过期、用户存在、启用与密码版本指纹
+            # （cookie 异常形状由它兜底返回 reason，不抛异常）
+            if not cookie:
+                return True
+            username, _ = auth_mod.verify_token(secret, cookie, roster)
+            return username != actor
+
         async def generate():
             with store.subscribe_global() as flag:
                 cursor = store.broadcast_len()
+                recheck_at = time.monotonic() + heartbeat_interval
                 while True:
                     flag.clear()
                     for event in store.broadcast_from(cursor):
                         cursor += 1
+                        run = manager.get(event["run_id"])
+                        if run is None or run.owner != actor:
+                            continue
                         yield _broadcast_chunk(event)
-                    try:
-                        await asyncio.wait_for(flag.wait(), timeout=heartbeat_interval)
-                    except asyncio.TimeoutError:
+                    # 心跳窗口即重验窗口：流忙（事件持续到达，等不来超时
+                    # 分支）也照常到期检查
+                    now = time.monotonic()
+                    if now >= recheck_at:
+                        if identity_revoked():
+                            return
+                        recheck_at = now + heartbeat_interval
                         yield ": ping\n\n"
+                    timeout = max(0.0, recheck_at - time.monotonic())
+                    try:
+                        await asyncio.wait_for(flag.wait(), timeout=timeout)
+                    except asyncio.TimeoutError:
+                        pass
 
         return StreamingResponse(
             generate(),

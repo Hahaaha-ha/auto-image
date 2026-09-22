@@ -1,8 +1,7 @@
 # web — 部署会话 Web 服务端
 
 浏览器会话式入口：新建空会话 → 输入部署指令 → SSE 实时看 agent 事件流。
-事件通道两条：全局流（`GET /api/stream`，一条连接广播全部会话实时事件、
-常驻心跳保活）+ per-run 快照（`GET /api/runs/{run_id}/events`，按
+事件通道两条：全局流（`GET /api/stream`，一条连接广播当前用户自己会话的实时事件、按 owner 逐帧过滤、心跳周期重验身份、常驻心跳保活）+ per-run 快照（`GET /api/runs/{run_id}/events`，按
 Last-Event-ID 重放历史、重放完即断）。
 多会话并行（并发上限 `WEB_MAX_PARALLEL_RUNS`，默认 10，数执行中回合——
 新建、Fork、标题生成不占名额）；SDK 连接按回合开合，挂起会话零 CLI 进程。
@@ -38,8 +37,12 @@ SameSite=Lax、HMAC 签名、7 天绝对过期）。会话控制面按 owner 隔
 单、内容、下载、归档（本地产物与 zip 打包直传）不按 owner 过滤，归档与
 OBS 配置修改先审计后执行；OBS 全局配置（凭据/桶/endpoint）只有部署管理
 员（`WEB_DEFAULT_OWNER`，缺省 `admin`）可写，普通用户 403、配置视图只读
-（`can_write: false`）。全局事件流按 owner 过滤尚未实现
-（后续切片）；此前不要把 `/api/stream` 暴露给不互信的用户。
+（`can_write: false`）。全局事件流按 owner 逐帧过滤（只发当前用户自己会话
+的事件；帧发送时查 run 表归属，不引入连接订阅表与全局 seq），连接存续期间
+按心跳周期重验登录身份——禁用、改密（密码版本指纹漂移）或 Cookie 过期即
+关流；`GET /api/runs` 随列表下发匿名全局容量（`running_count` /
+`max_parallel`，跨用户合计，不含他人 run id、标题、prompt、owner 或目标
+机器），前端标签栏「运行中 n/m」据此展示。
 
 默认只监听 127.0.0.1。需要外部机器的浏览器访问时，`WEB_HOST=0.0.0.0`
 绑定全部网卡，经 `http://<本机IP>:<端口>/` 访问——暴露面由运行者的网络
@@ -87,6 +90,7 @@ python web/tests/test_normalize.py  # 消息映射与阶段推导纯函数断言
 python web/tests/test_owner_acl.py  # owner 会话隔离（双认证客户端互不可见/不可控）
 python web/tests/test_redact.py     # 事件出口脱敏（形状正则 + 已知值清单）
 python web/tests/test_shared_resources.py # 产物/OBS 共享读取、归档审计、OBS 配置 admin-only
+python web/tests/test_stream_isolation.py # 全局流 owner 逐帧过滤、心跳身份撤销、匿名容量
 python web/tests/test_sdk.py        # options 契约（身份、Fork、系统提示词、无值守写权限）
 python web/tests/test_state.py      # 身份映射、墓碑与 Fork 来源簿记
 python web/tests/test_title.py      # 标题生成（prompt/清洗/一次性会话/幂等/写回）
@@ -98,7 +102,7 @@ cd web-ui && npm test && npm run build    # 前端完整测试与生产构建
 
 | 文件 | 职责 |
 | --- | --- |
-| `app.py` | FastAPI 应用工厂、API 路由（含 `GET /api/runs` 列表，按当前登录用户过滤 owner）、SSE 通道两条（全局流常驻广播 + per-run 快照：id=seq、Last-Event-ID 重放、重放完即断）、启动接线（重放恢复 + legacy 归属迁移 + 残留 CLI 告警） |
+| `app.py` | FastAPI 应用工厂、API 路由（含 `GET /api/runs` 列表，按当前登录用户过滤 owner，随列表下发匿名全局容量 running_count/max_parallel）、SSE 通道两条（全局流常驻广播 + owner 逐帧过滤 + 心跳周期重验身份；per-run 快照：id=seq、Last-Event-ID 重放、重放完即断）、启动接线（重放恢复 + legacy 归属迁移 + 残留 CLI 告警） |
 | `auth.py` | 文件用户清单（`users.yaml`，mtime 热载）与 Cookie 登录态：PBKDF2 口令校验、HMAC 签名令牌（携带密码版本指纹——改密/禁用即撤销该用户 Cookie）、认证密钥解析（`WEB_AUTH_SECRET`，缺省机器派生） |
 | `audit.py` | 控制审计（本地追加 JSONL，按天轮转默认留 90 天）：登录/登出与会话控制动作，带 actor、动作、run id、run owner、结果、拒绝原因与 request id；写失败抛 `AuditWriteError` 由控制动作 503 阻断 |
 | `runs.py` | 会话状态机（READY/RUNNING/ENDED 三态、无全局门禁）、owner 归属（创建注入、Fork 继承）、校验/置位分离（check_* 纯校验 + commit 置位，控制动作审计前置用）、回合计数（`WEB_MAX_PARALLEL_RUNS`）、Fork/end 校验与 409 判定收敛（turn_in_progress / session_running / parallel_limit_reached / session_not_active） |

@@ -5,7 +5,8 @@
 // 直接横滚，见下方原生非被动监听）。点击只切激活（不产生服务端动作）；
 // 关闭只关视图（会话仍在列表，重开时快照补历史；文件内容缓存保留）。
 // 最后一枚会话标签页的 × 置灰（控制面永远要有对象，title 说明缘由）。
-// 运行计数与「正在跑」提示是人工规避同软件同版本并行冲突的唯一防线。
+// 运行计数与「正在跑」提示是人工规避同软件同版本并行冲突的唯一防线；
+// 多用户下运行计数是匿名全局口径（服务端容量字段，不含他人会话细节）。
 // 方向键沿序列切换，title 带状态词——状态不只靠 8px 形状传达。
 import { useEffect, useRef } from 'react'
 import * as store from '../store.js'
@@ -18,6 +19,8 @@ export default function Tabs() {
   const sessionCount = s.tabs.filter((t) => t.kind === 'session').length
   const running = runningCount(s.runs)
   const others = runningOthers(s.runs, store.controlRunId())
+  // 容量口径一次解析：全局容量（跨用户合计）优先，字段缺席退回本地已知
+  const cap = s.capacity ?? { runningCount: running }
 
   // 滚轮转横向：竖向锁定后，悬停标签栏的竖向滚轮推动标签序列（两端到头
   // 不拦默认）。React 合成 wheel 是被动监听、preventDefault 无效，须挂
@@ -156,9 +159,14 @@ export default function Tabs() {
         + 新建
       </button>
       <span className="va-spacer" />
-      {running > 0 && (
-        <span className="va-run-count" title="当前执行中的回合数（并发上限内的并行负载）">
-          运行中 {running}
+      {/* 运行计数优先用匿名全局容量（跨用户负载，他人会话细节不可见）；摘要
+          轮询未及或字段缺席时退回本地已知会话计数 */}
+      {cap.runningCount > 0 && (
+        <span
+          className="va-run-count"
+          title={`全局执行中的回合数 / 并发上限（跨用户合计，不含他人会话细节）${s.capacity ? '' : '（本地已知口径）'}`}
+        >
+          运行中 {s.capacity ? `${cap.runningCount}/${cap.maxParallel}` : cap.runningCount}
         </span>
       )}
       {others.length > 0 && (

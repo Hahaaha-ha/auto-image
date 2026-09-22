@@ -171,6 +171,47 @@ describe('认证态', () => {
   })
 })
 
+describe('全局容量', () => {
+  const mockFetch = (impl) => { fetch.mockImplementation(impl) }
+
+  it('容量随摘要落位（匿名全局口径），登出后清空', async () => {
+    const bobSession = {
+      run_id: 'run_bob', status: 'RUNNING', stage: null, first_prompt: null,
+      title: null, started_at: 1, ended_at: null, last_event_at: 2, resumed_from: null,
+    }
+    // bob 自己的会话在场（running 既有本地视角也有服务端容量字段）；
+    // 容量落位的是匿名全局口径（他人回合只计入数，不带细节——
+    // 匿名性断言在服务端测试侧）
+    mockFetch(async (url) => {
+      if (url === '/api/auth/login') return { ok: true, json: async () => ({ username: 'bob' }) }
+      if (url === '/api/runs') {
+        return { ok: true, json: async () => ({ runs: [bobSession], running_count: 3, max_parallel: 10 }) }
+      }
+      if (url === '/api/tasks') return { ok: true, json: async () => ({ tasks: [] }) }
+      return { ok: true, json: async () => ({}) }
+    })
+    await store.logout() // 清前面测试遗留的全局流（startDataPlane 幂等守卫）
+    await store.login('bob', 'pw')
+    await vi.waitFor(() => expect(store.getState().capacity).toEqual({ runningCount: 3, maxParallel: 10 }))
+
+    mockFetch(async () => ({ ok: true, json: async () => ({}) }))
+    await store.logout()
+    expect(store.getState().capacity).toBeNull()
+  })
+
+  it('容量字段缺席时保持 null（不误置其他状态）', async () => {
+    mockFetch(async (url) => {
+      if (url === '/api/auth/login') return { ok: true, json: async () => ({ username: 'bob' }) }
+      if (url === '/api/runs') return { ok: true, json: async () => ({ runs: [] }) }
+      if (url === '/api/tasks') return { ok: true, json: async () => ({ tasks: [] }) }
+      return { ok: true, json: async () => ({}) }
+    })
+    await store.login('bob', 'pw')
+    await vi.waitFor(() => expect(store.getState().order).toEqual([]))
+    expect(store.getState().capacity).toBeNull()
+  })
+})
+
 describe('输入草稿', () => {
   it('setDraft 通知订阅者且快照可见（受控输入的 value 源）', () => {
     const seen = []

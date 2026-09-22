@@ -112,6 +112,7 @@ let state = {
   activeKey: restored.viewRunId ? `session:${restored.viewRunId}` : null,
   lastSessionKey: restored.viewRunId ? `session:${restored.viewRunId}` : null,
   connection: 'connecting', // 全局事件流连接态：connecting → live / reconnecting
+  capacity: null,           // 匿名全局容量（服务端随 /api/runs 下发：runningCount/maxParallel，不含他人会话细节）
   submitError: null,
   notice: null,               // 成功提示条（与 submitError 对称，绿色短暂展示）
   now: Date.now(),
@@ -431,7 +432,7 @@ function deauthed(reasonText) {
   for (const key of Object.keys(drafts)) delete drafts[key]
   set({
     auth: 'anonymous', user: null, connection: 'connecting',
-    runs: {}, order: [],
+    runs: {}, order: [], capacity: null,
     tabs: [], activeKey: null, lastSessionKey: null,
     tasks: [], activeTaskId: null,
     drafts: {},
@@ -545,18 +546,23 @@ function makeRun(overrides) {
 }
 
 // 摘要列表拉取与合并（loadRuns 首屏与轮询共用）：新会话补进 runs，order
-// 以服务端为源覆盖。返回列表 order（失败返回 null，调用方各自善后）
+// 以服务端为源覆盖；容量字段（匿名全局 running count / max parallel）随
+// 摘要周期一并刷新——跨用户负载可见，他人会话细节不可见。返回列表 order
+// （失败返回 null，调用方各自善后）
 async function fetchSummaries() {
   const resp = await fetch('/api/runs')
   if (!resp.ok) return null
-  const { runs } = await resp.json()
+  const { runs, running_count: runningCount, max_parallel: maxParallel } = await resp.json()
   const map = {}
   const order = []
   for (const s of runs ?? []) {
     map[s.run_id] = mergeSummary(state.runs[s.run_id] ?? makeRun({ runId: s.run_id }), s)
     order.push(s.run_id)
   }
-  set({ runs: { ...state.runs, ...map }, order })
+  const capacity = runningCount != null && maxParallel != null
+    ? { runningCount, maxParallel }
+    : null
+  set({ runs: { ...state.runs, ...map }, order, capacity })
   return order
 }
 
