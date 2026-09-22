@@ -48,13 +48,19 @@ def open_turn_transcript():
     ]
 
 
-def write_state(path, ended_sessions=(), sessions=None, clone_sources=None, owners=None):
-    path.write_text(json.dumps({
+def write_state(path, ended_sessions=(), sessions=None, clone_sources=None, owners=None,
+                legacy=False):
+    """写一份簿记；legacy=True 时省 version（旧字符串映射形态），owners
+    缺省给空映射——现代格式 owners 段必在，旧格式可缺。"""
+    payload = {
         "ended_sessions": list(ended_sessions),
         "sessions": sessions or {},
         "clone_sources": clone_sources or {},
         "owners": owners or {},
-    }, ensure_ascii=False), encoding="utf-8")
+    }
+    if not legacy:
+        payload["version"] = 2
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 def restore_app(state_path, infos, transcripts, factory=None):
@@ -90,25 +96,46 @@ async def test_save_load_roundtrip_tombstones_and_id_map():
         }, state
         assert empty.run_id not in state["sessions"], state
 
-        # 损坏/形状不对：空册降级，不阻断
+        # 损坏/形状不对：空册 + corrupt 分类（受限恢复判定依据），不阻断
         (Path(d) / "corrupt.json").write_text("not json{", encoding="utf-8")
         assert load_state(Path(d) / "corrupt.json") == {
-            "ended_sessions": set(), "sessions": {}, "clone_sources": {}, "owners": {}}
+            "ended_sessions": set(), "sessions": {}, "clone_sources": {}, "owners": {},
+            "status": "corrupt"}
         (Path(d) / "badshape.json").write_text(
             json.dumps({"ended_sessions": "x", "sessions": [1]}), encoding="utf-8")
         assert load_state(Path(d) / "badshape.json") == {
-            "ended_sessions": set(), "sessions": {}, "clone_sources": {}, "owners": {}}
+            "ended_sessions": set(), "sessions": {}, "clone_sources": {}, "owners": {},
+            "status": "corrupt"}
         # 部分损坏整体弃册（半份无从判真）：墓碑损坏时不挑拣保留映射
         (Path(d) / "partial.json").write_text(json.dumps(
             {"ended_sessions": "x", "sessions": {"run_1": "sess_live"},
              "clone_sources": {}}), encoding="utf-8")
         assert load_state(Path(d) / "partial.json") == {
-            "ended_sessions": set(), "sessions": {}, "clone_sources": {}, "owners": {}}
+            "ended_sessions": set(), "sessions": {}, "clone_sources": {}, "owners": {},
+            "status": "corrupt"}
+        # v2 缺 owners 段：corrupt（现代记录的 owner 归属不可信即整册不可信）
+        (Path(d) / "noowners.json").write_text(json.dumps(
+            {"version": 2, "ended_sessions": [], "sessions": {"run_1": "s"},
+             "clone_sources": {}}), encoding="utf-8")
+        assert load_state(Path(d) / "noowners.json")["status"] == "corrupt"
+        # 未知版本：corrupt（未来格式不猜）
+        (Path(d) / "future.json").write_text(json.dumps(
+            {"version": 3, "ended_sessions": [], "sessions": {}, "clone_sources": {},
+             "owners": {}}), encoding="utf-8")
+        assert load_state(Path(d) / "future.json")["status"] == "corrupt"
+        # 无 version 的旧字符串映射：legacy（首次启动允许迁移）
+        (Path(d) / "legacy.json").write_text(json.dumps(
+            {"ended_sessions": [], "sessions": {"run_1": "s"}, "clone_sources": {}}),
+            encoding="utf-8")
+        assert load_state(Path(d) / "legacy.json")["status"] == "legacy"
+        # 文件缺失：missing
+        assert load_state(Path(d) / "absent.json")["status"] == "missing"
 
 
 async def test_old_state_format_discarded_not_parsed():
     """旧簿记（runs 记录数组）弃用重建：不读旧字段、不沿用旧 run_id——
-    重放按 transcript 会话粒度走 run_hist_ 派生。"""
+    重放按 transcript 会话粒度走 run_hist_ 派生；缺四段形状落 corrupt，
+    首次启动（无初始化标记）仍走受限恢复（损坏形状不因首次启动放宽）。"""
     with tempfile.TemporaryDirectory() as d:
         state_path = Path(d) / "state.json"
         state_path.write_text(json.dumps({"runs": [{
@@ -119,16 +146,19 @@ async def test_old_state_format_discarded_not_parsed():
         app = restore_app(str(state_path), [session_info("sess_z", "部署 nginx", 500)], {"sess_z": two_turn_transcript()})
         async with async_client(app) as client:
             runs = (await client.get("/api/runs")).json()["runs"]
-            # 旧 run_id 不沿用：派生 id 重建，且依旧可续聊（单路径语义）
-            assert [r["run_id"] for r in runs] == ["run_hist_sess_z"], runs
-            assert runs[0]["status"] == "READY", runs
+            # 受限恢复：未知归属会话对一切用户隐藏（含默认 owner）
+            assert runs == [], runs
+            r = await client.post("/api/runs/run_hist_sess_z/messages", json={"text": "继续"})
+            assert r.status_code == 503, r.text
+            # 控制动作被阻断，但服务活着（读取不受影响）
+            assert (await client.get("/api/runs")).status_code == 200
 
 
 async def test_restart_all_sessions_chattable():
     """合流核心：所有 transcript 会话（含原只读历史）重启后直接可续聊。"""
     with tempfile.TemporaryDirectory() as d:
         state_path = Path(d) / "state.json"
-        write_state(state_path)
+        write_state(state_path, legacy=True)
         infos = [session_info("sess_z", "老任务", 500), session_info("sess_y", "更老任务", 300)]
         app = restore_app(str(state_path), infos, {"sess_z": two_turn_transcript(), "sess_y": two_turn_transcript()})
         async with async_client(app) as client:
@@ -149,7 +179,7 @@ async def test_tombstone_sessions_stay_ended_after_restart():
     with tempfile.TemporaryDirectory() as d:
         state_path = Path(d) / "state.json"
         write_state(state_path, ended_sessions=["sess_dead"],
-                    sessions={"run_7": "sess_dead"})
+                    sessions={"run_7": "sess_dead"}, owners={"run_7": "tester"})
         app = restore_app(str(state_path), [session_info("sess_dead", "已结束任务", 900)], {"sess_dead": two_turn_transcript()})
         async with async_client(app) as client:
             runs = (await client.get("/api/runs")).json()["runs"]
@@ -263,7 +293,7 @@ async def test_open_turn_interrupted_and_back_to_ready():
     不伪造 turn.completed，会话回 READY。"""
     with tempfile.TemporaryDirectory() as d:
         state_path = Path(d) / "state.json"
-        write_state(state_path)
+        write_state(state_path, legacy=True)
         app = restore_app(str(state_path), [session_info("sess_x", "部署 nginx", 1000)], {"sess_x": open_turn_transcript()})
         async with async_client(app) as client:
             runs = (await client.get("/api/runs")).json()["runs"]
@@ -280,8 +310,10 @@ async def test_run_id_stable_across_restart():
     with tempfile.TemporaryDirectory() as d:
         state_path = Path(d) / "state.json"
         # 会话曾被克隆：run_1 为源、run_2 为克隆，映射与血缘镜像各两条
+        # （现代格式：owners 段齐全）
         write_state(state_path, sessions={"run_1": "sess_x", "run_2": "sess_c"},
-                    clone_sources={"sess_c": "run_1"})
+                    clone_sources={"sess_c": "run_1"},
+                    owners={"run_1": "tester", "run_2": "tester"})
         infos = [session_info("sess_x", "部署 nginx", 1000), session_info("sess_c", "部署变体", 800)]
         app = restore_app(str(state_path), infos, {"sess_x": two_turn_transcript(), "sess_c": two_turn_transcript()})
         async with async_client(app) as client:
@@ -295,12 +327,15 @@ async def test_run_id_stable_across_restart():
             runs = {r["run_id"] for r in (await client.get("/api/runs")).json()["runs"]}
             assert runs == {"run_1", "run_2"}, runs
 
-        # 簿记损坏（映射丢失）：run_id 换派生规则但两次派生稳定
+        # 簿记损坏（映射丢失）：受限恢复——未知归属会话隐藏（含默认
+        # owner），控制动作 503；服务不炸（读取照常）
         state_path.write_text("garbage{", encoding="utf-8")
         app3 = restore_app(str(state_path), infos, {"sess_x": two_turn_transcript(), "sess_c": two_turn_transcript()})
         async with async_client(app3) as client:
             runs = {r["run_id"] for r in (await client.get("/api/runs")).json()["runs"]}
-            assert runs == {"run_hist_sess_x", "run_hist_sess_c"}, runs  # 启动不炸
+            assert runs == set(), runs  # 启动不炸、未知归属隐藏
+            r = await client.post("/api/runs", json={})
+            assert r.status_code == 503, r.text
 
 
 async def test_single_failure_skipped_and_service_starts():
@@ -318,7 +353,7 @@ async def test_single_failure_skipped_and_service_starts():
     try:
         with tempfile.TemporaryDirectory() as d:
             state_path = Path(d) / "state.json"
-            write_state(state_path)
+            write_state(state_path, legacy=True)
             ok_sid, broken_sid, empty_sid = "sess_ok", "sess_broken", "sess_empty"
             infos = [
                 session_info(ok_sid, "部署 nginx", 1_700_000_000_000),
@@ -343,7 +378,7 @@ async def test_single_failure_skipped_and_service_starts():
 async def test_id_counter_advances_past_restored_ids():
     with tempfile.TemporaryDirectory() as d:
         state_path = Path(d) / "state.json"
-        write_state(state_path, sessions={"run_2": "sess_x"})
+        write_state(state_path, sessions={"run_2": "sess_x"}, owners={"run_2": "tester"})
         app = restore_app(str(state_path), [session_info("sess_x", "部署 nginx", 1000)], {"sess_x": two_turn_transcript()})
         async with async_client(app) as client:
             new_id = (await client.post("/api/runs", json={})).json()["run_id"]

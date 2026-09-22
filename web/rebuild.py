@@ -12,8 +12,9 @@
 重放会话一律恢复 READY（可续聊，回合连接按回合开合、由下一条指令起）；
 重启前未收尾的回合以 turn.interrupted 如实呈现（transcript 推导 turn_open
 即截断），不自动重跑——已提交的云操作不可重复执行，续聊由用户指令驱动。
-owner 归属随簿记恢复（owners 映射）；无 owner 记录的旧会话归默认 owner
-（app 侧注入，legacy 迁移语义），后续切片再收紧为版本化迁移。
+owner 归属随簿记恢复（owners 映射），无 owner 记录的会话保持 None——
+归属判定与迁移（legacy 首启归默认 owner / 现代记录缺 owner 不补默认、
+未知归属隐藏）在 app 侧按簿记状态分类决定，重放层不猜归属。
 
 transcript 里没有 Result 消息：回合边界由「下一条真实用户输入」推导，回合
 汇总取该回合最后一条 agent 文本（CLI 的 result 同源于此）。重放流不补

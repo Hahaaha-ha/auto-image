@@ -30,8 +30,17 @@ PBKDF2 哈希 + 启用状态，按 mtime 热载；Cookie 登录态（HttpOnly、
 SameSite=Lax、HMAC 签名、7 天绝对过期）。会话控制面按 owner 隔离：登录
 用户的会话列表、摘要、事件快照与发送、停止、Fork、结束都按 owner 授权
 （他人与未知 run 同一 404，不泄露存在性）；Fork 继承源 owner；重启后归属
-随簿记恢复，legacy 无 owner 历史会话归 `WEB_DEFAULT_OWNER`（缺省
-`admin`）。控制审计落 `~/.auto-image-web/audit/`（按天轮转、默认留
+随簿记恢复（簿记带显式 version：v2 现代格式的 owner 归属可信，单条缺
+owner 记录不补默认——保持未知归属对一切用户隐藏；无 version 的旧字符串
+映射为 legacy，仅初始化标记缺席的首次启动把无 owner 历史会话与直跑
+CLI transcript 统一迁移归 `WEB_DEFAULT_OWNER`（缺省 `admin`）；state
+损坏或初始化完成后缺失进受限恢复——未知归属会话隐藏、控制动作 503、
+读取不受影响，不自动归 `admin`）。owner 映射或簿记无法安全落盘时发送、
+停止、Fork、结束与 OBS 配置修改 503 且不执行。owner 转移只能停服用
+`tools/transfer_ownership.py`（自动备份 state、动作入控制审计），Web API
+无转移入口。未知、禁用或已删除的 owner 字符串保留在簿记，对应会话对
+当前用户隐藏，原用户名重新启用后恢复可见。控制审计落
+`~/.auto-image-web/audit/`（按天轮转、默认留
 90 天）；审计写失败时控制动作 503 不执行。改密/禁用即时撤销该用户登录
 态；`WEB_AUTH_SECRET` 轮换全体失效。产物与 OBS 对所有登录用户共享：清
 单、内容、下载、归档（本地产物与 zip 打包直传）不按 owner 过滤，归档与
@@ -92,6 +101,7 @@ python web/tests/test_redact.py     # 事件出口脱敏（形状正则 + 已知
 python web/tests/test_shared_resources.py # 产物/OBS 共享读取、归档审计、OBS 配置 admin-only
 python web/tests/test_stream_isolation.py # 全局流 owner 逐帧过滤、心跳身份撤销、匿名容量
 python web/tests/test_sdk.py        # options 契约（身份、Fork、系统提示词、无值守写权限）
+python web/tests/test_recovery.py # 安全恢复（版本化簿记/legacy 迁移/受限恢复/落盘门/人工转移）
 python web/tests/test_state.py      # 身份映射、墓碑与 Fork 来源簿记
 python web/tests/test_title.py      # 标题生成（prompt/清洗/一次性会话/幂等/写回）
 python web/tests/test_transcript_times.py # transcript 时刻读取
@@ -102,7 +112,7 @@ cd web-ui && npm test && npm run build    # 前端完整测试与生产构建
 
 | 文件 | 职责 |
 | --- | --- |
-| `app.py` | FastAPI 应用工厂、API 路由（含 `GET /api/runs` 列表，按当前登录用户过滤 owner，随列表下发匿名全局容量 running_count/max_parallel）、SSE 通道两条（全局流常驻广播 + owner 逐帧过滤 + 心跳周期重验身份；per-run 快照：id=seq、Last-Event-ID 重放、重放完即断）、启动接线（重放恢复 + legacy 归属迁移 + 残留 CLI 告警） |
+| `app.py` | FastAPI 应用工厂、API 路由（含 `GET /api/runs` 列表，按当前登录用户过滤 owner，随列表下发匿名全局容量 running_count/max_parallel）、SSE 通道两条（全局流常驻广播 + owner 逐帧过滤 + 心跳周期重验身份；per-run 快照：id=seq、Last-Event-ID 重放、重放完即断）、启动接线（重放恢复 + 簿记状态分类——legacy 首启迁移 / 受限恢复判定 + 初始化标记落盘 + 残留 CLI 告警）、控制动作双门（审计前置 503 + 簿记落盘门 503，受限恢复下整体阻断） |
 | `auth.py` | 文件用户清单（`users.yaml`，mtime 热载）与 Cookie 登录态：PBKDF2 口令校验、HMAC 签名令牌（携带密码版本指纹——改密/禁用即撤销该用户 Cookie）、认证密钥解析（`WEB_AUTH_SECRET`，缺省机器派生） |
 | `audit.py` | 控制审计（本地追加 JSONL，按天轮转默认留 90 天）：登录/登出与会话控制动作，带 actor、动作、run id、run owner、结果、拒绝原因与 request id；写失败抛 `AuditWriteError` 由控制动作 503 阻断 |
 | `runs.py` | 会话状态机（READY/RUNNING/ENDED 三态、无全局门禁）、owner 归属（创建注入、Fork 继承）、校验/置位分离（check_* 纯校验 + commit 置位，控制动作审计前置用）、回合计数（`WEB_MAX_PARALLEL_RUNS`）、Fork/end 校验与 409 判定收敛（turn_in_progress / session_running / parallel_limit_reached / session_not_active） |
@@ -112,7 +122,7 @@ cd web-ui && npm test && npm run build    # 前端完整测试与生产构建
 | `artifacts.py` | deploy/ + rpm/ 多根全量产物浏览（目录分组 + 最新落盘排序，约定文件带阶段徽标）、内容读取、单文件下载与批量 zip、路径约束 |
 | `redact.py` | 事件出口脱敏（运行时已知值清单 + AK/SK、密码字段、私钥块形状正则） |
 | `rebuild.py` | 服务重启后的恢复（单一流程）：全量 transcript 按 session 粒度重放 + state 簿记叠加——身份映射命中的沿用原 run_id 并恢复 owner 归属，墓碑会话标 ENDED；其余重放会话 READY 可续聊，未收尾回合（transcript 推导 turn_open）补 `turn.interrupted` 不伪造完成 |
-| `state.py` | 恢复簿记（`~/.auto-image-web/state.json`，全量原子替换）：墓碑（用户 ENDED 的 session_id 集合）+ 身份映射（run_id ↔ session_id）+ Fork 来源镜像（session_id → 来源 run_id）+ owner 归属（run_id → 用户；与身份映射同生命周期登记）（stage/title/first_prompt 从 transcript 重放推导）；损坏降级为空簿记重放，不阻断启动 |
+| `state.py` | 恢复簿记（`~/.auto-image-web/state.json`，全量原子替换，带显式 version）：墓碑（用户 ENDED 的 session_id 集合）+ 身份映射（run_id ↔ session_id）+ Fork 来源镜像（session_id → 来源 run_id）+ owner 归属（run_id → 用户；与身份映射同生命周期登记）（stage/title/first_prompt 从 transcript 重放推导）；读取按状态分类（modern/legacy/missing/corrupt）支撑受限恢复判定，strict 落盘失败抛 `StatePersistError`（控制动作 503 门）；初始化标记（state 同名 `.initialized`）区分首次启动与初始化后缺失 |
 | `title.py` | 会话标题 LLM 生成（Codex 同构，research/codex-session-title.md）：首条指令到达即起一次性无工具会话生成，成功落 run.title + `session.title_changed` 事件 + transcript custom-title 行；失败静默维持截断标题；Fork 会话继承源标题不再生成 |
 | `sdk.py` | ClaudeSDKClient 生产实现：目标身份/上下文来源/Fork 启动意图、options 全配、消息形状适配、工厂、历史读取包装 |
 | `fake.py` | 脚本化假会话（默认剧本含敏感样例），测试注入用 |

@@ -11,7 +11,9 @@ import asyncio
 import logging
 import os
 import sys
+import tempfile
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -79,14 +81,32 @@ def deploy_transcript():
     ]
 
 
+# history_app 自建临时簿记目录的保活清单（应用生命周期即进程生命周期，
+# 测试进程退出随 TemporaryDirectory 清理协议释放）
+_HISTORY_STATE_DIRS = []
+
+
 def history_app(infos, messages_fn, times_fn=None, **kwargs):
     """以假 list_sessions / get_session_messages 装配的应用（重启后形态）；
-    times_fn 为假时刻表读取器（时刻透传对拍缝），缺省不透传。"""
+    times_fn 为假时刻表读取器（时刻透传对拍缝），缺省不透传。历史重放
+    预置 legacy 首启簿记（无 owner 记录的 transcript 迁移归默认 owner
+    tester，对登录客户端可见）——多用户归属语义见 test_owner_acl。"""
+    state_path = kwargs.pop("state_path", None)
+    if state_path is None:
+        # 临时 legacy 簿记：模拟部署过旧版服务后的首次启动
+        tmp = tempfile.TemporaryDirectory(prefix="auto-image-web-hist-")
+        _HISTORY_STATE_DIRS.append(tmp)
+        state_path = Path(tmp.name) / "state.json"
+        state_path.write_text(
+            '{"ended_sessions": [], "sessions": {}, "clone_sources": {}, "owners": {}}',
+            encoding="utf-8")
     return make_test_app(
         session_factory=FakeSessionFactory(script=DEFAULT_SCRIPT),
         list_sessions_fn=lambda: list(infos),
         get_session_messages_fn=messages_fn,
         transcript_times_fn=times_fn or (lambda sid: {}),
+        default_owner="tester",
+        state_path=state_path,
         **kwargs,
     )
 

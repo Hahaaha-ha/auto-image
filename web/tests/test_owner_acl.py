@@ -242,9 +242,10 @@ async def test_owner_survives_restart_via_bookkeeping():
             r = await alice.post(f"/api/runs/{a_run}/messages", json={"text": "重启后续写"})
             assert r.status_code == 200, r.text
 
-        # legacy 形态：簿记抹掉 owners 后重启，恢复会话归默认 owner（admin）
+        # 现代簿记去掉单条 owner 记录后重启：v2 不补默认 owner——该会话
+        # 未知归属，对 admin 与原 owner 都隐藏（不能借簿记缺口越权接管）
         state = json.loads(Path(state_path).read_text(encoding="utf-8"))
-        state.pop("owners", None)
+        state["owners"] = {}
         Path(state_path).write_text(json.dumps(state), encoding="utf-8")
         app_c = make_test_app(
             session_factory=factory, state_path=state_path,
@@ -252,9 +253,12 @@ async def test_owner_survives_restart_via_bookkeeping():
             get_session_messages_fn=factory.get_session_messages,
             default_owner="admin",
         )
-        async with async_client(app_c, username="admin") as admin:
+        async with async_client(app_c, username="admin") as admin, \
+                async_client(app_c, username="alice") as alice:
             admin_list = {r["run_id"] for r in (await admin.get("/api/runs")).json()["runs"]}
-            assert a_run in admin_list, admin_list
+            alice_list = {r["run_id"] for r in (await alice.get("/api/runs")).json()["runs"]}
+            assert a_run not in admin_list, admin_list
+            assert a_run not in alice_list, alice_list
 
 
 async def main():

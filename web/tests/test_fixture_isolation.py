@@ -59,9 +59,9 @@ async def test_common_fixtures_keep_first_turn_off_production_dependencies():
         assert Path(path) != app_mod.DEFAULT_STATE_PATH
         return real_load_state(path)
 
-    def guarded_state_save(runs, path, clone_sources=None):
+    def guarded_state_save(runs, path, clone_sources=None, strict=False):
         assert Path(path) != app_mod.DEFAULT_STATE_PATH
-        return real_save_state(runs, path, clone_sources)
+        return real_save_state(runs, path, clone_sources, strict=strict)
 
     with (
         tempfile.TemporaryDirectory() as tmp,

@@ -226,13 +226,16 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     # （首回合接受并预分配 session_id 后）随身份映射一并入册；启动时播种
     clone_sources = {}
 
-    def persist():
-        """状态变更点统一落盘（墓碑 + 身份映射 + 克隆链镜像，全量原子替换，
-        见 state.save_state）。"""
+    def persist(strict=False):
+        """状态变更点统一落盘（墓碑 + 身份映射 + 克隆链镜像 + owner 归属，
+        全量原子替换，见 state.save_state）。strict=True 为控制动作的落盘门
+        ——归属无法安全落盘时抛 StatePersistError（端点转 503、动作不执行：
+        不落盘的归属重启后不可信，宁可拒绝）。"""
         for r in manager.runs.values():
             if r.clone_source and r.session_id:
                 clone_sources[r.session_id] = r.clone_source
-        state_mod.save_state(manager.runs.values(), state_file, clone_sources)
+        state_mod.save_state(manager.runs.values(), state_file, clone_sources,
+                             strict=strict)
 
     def maybe_assign_title(run, text, is_first):
         """新对话的首条指令到达即起标题生成（Codex 同构：不等回合完成）。
@@ -251,8 +254,9 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         run.turn_task = asyncio.create_task(run_turn(run, text, factory, store, on_change=persist))
 
     # 服务重启语义：全量 transcript 重放恢复所有会话（可续聊），state 簿记
-    # （墓碑 + 身份映射 + 克隆链镜像）叠加；未收尾回合补 turn.interrupted
-    # 提示，不自动重试；残留 CLI 子进程只告警不杀（可能处于云操作中间态）
+    # （墓碑 + 身份映射 + 克隆链镜像 + owner 归属，带显式版本）叠加；未收尾
+    # 回合补 turn.interrupted 提示，不自动重试；残留 CLI 子进程只告警不杀
+    # （可能处于云操作中间态）
     bookkeeping = state_mod.load_state(state_file)
     clone_sources.update(bookkeeping["clone_sources"])
     restored = rebuild_mod.recover_sessions(
@@ -264,23 +268,50 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     )
     if restored:
         logging.getLogger("web").info("服务重启后重放恢复 %d 条会话（可续聊）", len(restored))
-    # legacy 迁移：簿记无 owner 记录的重放会话归默认 owner（历史数据有确定
-    # 归属，部署配置显式指定、不从用户清单推断）；现代记录缺 owner 的严格化
-    # 处理归后续恢复切片
-    legacy_owner = default_owner or DEFAULT_OWNER
-    # OBS 全局配置的唯一写权限人（部署管理员）：与 legacy 迁移归属同一
+    # 归属恢复的信任边界（不能沿用「损坏只告警并按空簿记启动」）：
+    # - legacy（无版本旧字符串映射）且初始化标记缺席 → 首次启动，无 owner
+    #   记录的重放会话（含无映射历史与直跑 CLI transcript）迁移归默认
+    #   owner——历史数据有确定归属，部署配置显式指定、不从用户清单推断；
+    # - corrupt（损坏/形状不对/v2 缺 owners 段/未知版本）或初始化完成后
+    #   state 非 modern（缺失或回退旧格式——备份覆盖、误还原）→ 受限恢复：
+    #   不迁移、未知归属会话对一切用户隐藏、阻断改变会话或全局配置的
+    #   控制动作（读取不受影响）——删除或损坏 state 不能把新用户会话交给
+    #   默认 owner。现代记录单条缺 owner 不整册弃用：该会话保持未知归属
+    #   （隐藏），其余照常。
+    state_status = bookkeeping["status"]
+    initialized = state_mod.init_marker_path(state_file).exists()
+    # 已初始化后只信 modern：state 缺失或回退旧格式（备份覆盖、误还原）
+    # 同样受限——不能把初始化后的用户会话按 legacy 再迁给默认 owner；
+    # 未初始化时损坏形状不因「首次启动」放宽，同样受限
+    allow_legacy_migration = (
+        state_status == state_mod.STATUS_LEGACY and not initialized)
+    restricted = (initialized and state_status != state_mod.STATUS_MODERN) or (
+        not initialized and state_status == state_mod.STATUS_CORRUPT)
+    if restricted:
+        logging.getLogger("web").warning(
+            "状态簿记不可信（%s），服务进入受限恢复：未知归属会话已隐藏、"
+            "控制动作被阻断；请停服排查 state 或从备份恢复后重启", state_status)
+    # legacy 迁移归属与 OBS 全局配置的唯一写权限人（部署管理员）：同一
     # 显式配置源（WEB_DEFAULT_OWNER，缺省 admin），语义独立——普通用户
     # 读共享、写 403
+    legacy_owner = default_owner or DEFAULT_OWNER
     obs_admin = default_owner or DEFAULT_OWNER
-    for r in restored:
-        if r.owner is None:
-            r.owner = legacy_owner
+    if allow_legacy_migration:
+        for r in restored:
+            if r.owner is None:
+                r.owner = legacy_owner
     residual_pids = (residual_cli_scan or residual_cli_processes)()
     if residual_pids:
         logging.getLogger("web").warning(
             "检测到残留 CLI 子进程（不自动处理，可能处于云操作中间态，请人工处置）：%s",
             residual_pids,
         )
+    # 成功初始化的收尾：簿记升级落盘（legacy 迁移结果物化为 v2）+ 写初始
+    # 化标记（此后 state 缺失不再走首次启动语义）。受限恢复不写——覆盖
+    # 坏文件会销毁现场，也解除下次启动的受限判定
+    if not restricted:
+        persist()
+        state_mod.write_init_marker(state_file)
 
     # 任务跟踪（rpm-*/deploy-* 流水线）：恢复重放完成后注册观察者——重放
     # 事件不进任务面（历史不是新事实）；重启前未收尾的任务在 recover 里按
@@ -342,6 +373,16 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         except audit_mod.AuditWriteError:
             raise HTTPException(status_code=503, detail="audit unavailable")
 
+    def _persist_or_503():
+        """owner 归属落盘门（先于审计的执行前置门）：簿记无法安全落盘时
+        抛 503、动作不执行——归属不落盘的重启后会话不可信，不能靠默认
+        owner 兜底找回。放在审计之前：审计记下的 success 必然对应已
+        通过全部前置门的动作，不产生「记了成功却没执行」的假账。"""
+        try:
+            persist(strict=True)
+        except state_mod.StatePersistError:
+            raise HTTPException(status_code=503, detail="state persist unavailable")
+
     def _audit_denied(request: Request, action: str, run=None, reason: str = REASON_NOT_OWNER):
         """被拒绝的控制动作入审计（尽力而为）：写失败只告警，拒绝响应照常
         返回——拒绝不改变状态，审计不可用不能把拒绝放大成 500。默认场景是
@@ -354,9 +395,10 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
 
     def _owned_run_or_404(request: Request, run_id: str, action: str | None = None):
         """owner 校验统一入口：未知 run 与非 owner run 同一 404（不泄露会话
-        存在性）。action 给定时是控制入口（发送/停止/Fork/结束）——拒绝先入
-        审计（尽力而为）再 404；只读入口（摘要/快照）不产生拒绝审计。
-        审计里区分未知 run 与他人 run 没有意义（对外同为 404），统一
+        存在性）；未知归属（无 owner，受限恢复或 v2 缺记录）不在任何用户名
+        下，天然 404。action 给定时是控制入口（发送/停止/Fork/结束）——
+        拒绝先入审计（尽力而为）再 404；只读入口（摘要/快照）不产生拒绝
+        审计。审计里区分未知 run 与他人 run 没有意义（对外同为 404），统一
         not_owner。"""
         run = manager.get(run_id)
         if run is None or run.owner != request.state.username:
@@ -364,6 +406,12 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
                 _audit_denied(request, action, run=run)
             raise HTTPException(status_code=404, detail="run not found")
         return run
+
+    def _restricted_or_503():
+        """受限恢复下的控制动作阻断：会改变会话或全局配置的动作一律 503
+        且不执行（归属不可信的服务不接受任何控制面写）。"""
+        if restricted:
+            raise HTTPException(status_code=503, detail="state unavailable (restricted recovery)")
 
     async def _json_body(request: Request):
         try:
@@ -383,8 +431,11 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     @app.post("/api/runs")
     async def create_run(request: Request, body: dict | None = None):
         # owner 由服务端从登录身份注入（客户端请求体任何字段都不构成归属
-        # 声明）；draft 不注册，审计成功才入册——审计失败不留下半创建会话
+        # 声明）；draft 不注册，审计与落盘成功才入册——任一失败不留下半创建
+        # 会话
+        _restricted_or_503()
         run = manager.draft(owner=request.state.username)
+        _persist_or_503()  # 归属落盘门先于审计：审计记成功后动作必然执行
         _audit_or_503(actor=request.state.username, action="create_run",
                       result="success", request_id=request_id(request),
                       run_id=run.run_id, run_owner=run.owner)
@@ -471,6 +522,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     # 即认领本任务）。非 INIT（已运行/已收尾）409；未知 404。
     @app.post("/api/tasks/{task_id}/run")
     async def run_task(task_id: str, request: Request):
+        _restricted_or_503()
         task = task_store.get(task_id)
         if task is None:
             raise HTTPException(status_code=404, detail="task not found")
@@ -485,18 +537,19 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         except runs_mod.Conflict as exc:
             _audit_denied(request, "create_run", run, reason=exc.detail)
             raise HTTPException(status_code=409, detail=exc.detail) from exc
+        _persist_or_503()  # 归属落盘门先于审计：审计记成功后动作必然执行
+        # 两段审计（create_run + send）全部前置到任何置位之前：任一门失败
+        # 503 都不留下已注册/已置位的半执行会话
         _audit_or_503(actor=request.state.username, action="create_run",
                       result="success", request_id=request_id(request),
                       run_id=run.run_id, run_owner=run.owner)
+        _audit_or_503(actor=request.state.username, action="send", result="success",
+                      request_id=request_id(request), run_id=run.run_id,
+                      run_owner=run.owner, meta=_prompt_meta(prompt))
         manager.register(run)
         store.create(run.run_id)
         store.append(run.run_id, "session.started", {})
         manager.commit_turn(run, prompt)
-        # 首回合发送与 send 同构：send 审计前置（此时回合已必然可开——
-        # 新建会话刚创建，check_turn 已过）
-        _audit_or_503(actor=request.state.username, action="send", result="success",
-                      request_id=request_id(request), run_id=run.run_id,
-                      run_owner=run.owner, meta=_prompt_meta(prompt))
         store.append(run.run_id, "turn.started", {})
         store.append(run.run_id, "user.message", {"text": prompt})
         maybe_assign_title(run, prompt, True)
@@ -508,6 +561,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     @app.post("/api/runs/{run_id}/messages")
     async def send_message(run_id: str, request: Request, body: dict):
         actor = request.state.username
+        _restricted_or_503()
         run = _owned_run_or_404(request, run_id, action="send")
         text = (body or {}).get("text")
         if not isinstance(text, str) or not text.strip():
@@ -519,6 +573,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
             _audit_denied(request, "send", run, reason=exc.detail)
             raise HTTPException(status_code=409, detail=exc.detail) from exc
         # 发送审计：指令内容不入审计，只记长度与摘要 hash（meta）
+        _persist_or_503()  # 归属落盘门先于置位与审计：失败不留半执行回合
         _audit_or_503(actor=actor, action="send", result="success",
                       request_id=request_id(request), run_id=run.run_id,
                       run_owner=run.owner, meta=_prompt_meta(text))
@@ -535,12 +590,14 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     @app.post("/api/runs/{run_id}/stop")
     async def stop_run(run_id: str, request: Request, body: dict | None = None):
         actor = request.state.username
+        _restricted_or_503()
         run = _owned_run_or_404(request, run_id, action="stop")
         try:
             manager.check_stop(run)
         except runs_mod.Conflict as exc:
             _audit_denied(request, "stop", run, reason=exc.detail)
             raise HTTPException(status_code=409, detail=exc.detail) from exc
+        _persist_or_503()
         _audit_or_503(actor=actor, action="stop", result="success",
                       request_id=request_id(request), run_id=run.run_id,
                       run_owner=run.owner)
@@ -552,12 +609,14 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     @app.post("/api/runs/{run_id}/clone")
     async def clone_run(run_id: str, request: Request):
         actor = request.state.username
+        _restricted_or_503()
         run = _owned_run_or_404(request, run_id, action="clone")
         try:
             new = manager.clone_draft(run)  # owner 继承源：归属不因 Fork 跨越
         except runs_mod.Conflict as exc:
             _audit_denied(request, "clone", run, reason=exc.detail)
             raise HTTPException(status_code=409, detail=exc.detail) from exc
+        _persist_or_503()
         _audit_or_503(actor=actor, action="clone", result="success",
                       request_id=request_id(request), run_id=run.run_id,
                       run_owner=run.owner, meta=f"to:{new.run_id}")
@@ -581,12 +640,14 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     @app.post("/api/runs/{run_id}/end")
     async def end_run(run_id: str, request: Request):
         actor = request.state.username
+        _restricted_or_503()
         run = _owned_run_or_404(request, run_id, action="end")
         try:
             manager.check_end(run)
         except runs_mod.Conflict as exc:
             _audit_denied(request, "end", run, reason=exc.detail)
             raise HTTPException(status_code=409, detail=exc.detail) from exc
+        _persist_or_503()  # 先于终态置位：墓碑落不了盘的结束宁可拒绝
         _audit_or_503(actor=actor, action="end", result="success",
                       request_id=request_id(request), run_id=run.run_id,
                       run_owner=run.owner)
@@ -774,6 +835,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
 
     @app.post("/api/obs/config")
     def save_obs_config(request: Request, body: dict | None = None):
+        _restricted_or_503()  # 全局配置修改在受限恢复下阻断
         b = body or {}
         if request.state.username != obs_admin:
             _audit_denied(request, "obs_config", reason=REASON_NOT_ADMIN)
@@ -787,6 +849,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        _persist_or_503()  # 状态簿记写不进时全局配置修改同样拒绝
         _audit_or_503(actor=request.state.username, action="obs_config",
                       result="success", request_id=request_id(request),
                       meta="fields:" + ",".join(sorted(clean)))
