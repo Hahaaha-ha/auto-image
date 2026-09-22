@@ -15,6 +15,7 @@ from web.tests.support import async_client  # noqa: E402
 from web.tests.test_api import make_app as api_app, wait_status  # noqa: E402
 from web.tests.test_artifacts import make_app as artifacts_app  # noqa: E402
 from web.tests.test_history import history_app, plain_app  # noqa: E402
+from web.tests.test_multi_user_acceptance import acceptance_app  # noqa: E402
 from web.tests.test_state import restore_app  # noqa: E402
 from web.title import title_prompt  # noqa: E402
 
@@ -94,10 +95,51 @@ async def test_common_fixtures_keep_first_turn_off_production_dependencies():
         assert (app.state.test_root / "scope.yaml").read_text(encoding="utf-8") == "{}\n"
 
 
+async def test_acceptance_fixture_keeps_off_production_dependencies():
+    """验收装配本身与既有装配同性质：只触达本地假会话与临时文件。
+
+    验收应用带产物造桩与假 OBS 函数（全本地），这里以首回合全流程覆盖
+    其主路径；guarded_scope_load 由上面共享装配的哨兵同源覆盖，此处
+    以生产依赖全禁的强哨兵直接复用（与上面同款手法）。
+    """
+    real_load_state = app_mod.state_mod.load_state
+    real_save_state = app_mod.state_mod.save_state
+
+    def guarded_state_load(path):
+        assert Path(path) != app_mod.DEFAULT_STATE_PATH
+        return real_load_state(path)
+
+    def guarded_state_save(runs, path, clone_sources=None, strict=False):
+        assert Path(path) != app_mod.DEFAULT_STATE_PATH
+        return real_save_state(runs, path, clone_sources, strict=strict)
+
+    def guarded_scope_load(path):
+        assert Path(path) != app_mod.DEFAULT_SCOPE_CONFIG
+
+    with (
+        tempfile.TemporaryDirectory() as tmp,
+        patch.object(app_mod, "SDKSessionFactory", forbidden("deployment factory")),
+        patch.object(app_mod.sdk_mod, "TitleSessionFactory", forbidden("title factory")),
+        patch.object(app_mod.sdk_mod, "ClaudeSDKClient", forbidden("Claude CLI")),
+        patch.object(app_mod.sdk_mod, "list_project_sessions", forbidden("session discovery")),
+        patch.object(app_mod.sdk_mod, "project_session_messages", forbidden("transcript read")),
+        patch.object(app_mod.sdk_mod, "transcript_times", forbidden("transcript time scan")),
+        patch.object(app_mod, "residual_cli_processes", forbidden("residual CLI scan")),
+        patch.object(app_mod.redact_mod, "load_scope_secrets", guarded_scope_load),
+        patch.object(app_mod.state_mod, "load_state", guarded_state_load),
+        patch.object(app_mod.state_mod, "save_state", guarded_state_save),
+    ):
+        app = acceptance_app(tmp)
+        await exercise_first_turn("acceptance", app, "部署 nginx 到 server-a")
+        assert (app.state.test_root / "scope.yaml").read_text(encoding="utf-8") == "{}\n"
+
+
 async def main():
     await test_common_fixtures_keep_first_turn_off_production_dependencies()
+    await test_acceptance_fixture_keeps_off_production_dependencies()
     print("ok test_common_fixtures_keep_first_turn_off_production_dependencies")
-    print("1 passed")
+    print("ok test_acceptance_fixture_keeps_off_production_dependencies")
+    print("2 passed")
 
 
 if __name__ == "__main__":

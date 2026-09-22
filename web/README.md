@@ -53,6 +53,22 @@ OBS 配置修改先审计后执行；OBS 全局配置（凭据/桶/endpoint）�
 `max_parallel`，跨用户合计，不含他人 run id、标题、prompt、owner 或目标
 机器），前端标签栏「运行中 n/m」据此展示。
 
+## v1 运行约束（多用户形态的边界承诺）
+
+- **单进程单 worker**：全局并发计数（`running_count`/`max_parallel`）、
+  409 冲突判定、SSE 全局广播与 owner ACL 都只在单进程内存里成立。禁止
+  uvicorn/gunicorn 多 worker、禁止多实例共享同一 state 文件——多 worker
+  下全局并发是每进程各数各的假全局语义。
+- **执行资源保持共享**：repo、云凭据、产物目录、OBS 配置与目标机器
+  全用户共享，多用户只隔离会话控制面（谁能看/谁能操作），不提供执行
+  隔离；并行会话的产物冲突按「并行运行约定」人工规避。
+- **不引入数据库**：状态是内存 RunManager/EventStore + 本地簿记
+  （`state.json`）+ 控制审计文件（JSONL 追加）。单实例低写入量下数据库
+  不会让这三者自动跨进程一致；未来多实例需重新设计共享状态、分布式
+  并发锁与事件广播。
+- 状态簿记与审计文件只落在服务端本地（`~/.auto-image-web/`），无 Web
+  下载能力。
+
 默认只监听 127.0.0.1。需要外部机器的浏览器访问时，`WEB_HOST=0.0.0.0`
 绑定全部网卡，经 `http://<本机IP>:<端口>/` 访问——暴露面由运行者的网络
 策略（安全组/防火墙）控制，风险自担。
@@ -92,10 +108,15 @@ OBS 配置修改先审计后执行；OBS 全局配置（凭据/桶/endpoint）�
 ```bash
 python web/tests/test_api.py        # ASGI 主缝（假会话驱动）
 python web/tests/test_artifacts.py  # 产物端点（临时目录造桩）
+python web/tests/test_auth.py       # 登录/登出/过期/禁用/密钥轮换、同源校验、审计文件
+python web/tests/test_ecs_api.py    # ECS 面板端点（假云函数注入）
 python web/tests/test_events.py     # 事件存储、快照与全局订阅
-python web/tests/test_fixture_isolation.py # 通用 fixture 的生产依赖哨兵
+python web/tests/test_fixture_isolation.py # 通用 fixture（含验收装配）的生产依赖哨兵
 python web/tests/test_history.py    # 列表摘要、可续聊约束、假 transcript 驱动的重启重放
+python web/tests/test_multi_user_acceptance.py # 多用户集成验收（双客户端端到端 + 重启/撤销回归）
 python web/tests/test_normalize.py  # 消息映射与阶段推导纯函数断言
+python web/tests/test_obs_api.py    # OBS 端点（假云函数注入）
+python web/tests/test_obs_config.py # OBS 配置加密落盘与脱敏视图
 python web/tests/test_owner_acl.py  # owner 会话隔离（双认证客户端互不可见/不可控）
 python web/tests/test_redact.py     # 事件出口脱敏（形状正则 + 已知值清单）
 python web/tests/test_shared_resources.py # 产物/OBS 共享读取、归档审计、OBS 配置 admin-only
@@ -103,6 +124,7 @@ python web/tests/test_stream_isolation.py # 全局流 owner 逐帧过滤、心�
 python web/tests/test_sdk.py        # options 契约（身份、Fork、系统提示词、无值守写权限）
 python web/tests/test_recovery.py # 安全恢复（版本化簿记/legacy 迁移/受限恢复/落盘门/人工转移）
 python web/tests/test_state.py      # 身份映射、墓碑与 Fork 来源簿记
+python web/tests/test_tasks.py      # 任务面板与手动建任务端点
 python web/tests/test_title.py      # 标题生成（prompt/清洗/一次性会话/幂等/写回）
 python web/tests/test_transcript_times.py # transcript 时刻读取
 cd web-ui && npm test && npm run build    # 前端完整测试与生产构建
