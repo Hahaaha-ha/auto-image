@@ -15,7 +15,6 @@ import json
 import os
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 import yaml
@@ -28,7 +27,7 @@ from web.tests.support import (  # noqa: E402
     TEST_PASSWORD, audit_lines, async_client, make_test_app, write_test_users,
 )
 from web.tests.test_stream_isolation import (  # noqa: E402
-    collect_frames, open_global_stream, wait_status,
+    collect_frames, open_global_stream, rewrite_users, wait_status,
 )
 
 REL = "deploy/nginx/1.25/result.md"
@@ -38,7 +37,7 @@ SCOPE_AK = "ACCEPTAKEXAMPLE0000000000"
 SCOPE_SK = "ACCEPTSKEXAMPLE000000000000000000"
 
 
-def acceptance_app(tmp, factory=None):
+def acceptance_app(tmp):
     """三用户验收应用：产物根与 OBS 全走本地假实现（不触云），审计与簿记
     落临时目录，部署管理员为 admin（与生产 WEB_DEFAULT_OWNER 同源）。"""
     root = Path(tmp)
@@ -46,7 +45,7 @@ def acceptance_app(tmp, factory=None):
     out.mkdir(parents=True, exist_ok=True)
     (out / "result.md").write_text(f"# 验收产物\n{ARTIFACT_MARK}\n", encoding="utf-8")
     return make_test_app(
-        session_factory=factory or FakeSessionFactory(script=DEFAULT_SCRIPT, delay=0.05),
+        session_factory=FakeSessionFactory(script=DEFAULT_SCRIPT, delay=0.05),
         artifact_roots={"deploy": root / "art" / "deploy"},
         obs_list_fn=lambda limit=1000: {
             "bucket": "test-image-gen", "region": "ap-southeast-1",
@@ -96,14 +95,7 @@ def chain_positions(entries, steps):
 
 
 async def wait_ready(client, run_id, timeout_s=8.0):
-    deadline = time.monotonic() + timeout_s
-    last = None
-    while time.monotonic() < deadline:
-        last = (await client.get(f"/api/runs/{run_id}")).json()
-        if last["status"] == "READY":
-            return last
-        await asyncio.sleep(0.01)
-    raise AssertionError(f"run {run_id} 未回 READY，最后状态 {last}")
+    return await wait_status(client, run_id, "READY", timeout_s=timeout_s)
 
 
 async def test_multi_user_acceptance_end_to_end():
@@ -304,18 +296,9 @@ async def test_restart_keeps_owner_tombstone_fork_and_revocation():
             await wait_ready(alice, a_run)
 
             # 登录撤销语义：禁用即时 401（同一 Cookie），重新启用恢复访问
-            data = json.loads(users_path.read_text(encoding="utf-8"))
-
-            def rewrite(enabled):
-                data["users"]["alice"]["enabled"] = enabled
-                users_path.write_text(json.dumps(data), encoding="utf-8")
-                # 每次取新的未来时刻：mtime 不变则热载不触发
-                future = time.time() + 2
-                os.utime(users_path, (future, future))
-
-            rewrite(False)
+            rewrite_users(users_path, lambda users: users["alice"].update(enabled=False))
             assert (await alice.get("/api/runs")).status_code == 401
-            rewrite(True)
+            rewrite_users(users_path, lambda users: users["alice"].update(enabled=True))
             assert (await alice.get("/api/runs")).status_code == 200
 
 

@@ -113,7 +113,7 @@ python web/tests/test_ecs_api.py    # ECS 面板端点（假云函数注入）
 python web/tests/test_events.py     # 事件存储、快照与全局订阅
 python web/tests/test_fixture_isolation.py # 通用 fixture（含验收装配）的生产依赖哨兵
 python web/tests/test_history.py    # 列表摘要、可续聊约束、假 transcript 驱动的重启重放
-python web/tests/test_multi_user_acceptance.py # 多用户集成验收（双客户端端到端 + 重启/撤销回归）
+python web/tests/test_multi_user_acceptance.py # 多用户集成验收（三客户端端到端 + 重启/撤销回归）
 python web/tests/test_normalize.py  # 消息映射与阶段推导纯函数断言
 python web/tests/test_obs_api.py    # OBS 端点（假云函数注入）
 python web/tests/test_obs_config.py # OBS 配置加密落盘与脱敏视图

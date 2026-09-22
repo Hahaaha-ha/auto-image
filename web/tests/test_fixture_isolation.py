@@ -3,6 +3,7 @@
 import asyncio
 import sys
 import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,6 +28,43 @@ def forbidden(name):
     return fail
 
 
+def production_guards(scope_sink=None):
+    """生产依赖全禁的哨兵上下文：真 SDK/CLI、历史发现、残留扫描与真实
+    scope/state 路径全被拦（state 读写走真实现但只许临时路径）。多份通用
+    装配测试共用一份禁令清单——清单新增时所有装配同收紧。"""
+    real_load_state = app_mod.state_mod.load_state
+    real_save_state = app_mod.state_mod.save_state
+
+    def guarded_scope_load(path):
+        assert Path(path) != app_mod.DEFAULT_SCOPE_CONFIG
+        if scope_sink is not None:
+            scope_sink.append(Path(path))
+
+    def guarded_state_load(path):
+        assert Path(path) != app_mod.DEFAULT_STATE_PATH
+        return real_load_state(path)
+
+    def guarded_state_save(runs, path, clone_sources=None, strict=False):
+        assert Path(path) != app_mod.DEFAULT_STATE_PATH
+        return real_save_state(runs, path, clone_sources, strict=strict)
+
+    stack = ExitStack()
+    for target, attr, replacement in (
+        (app_mod, "SDKSessionFactory", forbidden("deployment factory")),
+        (app_mod.sdk_mod, "TitleSessionFactory", forbidden("title factory")),
+        (app_mod.sdk_mod, "ClaudeSDKClient", forbidden("Claude CLI")),
+        (app_mod.sdk_mod, "list_project_sessions", forbidden("session discovery")),
+        (app_mod.sdk_mod, "project_session_messages", forbidden("transcript read")),
+        (app_mod.sdk_mod, "transcript_times", forbidden("transcript time scan")),
+        (app_mod, "residual_cli_processes", forbidden("residual CLI scan")),
+        (app_mod.redact_mod, "load_scope_secrets", guarded_scope_load),
+        (app_mod.state_mod, "load_state", guarded_state_load),
+        (app_mod.state_mod, "save_state", guarded_state_save),
+    ):
+        stack.enter_context(patch.object(target, attr, replacement))
+    return stack
+
+
 async def exercise_first_turn(name, app, instruction):
     async with async_client(app) as client:
         assert (await client.get("/api/runs")).json()["runs"] == [], name
@@ -49,34 +87,7 @@ async def test_common_fixtures_keep_first_turn_off_production_dependencies():
     """每种通用装配的首回合都只触达本地假会话与临时文件。"""
     instruction = "部署 nginx 到 server-a"
     scope_paths = []
-    real_load_state = app_mod.state_mod.load_state
-    real_save_state = app_mod.state_mod.save_state
-
-    def guarded_scope_load(path):
-        assert Path(path) != app_mod.DEFAULT_SCOPE_CONFIG
-        scope_paths.append(Path(path))
-
-    def guarded_state_load(path):
-        assert Path(path) != app_mod.DEFAULT_STATE_PATH
-        return real_load_state(path)
-
-    def guarded_state_save(runs, path, clone_sources=None, strict=False):
-        assert Path(path) != app_mod.DEFAULT_STATE_PATH
-        return real_save_state(runs, path, clone_sources, strict=strict)
-
-    with (
-        tempfile.TemporaryDirectory() as tmp,
-        patch.object(app_mod, "SDKSessionFactory", forbidden("deployment factory")),
-        patch.object(app_mod.sdk_mod, "TitleSessionFactory", forbidden("title factory")),
-        patch.object(app_mod.sdk_mod, "ClaudeSDKClient", forbidden("Claude CLI")),
-        patch.object(app_mod.sdk_mod, "list_project_sessions", forbidden("session discovery")),
-        patch.object(app_mod.sdk_mod, "project_session_messages", forbidden("transcript read")),
-        patch.object(app_mod.sdk_mod, "transcript_times", forbidden("transcript time scan")),
-        patch.object(app_mod, "residual_cli_processes", forbidden("residual CLI scan")),
-        patch.object(app_mod.redact_mod, "load_scope_secrets", guarded_scope_load),
-        patch.object(app_mod.state_mod, "load_state", guarded_state_load),
-        patch.object(app_mod.state_mod, "save_state", guarded_state_save),
-    ):
+    with tempfile.TemporaryDirectory() as tmp, production_guards(scope_sink=scope_paths):
         root = Path(tmp)
         artifact_root = root / "artifacts"
         artifact_root.mkdir()
@@ -96,39 +107,8 @@ async def test_common_fixtures_keep_first_turn_off_production_dependencies():
 
 
 async def test_acceptance_fixture_keeps_off_production_dependencies():
-    """验收装配本身与既有装配同性质：只触达本地假会话与临时文件。
-
-    验收应用带产物造桩与假 OBS 函数（全本地），这里以首回合全流程覆盖
-    其主路径；guarded_scope_load 由上面共享装配的哨兵同源覆盖，此处
-    以生产依赖全禁的强哨兵直接复用（与上面同款手法）。
-    """
-    real_load_state = app_mod.state_mod.load_state
-    real_save_state = app_mod.state_mod.save_state
-
-    def guarded_state_load(path):
-        assert Path(path) != app_mod.DEFAULT_STATE_PATH
-        return real_load_state(path)
-
-    def guarded_state_save(runs, path, clone_sources=None, strict=False):
-        assert Path(path) != app_mod.DEFAULT_STATE_PATH
-        return real_save_state(runs, path, clone_sources, strict=strict)
-
-    def guarded_scope_load(path):
-        assert Path(path) != app_mod.DEFAULT_SCOPE_CONFIG
-
-    with (
-        tempfile.TemporaryDirectory() as tmp,
-        patch.object(app_mod, "SDKSessionFactory", forbidden("deployment factory")),
-        patch.object(app_mod.sdk_mod, "TitleSessionFactory", forbidden("title factory")),
-        patch.object(app_mod.sdk_mod, "ClaudeSDKClient", forbidden("Claude CLI")),
-        patch.object(app_mod.sdk_mod, "list_project_sessions", forbidden("session discovery")),
-        patch.object(app_mod.sdk_mod, "project_session_messages", forbidden("transcript read")),
-        patch.object(app_mod.sdk_mod, "transcript_times", forbidden("transcript time scan")),
-        patch.object(app_mod, "residual_cli_processes", forbidden("residual CLI scan")),
-        patch.object(app_mod.redact_mod, "load_scope_secrets", guarded_scope_load),
-        patch.object(app_mod.state_mod, "load_state", guarded_state_load),
-        patch.object(app_mod.state_mod, "save_state", guarded_state_save),
-    ):
+    """验收装配本身与既有装配同性质：只触达本地假会话与临时文件。"""
+    with tempfile.TemporaryDirectory() as tmp, production_guards():
         app = acceptance_app(tmp)
         await exercise_first_turn("acceptance", app, "部署 nginx 到 server-a")
         assert (app.state.test_root / "scope.yaml").read_text(encoding="utf-8") == "{}\n"
