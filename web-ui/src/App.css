@@ -269,11 +269,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-side-tabs {
   display: flex; gap: 4px; flex-shrink: 0;
   padding: 8px 8px 0; border-bottom: 1px solid var(--line);
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
 }
 .va-side-tabs button {
   border: none; background: none; border-radius: 6px 6px 0 0;
   padding: 5px 10px; font-size: 12px; color: var(--ink-2);
   border-bottom: 2px solid transparent;
+  white-space: nowrap; flex-shrink: 0;
 }
 .va-side-tabs button.on { color: var(--ink); font-weight: 600; border-bottom-color: var(--accent); }
 .va-side-tabs button:hover { background: var(--surface-dim); }
