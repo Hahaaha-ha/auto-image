@@ -165,7 +165,9 @@ function EcsCreateDialog({ onClose }) {
   )
 
   return (
-    <div className="va-modal-overlay" onClick={onClose}>
+    // 创建中遮罩点击不关闭：admin_pass 仅在此对话框展示一次，误关即凭证
+    // 永久丢失（且机器已开始计费）——与「取消」钮的 disabled 同口径
+    <div className="va-modal-overlay" onClick={() => !s.ecsCreating && onClose()}>
       <div className="va-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="新建 ECS">
         <div className="va-modal-title">
           <span>新建 ECS 实例</span>

@@ -39,7 +39,9 @@ button:hover { background: var(--surface-dim); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ---- 空态 ---- */
+/* flex:1 横向撑满主区（父层 .va-tab-body 是行向 flex，缺它则按内容收缩靠左） */
 .empty-state {
+  flex: 1;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -706,7 +708,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   font-size: 11px; cursor: pointer; border-radius: 4px;
   color: #fff; background: var(--accent, #0969da); border: 1px solid var(--accent, #0969da);
 }
-.va-task-run:hover { opacity: 0.88; }
+/* 实心钮 hover 只减淡不换底（全局 button:hover 会盖成浅灰底白字） */
+.va-task-run:hover:not(:disabled) {
+  opacity: 0.88; background: var(--accent, #0969da); border-color: var(--accent, #0969da);
+}
 .va-task-outcome.o-pending { color: var(--ink-3, #8b949e); }
 
 /* 登录壳（未认证时的唯一界面）与 header 用户标识 */
@@ -729,9 +734,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   padding: 7px 10px; margin-top: 6px; font: inherit; font-weight: 500; cursor: pointer;
   color: #fff; background: var(--accent); border: 1px solid var(--accent); border-radius: 6px;
 }
+/* 实心 accent 钮须自带 hover：全局 button:hover 只换 --surface-dim 底，
+   单类选择器特异性压不过它，会翻成浅灰底白字 */
+.va-login-submit:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); opacity: 0.88; }
 .va-login-submit:disabled { opacity: 0.6; cursor: default; }
 .va-login-error { color: var(--bad); font-size: 12.5px; }
-.va-user { color: var(--ink-2); font-size: 12.5px; margin: 0 6px; }
+/* header 登录用户标识（消息流用户气泡是 .va-stream-user，勿混用） */
+.va-head-user { color: var(--ink-2); font-size: 12.5px; margin: 0 6px; }
 .va-logout {
   padding: 2px 10px; font-size: 12.5px; cursor: pointer; border-radius: 4px;
   border: 1px solid var(--line); background: var(--surface);

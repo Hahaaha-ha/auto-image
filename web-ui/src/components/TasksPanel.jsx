@@ -120,7 +120,8 @@ function TaskCreateDialog({ onClose }) {
   )
 
   return (
-    <div className="va-modal-overlay" onClick={onClose}>
+    // saving 中遮罩点击不关闭：POST 已在飞，误关后本地 saving 复位会开双提交窗口
+    <div className="va-modal-overlay" onClick={() => !saving && onClose()}>
       <div className="va-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="新建任务">
         <div className="va-modal-title">
           <span>新建任务</span>

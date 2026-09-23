@@ -381,12 +381,17 @@ export default function App() {
             </button>
           </>
         ) : (
-          <span className="va-runid">auto-image 部署会话</span>
+          // spacer 不随控制面会话存在——无会话（新用户）时也把用户名/登出
+          // 推到右侧，否则全部靠左堆在左上角
+          <>
+            <span className="va-runid">auto-image 部署会话</span>
+            <span className="va-spacer" />
+          </>
         )}
         {s.connection === 'reconnecting' && (
           <span className="va-conn">事件流连接断开，重连中（恢复后自动追平）…</span>
         )}
-        <span className="va-user" title="当前登录用户">{s.user}</span>
+        <span className="va-head-user" title="当前登录用户">{s.user}</span>
         <button className="va-logout" onClick={() => store.logout()} title="退出登录">
           登出
         </button>
