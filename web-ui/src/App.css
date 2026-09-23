@@ -369,7 +369,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   border: none; background: none; text-align: left; white-space: nowrap;
   color: var(--ink); border-radius: 4px; font-size: 11.5px;
 }
-.va-art-export button:hover { background: var(--surface-dim); }
+/* hover 反白高亮（信号蓝实心）：菜单项是瞬时选择动作，比灰底更强的指位 */
+.va-art-export button:hover:not(:disabled) { background: var(--accent); color: #fff; }
 .va-art-export button:disabled { color: var(--ink-3); cursor: default; background: none; }
 /* 组头：整组勾选框 + 目录名 + 文件数，点击展开/收起（div 承载：内部还嵌
    复选框，交互件不嵌套进 button） */
