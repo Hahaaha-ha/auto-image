@@ -5,20 +5,22 @@ import { useEffect, useRef } from 'react'
 export function useModal(closable, onClose) {
   const panelRef = useRef(null)
   const restoreRef = useRef(null)
+  // 挂卸只随对话框开关发生一次，closable/onClose 每渲染都是新闭包——
+  // 存进 ref 让 keydown 总调最新版，否则挂载初版（在飞=false）永远生效，
+  // 请求中按 Esc 会误关（ECS 密码正是一次性凭证）
+  const liveRef = useRef(null)
+  liveRef.current = { closable, onClose }
   useEffect(() => {
     restoreRef.current = document.activeElement
     panelRef.current?.focus()
     const onKey = (e) => {
-      if (e.key === 'Escape' && closable()) onClose()
+      if (e.key === 'Escape' && liveRef.current.closable()) liveRef.current.onClose()
     }
     document.addEventListener('keydown', onKey)
     return () => {
       document.removeEventListener('keydown', onKey)
       restoreRef.current?.focus?.()
     }
-    // closable/onClose 都是每次渲染的新闭包，语义由调用方保证稳定；
-    // 挂卸只随对话框开关发生一次
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   return panelRef
 }

@@ -352,7 +352,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   border-left: 1px solid var(--line);
 }
 /* 卡头工具行：全选 / 清空 / 勾选集打包 zip */
-.va-art-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; position: relative; }
+.va-art-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .va-art-tools button { padding: 2px 8px; font-size: 11.5px; }
 .va-art-zip { color: var(--accent); border-color: var(--accent); }
 /* 导出锚点：包住导出钮与浮层，浮层相对它定位（不落在整个工具行的坐标上） */

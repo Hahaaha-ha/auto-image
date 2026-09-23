@@ -208,9 +208,11 @@ function persistSideW(w) {
 
 // 消息流：激活的会话标签页的事件渲染。ref/scroll 逻辑属主在本层，
 // 组件随标签页切换重挂（key=runId），follow 态自然复位。
-// tools 索引只增不换：同一 Map/Set 引用贯穿后续渲染（新增工具事件直接
-// 原地补录），配 memo(EventRow) 让老行不因新事件到来而重执行——seq 单调
-// 且 started/finished 按 id 关联后行渲染只依赖既有条目，原地补录安全。
+// tools 索引配 memo(EventRow)：startedById 可原地补录（只有新 finished 行
+// 读它）；finishedIds 不能——已渲染的 started 行靠 has(id) 判定成 null，
+// 引用不变则 memo 短路、旧行不重跑，会与 finished 行重复成两行。因此每
+// 有新 finished 到达，finishedIds 复制成新 Set 并换新 tools 引用，只在
+// finished 事件（低频）时破 memo，时长针/轮询的高频渲染仍全短路。
 function Stream({ run }) {
   const scrollRef = useRef(null)
   const [follow, setFollow] = useState(true)
@@ -218,11 +220,14 @@ function Stream({ run }) {
   if (toolsRef.current === null || toolsRef.current.forRunId !== run.runId) {
     toolsRef.current = { forRunId: run.runId, startedById: new Map(), finishedIds: new Set() }
   }
-  const tools = toolsRef.current
+  let tools = toolsRef.current
   for (const ev of run.events) {
     if (!ev.payload?.id) continue
     if (ev.type === 'agent.tool_started') tools.startedById.set(ev.payload.id, ev)
-    if (ev.type === 'agent.tool_finished') tools.finishedIds.add(ev.payload.id)
+    if (ev.type === 'agent.tool_finished' && !tools.finishedIds.has(ev.payload.id)) {
+      tools = { ...tools, finishedIds: new Set(tools.finishedIds).add(ev.payload.id) }
+      toolsRef.current = tools
+    }
   }
   // 暂停跟随期间新到的事件数：跳底钮如实报数，别让人盲跳
   const [seenCount, setSeenCount] = useState(run.events.length)
