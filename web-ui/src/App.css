@@ -502,7 +502,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   background: var(--bg-0, #fff);
   border: 1px solid var(--line-1, #d0d7de);
   border-radius: 8px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   width: min(520px, 100%);
   max-height: 85vh; overflow-y: auto;
   padding: 14px 16px 12px;
@@ -517,8 +517,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   font-size: 14px; color: var(--ink-3, #6e7781); padding: 2px 4px;
 }
 .va-cfg-badge {
-  font-size: 11px; font-weight: 500; padding: 1px 8px; border-radius: 10px;
-  background: #fff1f0; color: #cf222e; border: 1px solid #ffcecb;
+  font-size: 11px; font-weight: 500; padding: 1px 8px; border-radius: 999px;
+  background: #fff1f0; color: #cf222e; border: 1px solid #ffd0cc;
 }
 .va-cfg-badge.on { background: #dafbe1; color: var(--ok, #1a7f37); border-color: #abe4b8; }
 .va-cfg-sec {
@@ -553,7 +553,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-cfg-msg { margin-top: 8px; padding: 6px 10px; border-radius: 6px; font-size: 12px; overflow-wrap: anywhere; }
 .va-cfg-msg.ok { background: #dafbe1; color: var(--ok, #1a7f37); border: 1px solid #abe4b8; }
 .va-cfg-msg.warn { background: #fff8c5; color: #9a6700; border: 1px solid #d4a72c66; }
-.va-cfg-msg.err { background: #fff1f0; color: #cf222e; border: 1px solid #ffcecb; }
+.va-cfg-msg.err { background: #fff1f0; color: #cf222e; border: 1px solid #ffd0cc; }
 .va-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .va-modal-actions button {
   padding: 4px 14px; border-radius: 6px; font-size: 13px; cursor: pointer;
@@ -678,9 +678,9 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   margin-top: 3px;
 }
 .va-flow-seg { display: inline-flex; align-items: center; gap: 2px; }
-.va-flow-arrow { color: var(--ink-3, #6e7781); font-size: 9px; }
+.va-flow-arrow { color: var(--ink-3, #6e7781); font-size: 10px; }
 .va-flow-pill {
-  font-size: 9.5px; line-height: 1; padding: 2px 6px; border-radius: 999px;
+  font-size: 10px; line-height: 1; padding: 2px 6px; border-radius: 999px;
   white-space: nowrap;
 }
 .va-flow-pill.upcoming {
