@@ -614,7 +614,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   font-family: var(--mono, ui-monospace, monospace);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.va-ecs-ip.none { font-style: italic; opacity: 0.8; }
+.va-ecs-ip.none { font-style: italic; }
 .va-ecs-ago { margin-left: auto; flex-shrink: 0; }
 
 /* 新建对话框：长请求提示条（黄底警示——已提交的创建不可撤销）+ 密码行 */
@@ -717,7 +717,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   max-width: 100%;
 }
 .va-ecs-task:hover { text-decoration: underline; }
-.va-ecs-idle { margin-top: 2px; font-size: 10.5px; color: var(--ink-3, #6e7781); opacity: 0.75; }
+.va-ecs-idle { margin-top: 2px; font-size: 10.5px; color: var(--ink-2, #57606a); }
 
 /* 手动任务：新建对话框（radio 组 + 实例下拉）与 INIT 态运行钮 */
 .va-task-radios { display: inline-flex; align-items: center; gap: 14px; flex-wrap: wrap; }

@@ -64,7 +64,7 @@ export default function ChatBar() {
       onClick={() => runId && store.activateTab(tabKey({ kind: 'session', runId }))}
       title={`输入发送到此会话 · ${runId}${targetOn ? '' : '（点击切回它的标签页）'}`}
     >
-      <span className={`va-tab-dot ${tabDot(run)}`} />
+      <span className={`va-tab-dot ${tabDot(run)}`} aria-hidden="true" />
       <span className="chat-target-name">
         {wide ? `输入将作用于「${firstPromptPreview(run, 24)}」——点击切回会话` : firstPromptPreview(run)}
       </span>

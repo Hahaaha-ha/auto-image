@@ -45,7 +45,7 @@ function SessionRow({ run, on, open }) {
       }}
       title={title}
     >
-      <span className={`va-tab-dot ${tabDot(run)}`} />
+      <span className={`va-tab-dot ${tabDot(run)}`} aria-hidden="true" />
       <div className="va-sess-main">
         <div className="va-sess-title">
           {open && <span className="va-sess-open" title="已开为标签页" />}

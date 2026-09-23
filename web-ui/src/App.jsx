@@ -318,7 +318,7 @@ function LoginShell() {
         <button className="va-login-submit" type="submit" disabled={busy || !username.trim()}>
           {busy ? '登录中…' : '登录'}
         </button>
-        {error && <div className="va-login-error">{error}</div>}
+        {error && <div className="va-login-error" role="alert">{error}</div>}
       </form>
     </div>
   )

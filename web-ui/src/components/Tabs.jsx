@@ -65,7 +65,7 @@ export default function Tabs() {
             role="tab"
             aria-selected={on}
             aria-controls="va-tab-body"
-            tabIndex={0}
+            tabIndex={on ? 0 : -1}
             onClick={() => store.activateTab(key)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
@@ -90,7 +90,7 @@ export default function Tabs() {
           >
             {run ? (
               <>
-                <span className={`va-tab-dot ${tabDot(run)}`} />
+                <span className={`va-tab-dot ${tabDot(run)}`} aria-hidden="true" />
                 <span className="va-tab-name">{firstPromptPreview(run)}</span>
                 {(() => {
                   // 会话正跑流水线任务：标签打 pill（类型+软件+版本），点击
