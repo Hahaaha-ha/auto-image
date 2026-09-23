@@ -139,9 +139,9 @@ function TaskCreateDialog({ onClose }) {
           <button className="va-modal-close" onClick={onClose} disabled={saving} title="关闭" aria-label="关闭对话框">✕</button>
         </div>
         <div className="va-cfg-fields">
-          <div className="va-cfg-field stacked">
+          <div className="va-cfg-field">
             <span>类型</span>
-            <span className="va-task-radios">
+            <span className="va-task-radios va-task-radios-col">
               {radio('taskType', 'image', '镜像（部署并制镜像）')}
               {radio('taskType', 'rpm', 'RPM（制作 RPM 包）')}
             </span>
@@ -149,9 +149,9 @@ function TaskCreateDialog({ onClose }) {
           {field('software', '软件名称 *', '如 nginx')}
           {field('version', '版本', '留空部署最新稳定版')}
           {field('installDoc', '安装文档链接', '留空由 agent 检索官方文档')}
-          <div className="va-cfg-field stacked">
+          <div className="va-cfg-field">
             <span>部署目标</span>
-            <span className="va-task-radios">
+            <span className="va-task-radios va-task-radios-col">
               {radio('ecsMode', 'create', '按需创建 ECS')}
               {radio('ecsMode', 'existing', '已有 ECS')}
             </span>

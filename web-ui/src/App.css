@@ -550,8 +550,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 /* 标签列只认首个子元素：任务对话框的值侧（radio 组/清单消息）也是 span，
    被通配子 span 规则钉定宽会压成竖条 */
 .va-cfg-field > span:first-child { flex: 0 0 80px; font-size: 12px; color: var(--ink-2, #57606a); }
-/* 两行式 field：标签独占一行 + 值行（radio 组/实例下拉等宽值侧用，
-   行内定宽布局放不下它们） */
+/* 两行式 field：标签独占一行 + 值行（实例下拉等超宽值侧用） */
 .va-cfg-field.stacked { display: block; }
 .va-cfg-field.stacked > span:first-child { display: block; flex: none; margin-bottom: 2px; }
 .va-cfg-input {
@@ -720,6 +719,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* 手动任务：新建对话框（radio 组 + 实例下拉）与 INIT 态运行钮 */
 .va-task-radios { display: inline-flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+/* 纵排变体：两个选项各占一行（行内值侧回到 80px 标签列布局） */
+.va-task-radios-col { flex-direction: column; align-items: flex-start; gap: 2px; }
 .va-task-radio { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; cursor: pointer; }
 .va-task-radio input { margin: 0; }
 .va-ecs-select {
