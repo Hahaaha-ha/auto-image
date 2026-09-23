@@ -158,6 +158,7 @@ function ArtDir({ node, toggles, setToggles, defaultOpen, openFiles, activeRel }
                 <button
                   className="va-art-dl"
                   title="下载此文件"
+                  aria-label={`下载 ${f.name}`}
                   onClick={(e) => {
                     e.stopPropagation()
                     store.downloadArtifact(rel)
@@ -186,6 +187,11 @@ function ArtifactPanel({ openFiles, activeRel }) {
   const s = store.useRunState()
   const groups = s.artifacts.groups
   const [toggles, setToggles] = useState({})
+  const [exportOpen, setExportOpen] = useState(false)
+  const closeExport = (run) => {
+    setExportOpen(false)
+    run()
+  }
   const roots = artifactTree(groups)
   const fileCount = artifactFileCount(groups)
   const selCount = Object.keys(s.artifactSel).length
@@ -200,30 +206,45 @@ function ArtifactPanel({ openFiles, activeRel }) {
           <button onClick={() => store.clearArtifactSel()} disabled={selCount === 0}>
             清空
           </button>
+          {/* 三条导出路径收拢为一个主按钮 + 单选小弹层（差异曾只活在
+              tooltip 里——三个同权重蓝钮是全 UI 最差的决策点） */}
           <button
             className="va-art-zip"
-            onClick={() => store.downloadArtifactZip()}
-            disabled={selCount === 0 || s.artifactZipping}
-            title="勾选的产物打包成一个 zip 下载"
+            onClick={() => setExportOpen((v) => !v)}
+            disabled={selCount === 0 || s.artifactZipping || s.obsArchiving || s.obsZipArchiving}
+            aria-expanded={exportOpen}
+            title="勾选产物的导出方式（下载 zip / 上传 OBS 散件 / 上传 OBS 单包）"
           >
-            {s.artifactZipping ? '打包中…' : `下载 zip${selCount ? ` (${selCount})` : ''}`}
+            导出…{selCount ? ` (${selCount})` : ''}
           </button>
-          <button
-            className="va-art-zip"
-            onClick={() => store.archiveToObs()}
-            disabled={selCount === 0 || s.obsArchiving}
-            title="勾选的产物上传到 OBS 桶（对象名 = 产物路径，同名覆盖）"
-          >
-            {s.obsArchiving ? '归档中…' : `归档到 OBS${selCount ? ` (${selCount})` : ''}`}
-          </button>
-          <button
-            className="va-art-zip"
-            onClick={() => store.archiveZipToObs()}
-            disabled={selCount === 0 || s.obsZipArchiving}
-            title="勾选的产物打成一个 zip（自定义包名）上传到 OBS 的 zip/ 目录"
-          >
-            {s.obsZipArchiving ? '打包中…' : `打包归档${selCount ? ` (${selCount})` : ''}`}
-          </button>
+          {exportOpen && (
+            <div className="va-art-export" role="menu" aria-label="导出方式">
+              <button
+                role="menuitem"
+                onClick={() => closeExport(() => store.downloadArtifactZip())}
+                disabled={s.artifactZipping}
+                title="勾选的产物打包成一个 zip 下载到本机（文件名自动带时间戳）"
+              >
+                {s.artifactZipping ? '打包中…' : '⤓ 下载 zip（打包到本机）'}
+              </button>
+              <button
+                role="menuitem"
+                onClick={() => closeExport(() => store.archiveToObs())}
+                disabled={s.obsArchiving}
+                title="勾选的产物逐个上传到 OBS 桶（对象名 = 产物路径，同名覆盖）"
+              >
+                {s.obsArchiving ? '归档中…' : '☁ 上传 OBS 散件（按原路径）'}
+              </button>
+              <button
+                role="menuitem"
+                onClick={() => closeExport(() => store.archiveZipToObs())}
+                disabled={s.obsZipArchiving}
+                title="勾选的产物打成一个 zip（自定义包名）上传到 OBS 的 zip/ 目录"
+              >
+                {s.obsZipArchiving ? '打包中…' : '📦 上传 OBS 单包（zip/ 目录）'}
+              </button>
+            </div>
+          )}
         </div>
       )}
       {roots.length === 0 && <div className="va-side-empty">deploy/ · rpm/ 下暂无产物</div>}

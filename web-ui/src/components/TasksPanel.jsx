@@ -7,6 +7,7 @@
 import { useEffect, useState } from 'react'
 import * as store from '../store.js'
 import { fmtAgo, fmtTokens, STAGE_LABEL, TASK_OUTCOME_LABEL, TASK_TYPE_LABEL, stageOrder } from '../derive.js'
+import { useModal } from './modal.js'
 
 // 新建任务对话框：软件名/版本/类型（镜像|RPM）+ 可选安装文档链接 +
 // 部署目标 ECS（按需创建：参数预填 scope 默认、只提交覆盖项；已有 ECS：
@@ -22,6 +23,7 @@ function TaskCreateDialog({ onClose }) {
   })
   const [msg, setMsg] = useState(null)
   const [saving, setSaving] = useState(false)
+  const panelRef = useModal(() => !saving, onClose)
 
   useEffect(() => {
     // 已有 ECS 下拉数据与创建参数默认值并行拉取（尽力而为，失败不阻断）
@@ -122,11 +124,19 @@ function TaskCreateDialog({ onClose }) {
   return (
     // saving 中遮罩点击不关闭：POST 已在飞，误关后本地 saving 复位会开双提交窗口
     <div className="va-modal-overlay" onClick={() => !saving && onClose()}>
-      <div className="va-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="新建任务">
+      <div
+        className="va-modal"
+        ref={panelRef}
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="新建任务"
+      >
         <div className="va-modal-title">
           <span>新建任务</span>
           <span className="va-cfg-sub">提交后为「待运行」，点任务的 ▶ 运行才创建会话执行</span>
-          <button className="va-modal-close" onClick={onClose} title="关闭">✕</button>
+          <button className="va-modal-close" onClick={onClose} disabled={saving} title="关闭" aria-label="关闭对话框">✕</button>
         </div>
         <div className="va-cfg-fields">
           <div className="va-cfg-field">

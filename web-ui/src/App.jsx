@@ -4,7 +4,7 @@
 // 混排，只压主区）+ 编辑区（按激活标签页渲染消息流或文件内容）+ 底部
 // 常驻对话输入条。header 与输入条构成控制面，绑定最后激活的会话标签页
 // ——激活文件标签页不换对象。
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import './App.css'
 import * as store from './store.js'
 import { RUN_STATUS_LABEL, STAGE_LABEL, fmtActive, fmtLastActivity } from './derive.js'
@@ -21,7 +21,7 @@ const STATUS_TONE = { RUNNING: 'running', ENDED: 'warn' }
 // result 就是最后一条 assistant 文本（CLI Result 语义），重复成框是噪音；
 // 异常收尾（无最终文本 / 被停止 / 失败摘要）才保留汇总框。
 // 线上不断言「可继续」——活会话输入条已表达，只读回放里则与语义相悖
-function turnCompletedRow(ev, prev) {
+function TurnCompletedRow({ ev, prev }) {
   const result = String(ev.payload.result ?? '').trim()
   if (!result) return null // 空结果（重放的历史常见）不成空框
   const dup =
@@ -31,23 +31,13 @@ function turnCompletedRow(ev, prev) {
   return (
     <div className="va-result">
       <div className="va-result-title">回合汇总（turn.completed，会话可继续）</div>
-      <div className="va-md" dangerouslySetInnerHTML={{ __html: mdToHtml(ev.payload.result) }} />
+      <div className="va-md" dangerouslySetInnerHTML={{ __html: mdToHtml(result) }} />
     </div>
   )
 }
 
-// 工具事件索引：started/finished 按 id 关联（旧事件无 id 时不入索引，
-// 各自独立成行兜底）
-function toolIndex(events) {
-  const startedById = new Map()
-  const finishedIds = new Set()
-  for (const ev of events) {
-    if (!ev.payload?.id) continue
-    if (ev.type === 'agent.tool_started') startedById.set(ev.payload.id, ev)
-    if (ev.type === 'agent.tool_finished') finishedIds.add(ev.payload.id)
-  }
-  return { startedById, finishedIds }
-}
+// 工具事件索引由 Stream 以 ref 持有并增量补录（见其说明）：seq 单调、
+// started/finished 按 id 关联，无重复事件，重放同一批事件补录是幂等的。
 
 // 工具展开体的一块：小标题 + 浅底圆角内容块，输入/输出各一块
 function IoBlock({ title, text }) {
@@ -95,7 +85,10 @@ function IoTodos({ todos }) {
   )
 }
 
-function EventRow({ ev, prev, tools }) {
+// 事件行组件：memo 化——1s 时长针与 5s 摘要轮询会整树重渲染，几百条
+// 事件下未 memo 的行每次都重执行（含 markdown 重解析），必须按引用短路。
+// tools 索引只增不换（见 Stream 内说明），prev/ev 同为稳定事件引用。
+const EventRow = memo(function EventRow({ ev, prev, tools }) {
   if (ev.type === 'stage.changed') {
     return <div className="va-stage-line">─ 进入 {STAGE_LABEL[ev.payload.stage] ?? ev.payload.stage} ─</div>
   }
@@ -158,7 +151,7 @@ function EventRow({ ev, prev, tools }) {
     )
   }
   if (ev.type === 'turn.completed') {
-    return turnCompletedRow(ev, prev)
+    return <TurnCompletedRow ev={ev} prev={prev} />
   }
   if (ev.type === 'session.started') {
     return null // 会话流开卷，header 已表达
@@ -170,7 +163,7 @@ function EventRow({ ev, prev, tools }) {
     return <div className="va-canceled">— 会话已结束（可回看，只能 Fork）—</div>
   }
   return null
-}
+})
 
 // 结束会话：显式且不可逆，一律二次确认——READY 可能挂着一整天工作上下文，
 // 结束后只能 Fork；执行中结束还会打断在飞回合
@@ -214,11 +207,29 @@ function persistSideW(w) {
 }
 
 // 消息流：激活的会话标签页的事件渲染。ref/scroll 逻辑属主在本层，
-// 组件随标签页切换重挂（key=runId），follow 态自然复位
+// 组件随标签页切换重挂（key=runId），follow 态自然复位。
+// tools 索引只增不换：同一 Map/Set 引用贯穿后续渲染（新增工具事件直接
+// 原地补录），配 memo(EventRow) 让老行不因新事件到来而重执行——seq 单调
+// 且 started/finished 按 id 关联后行渲染只依赖既有条目，原地补录安全。
 function Stream({ run }) {
   const scrollRef = useRef(null)
   const [follow, setFollow] = useState(true)
-  const tools = toolIndex(run.events)
+  const toolsRef = useRef(null)
+  if (toolsRef.current === null || toolsRef.current.forRunId !== run.runId) {
+    toolsRef.current = { forRunId: run.runId, startedById: new Map(), finishedIds: new Set() }
+  }
+  const tools = toolsRef.current
+  for (const ev of run.events) {
+    if (!ev.payload?.id) continue
+    if (ev.type === 'agent.tool_started') tools.startedById.set(ev.payload.id, ev)
+    if (ev.type === 'agent.tool_finished') tools.finishedIds.add(ev.payload.id)
+  }
+  // 暂停跟随期间新到的事件数：跳底钮如实报数，别让人盲跳
+  const [seenCount, setSeenCount] = useState(run.events.length)
+  const pending = run.events.length - seenCount
+  useEffect(() => {
+    if (follow) setSeenCount(run.events.length)
+  }, [follow, run.events.length])
 
   const scrollToBottom = () => {
     const el = scrollRef.current
@@ -247,10 +258,11 @@ function Stream({ run }) {
           className="va-jump"
           onClick={() => {
             setFollow(true)
+            setSeenCount(run.events.length)
             scrollToBottom()
           }}
         >
-          ↓ 回到最新
+          ↓ 回到最新{pending > 0 ? `（${pending} 条新事件）` : ''}
         </button>
       )}
     </div>
@@ -389,7 +401,7 @@ export default function App() {
           </>
         )}
         {s.connection === 'reconnecting' && (
-          <span className="va-conn">事件流连接断开，重连中（恢复后自动追平）…</span>
+          <span className="va-conn" role="status">事件流连接断开，重连中（恢复后自动追平）…</span>
         )}
         <span className="va-head-user" title="当前登录用户">{s.user}</span>
         <button className="va-logout" onClick={() => store.logout()} title="退出登录">
@@ -445,8 +457,8 @@ export default function App() {
         </div>
       </div>
 
-      {s.submitError && <div className="error-bar">{s.submitError}</div>}
-      {s.notice && <div className="notice-bar">{s.notice}</div>}
+      {s.submitError && <div className="error-bar" role="alert">{s.submitError}</div>}
+      {s.notice && <div className="notice-bar" role="status">{s.notice}</div>}
 
       <ChatBar />
     </div>

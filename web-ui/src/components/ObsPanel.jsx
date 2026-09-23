@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react'
 import * as store from '../store.js'
 import { fmtSize, obsGroups, artifactTree, defaultOpenPaths } from '../derive.js'
+import { useModal } from './modal.js'
 
 // 行级复制链接按钮：复制成功后 ✓ 反馈 1.5 秒（本地态，不打断浏览）
 function CopyLink({ objKey }) {
@@ -23,6 +24,7 @@ function CopyLink({ objKey }) {
     <button
       className="va-art-dl"
       title="复制下载链接（签名，7 天有效；桶私有，匿名不可访问）"
+      aria-label={`复制 ${objKey} 的下载链接`}
       onClick={onClick}
     >
       {copied ? '✓' : '⧉'}
@@ -114,6 +116,7 @@ export function ObsConfigDialog({ onClose }) {
   const [form, setForm] = useState({ ak: '', sk: '', bucket: '', region: '', endpoint: '' })
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState(null) // {kind: 'ok'|'warn'|'err', text}
+  const panelRef = useModal(() => !saving, onClose)
 
   const canWrite = canWriteOf(cfg)
 
@@ -196,7 +199,15 @@ export function ObsConfigDialog({ onClose }) {
   return (
     // saving 中遮罩点击不关闭：POST 已在飞，误关后本地 saving 复位开双提交窗口
     <div className="va-modal-overlay" onClick={() => !saving && onClose()}>
-      <div className="va-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="OBS 配置">
+      <div
+        className="va-modal"
+        ref={panelRef}
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="OBS 配置"
+      >
         <div className="va-modal-title">
           <span>OBS 配置</span>
           {cfg && (
@@ -204,7 +215,7 @@ export function ObsConfigDialog({ onClose }) {
               {cfg.configured ? '已配置' : '未配置'}
             </span>
           )}
-          <button className="va-modal-close" onClick={onClose} title="关闭">✕</button>
+          <button className="va-modal-close" onClick={onClose} disabled={saving} title="关闭" aria-label="关闭对话框">✕</button>
         </div>
         {loadErr && <div className="va-cfg-msg err">配置读取失败：{loadErr}</div>}
         {cfg && (
