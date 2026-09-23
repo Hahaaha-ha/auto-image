@@ -14,6 +14,16 @@ import * as store from '../store.js'
 import { firstPromptPreview, tabDot } from '../derive.js'
 import { tabKey } from '../tabState.js'
 
+// 自动伸缩高度：内容行数 1–5 行（行高 1.5，与正文同档），超出内滚——
+// 部署指令是「软件+文档链接+目标机器」多要素长文本，发送前要能回看
+// 校对（发送即触发云操作），单行 input 容不下草稿的真实形态
+function autoSize(el) {
+  if (!el) return
+  el.style.height = 'auto'
+  const lh = 21
+  el.style.height = `${Math.min(el.scrollHeight, lh * 5 + 16)}px`
+}
+
 export default function ChatBar() {
   const s = store.useRunState()
   const run = store.useControlRun()
@@ -53,7 +63,7 @@ export default function ChatBar() {
       ? '会话已结束——点「⑂ Fork」基于此上下文创建新分支'
       : run.status === 'RUNNING'
         ? '回合执行中——想改方向点「■ 停止」打断后再输入'
-        : '输入部署指令：软件 + 文档链接 + 目标机器…'
+        : '输入部署指令：软件 + 文档链接 + 目标机器…（Enter 发送，Shift+Enter 换行）'
     : '点标签栏「+ 新建」开始一个部署会话'
 
   // 作用对象胶囊（窄 = 常显标识；宽 = 折叠态的输入位替身），点击切回
@@ -106,13 +116,24 @@ export default function ChatBar() {
     <div className="chat-bar">
       {run && target()}
       {forkBtn}
-      <input
+      <textarea
+        rows={1}
         value={text}
         disabled={!canInputHere}
         placeholder={placeholder}
         title={run?.status === 'RUNNING' ? '回合执行中不能输入——想改方向点「■ 停止」' : undefined}
-        onChange={(e) => store.setDraft(runId, e.target.value)}
-        onKeyDown={(e) => e.key === 'Enter' && !btnDisabled && act()}
+        onChange={(e) => {
+          store.setDraft(runId, e.target.value)
+          autoSize(e.target)
+        }}
+        onKeyDown={(e) => {
+          // Enter 发送、Shift+Enter 换行（多要素指令的行间组织）
+          if (e.key === 'Enter' && !e.shiftKey && !btnDisabled) {
+            e.preventDefault()
+            act()
+          }
+        }}
+        ref={(el) => el && autoSize(el)}
       />
       <button className="chat-send" onClick={act} disabled={btnDisabled}>
         {btnLabel}

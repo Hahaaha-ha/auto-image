@@ -68,11 +68,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   display: flex; gap: 8px; align-items: center;
   padding: 10px 14px; border-top: 1px solid var(--line); background: var(--surface);
 }
-.chat-bar input {
+.chat-bar textarea {
   flex: 1; font: inherit; border: 1px solid var(--line); border-radius: 6px;
   padding: 7px 10px; background: var(--surface);
+  resize: none; overflow-y: auto; min-height: 34px; max-height: 121px;
+  line-height: 1.5; font-family: inherit;
 }
-.chat-bar input:disabled { background: var(--surface-dim); color: var(--ink-3); }
+.chat-bar textarea:disabled { background: var(--surface-dim); color: var(--ink-3); }
 .chat-bar button { border-color: var(--line); }
 .chat-continue {
   flex-shrink: 0; background: var(--surface); border: 1px solid var(--line);
