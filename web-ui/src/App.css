@@ -723,6 +723,9 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-task-radios { display: inline-flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 /* 纵排变体：两个选项各占一行（行内值侧回到 80px 标签列布局） */
 .va-task-radios-col { flex-direction: column; align-items: flex-start; gap: 6px; }
+/* 含 radio 组的字段与相邻输入框字段行距加大一档：选项块内部两行成组，
+   与单行输入框拉开呼吸 */
+.va-cfg-field:has(> .va-task-radios-col) { margin: 4px 0; }
 .va-task-radio { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; cursor: pointer; }
 .va-task-radio input { margin: 0; }
 .va-ecs-select {
