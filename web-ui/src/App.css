@@ -548,9 +548,12 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-cfg-fields { display: flex; flex-direction: column; gap: 6px; }
 .va-cfg-field { display: flex; align-items: center; gap: 10px; }
 /* 标签列只认首个子元素：任务对话框的值侧（radio 组/清单消息）也是 span，
-   被通配子 span 规则钉 64px 定宽会压成竖条；80px 容纳最长标签「安装文档
-   链接」不折行 */
+   被通配子 span 规则钉定宽会压成竖条 */
 .va-cfg-field > span:first-child { flex: 0 0 80px; font-size: 12px; color: var(--ink-2, #57606a); }
+/* 两行式 field：标签独占一行 + 值行（radio 组/实例下拉等宽值侧用，
+   行内定宽布局放不下它们） */
+.va-cfg-field.stacked { display: block; }
+.va-cfg-field.stacked > span:first-child { display: block; flex: none; margin-bottom: 2px; }
 .va-cfg-input {
   flex: 1; min-width: 0; padding: 4px 8px; font-size: 13px;
   font-family: var(--mono, ui-monospace, monospace);

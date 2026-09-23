@@ -139,7 +139,7 @@ function TaskCreateDialog({ onClose }) {
           <button className="va-modal-close" onClick={onClose} disabled={saving} title="关闭" aria-label="关闭对话框">✕</button>
         </div>
         <div className="va-cfg-fields">
-          <div className="va-cfg-field">
+          <div className="va-cfg-field stacked">
             <span>类型</span>
             <span className="va-task-radios">
               {radio('taskType', 'image', '镜像（部署并制镜像）')}
@@ -149,7 +149,7 @@ function TaskCreateDialog({ onClose }) {
           {field('software', '软件名称 *', '如 nginx')}
           {field('version', '版本', '留空部署最新稳定版')}
           {field('installDoc', '安装文档链接', '留空由 agent 检索官方文档')}
-          <div className="va-cfg-field">
+          <div className="va-cfg-field stacked">
             <span>部署目标</span>
             <span className="va-task-radios">
               {radio('ecsMode', 'create', '按需创建 ECS')}
@@ -165,7 +165,7 @@ function TaskCreateDialog({ onClose }) {
               {field('bandwidth', '带宽 Mbit/s', defaults ? `默认 ${defaults.bandwidth}` : '默认 5')}
             </>
           ) : (
-            <label className="va-cfg-field">
+            <label className="va-cfg-field stacked">
               <span>选择实例</span>
               {instErr ? (
                 <span className="va-cfg-msg err">ECS 清单拉取失败：{instErr}</span>
