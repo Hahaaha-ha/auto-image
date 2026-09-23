@@ -37,7 +37,7 @@ export default function ArtifactView({ artifact, onDownload, downloadLabel, bina
     return (
       <ArtifactShell artifact={artifact} relPath={relPath} onDownload={onDownload} downloadLabel={downloadLabel}>
         <div className="va-artifact-binary">
-          <div className="va-artifact-binary-icon" aria-hidden="true">📦</div>
+          <div className="va-artifact-binary-icon" aria-hidden="true">■</div>
           <div className="va-artifact-binary-name" title={artifact.name}>{artifact.name}</div>
           <div className="va-artifact-binary-size">
             二进制产物{artifact.size != null ? ` · ${fmtSize(artifact.size)}` : ''}，不支持在线预览

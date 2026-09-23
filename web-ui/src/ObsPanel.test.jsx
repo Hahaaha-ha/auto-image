@@ -33,7 +33,7 @@ describe('OBS 面板（共享资源）', () => {
 
     expect(html).toContain('OBS 产物 · 2')
     expect(html).toContain('test-image-gen')
-    expect(html).toContain('⚙ 配置')
+    expect(html).toContain('配置')
     expect(html).toContain('result.md')
   })
 })

@@ -3,7 +3,7 @@
 // （文本预览 / 二进制占位）。下载不直下：⧉ 复制签名下载链接（7 天有效，
 // 剪贴板带 execCommand 兜底），成功后行内 ✓ 反馈。无勾选与 zip——OBS 侧
 // 只有在线列举与单对象访问；清单不随流水线事件联动（上传不经过本服务
-// 事件面），刷新钮手动重拉 + 归档动作完成后自动刷新。头部 ⚙ 配置钮开
+// 事件面），刷新钮手动重拉 + 归档动作完成后自动刷新。头部「配置」钮开
 // 配置对话框（当前配置脱敏视图 + 在线改配：ak/sk 服务端密文落盘）。
 import { useEffect, useState } from 'react'
 import * as store from '../store.js'
@@ -294,7 +294,7 @@ export default function ObsPanel({ openKeys, activeKey }) {
         <span>OBS 产物 · {s.obs.objects.length}</span>
         {s.obs.bucket && (
           <span className="va-obs-bucket" title={s.obs.domain ?? s.obs.bucket}>
-            ☁ {s.obs.bucket}
+            {s.obs.bucket}
           </span>
         )}
         <button
@@ -302,7 +302,7 @@ export default function ObsPanel({ openKeys, activeKey }) {
           onClick={() => setCfgOpen(true)}
           title="查看/配置 OBS 凭据与桶（ak/sk 加密落盘，明文自动删除）"
         >
-          ⚙ 配置
+          配置
         </button>
         <button
           className="va-obs-refresh"

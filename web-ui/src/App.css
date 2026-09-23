@@ -146,7 +146,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .va-tab-name { overflow: hidden; text-overflow: ellipsis; }
 .va-tab-dot { flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; }
-/* 文件标签页标识：文件图标（与状态点区分两类标签页），二进制产物换箱形 */
+/* 文件标签页标识：文件图标（与状态点区分两类标签页），二进制产物换实心块 */
 .va-tab-ico { flex-shrink: 0; font-size: 12px; line-height: 1; }
 /* ● 执行中（呼吸）/ ○ 等待指令 / ◆ 最近回合失败 / ■ 已结束（title 另有状态词） */
 .va-tab-dot.running { background: var(--accent); animation: va-pulse 1.2s infinite; }
@@ -434,7 +434,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 8px; color: var(--ink-2);
 }
-.va-artifact-binary-icon { font-size: 34px; }
+/* 二进制占位大字形：mono 字符（非 emoji），与字形语言同源 */
+.va-artifact-binary-icon { font-family: var(--mono); font-size: 34px; line-height: 1; color: var(--ink-3); }
 .va-artifact-binary-name {
   font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--ink);
   max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

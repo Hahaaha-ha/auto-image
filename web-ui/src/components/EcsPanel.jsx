@@ -78,7 +78,7 @@ function EcsRow({ inst }) {
   )
 }
 
-// 密码行：默认遮蔽（type=password），👁 切换显示，⧉ 复制（成功 ✓ 1.5 秒）
+// 密码行：默认遮蔽（type=password），◐/◑ 切换显示，⧉ 复制（成功 ✓ 1.5 秒）
 function PasswordRow({ value }) {
   const [show, setShow] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -99,7 +99,7 @@ function PasswordRow({ value }) {
           title={show ? '遮蔽' : '显示'}
           aria-label={show ? '遮蔽密码' : '显示密码'}
         >
-          {show ? '🙈' : '👁'}
+          {show ? '◑' : '◐'}
         </button>
         <button className="va-ecs-pwd-btn" onClick={copy} title="复制密码" aria-label="复制密码">{copied ? '✓' : '⧉'}</button>
       </span>

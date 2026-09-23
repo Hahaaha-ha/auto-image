@@ -115,7 +115,7 @@ export default function Tabs() {
             ) : (
               <>
                 <span className="va-tab-ico">
-                  {(t.kind === 'obs' ? s.obsCache[t.key]?.binary : s.artifactCache[t.relPath]?.binary) ? '📦' : '📄'}
+                  {(t.kind === 'obs' ? s.obsCache[t.key]?.binary : s.artifactCache[t.relPath]?.binary) ? '■' : '▤'}
                 </span>
                 <span className="va-tab-name">{t.name}</span>
               </>

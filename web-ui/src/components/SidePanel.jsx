@@ -215,7 +215,7 @@ function ArtifactPanel({ openFiles, activeRel }) {
             aria-expanded={exportOpen}
             title="勾选产物的导出方式（下载 zip / 上传 OBS 散件 / 上传 OBS 单包）"
           >
-            导出…{selCount ? ` (${selCount})` : ''}
+            导出{selCount ? ` (${selCount})` : ''}
           </button>
           {exportOpen && (
             <div className="va-art-export" role="menu" aria-label="导出方式">
@@ -225,7 +225,7 @@ function ArtifactPanel({ openFiles, activeRel }) {
                 disabled={s.artifactZipping}
                 title="勾选的产物打包成一个 zip 下载到本机（文件名自动带时间戳）"
               >
-                {s.artifactZipping ? '打包中…' : '⤓ 下载 zip（打包到本机）'}
+                {s.artifactZipping ? '打包中…' : '下载 zip（打包到本机）'}
               </button>
               <button
                 role="menuitem"
@@ -233,7 +233,7 @@ function ArtifactPanel({ openFiles, activeRel }) {
                 disabled={s.obsArchiving}
                 title="勾选的产物逐个上传到 OBS 桶（对象名 = 产物路径，同名覆盖）"
               >
-                {s.obsArchiving ? '归档中…' : '☁ 上传 OBS 散件（按原路径）'}
+                {s.obsArchiving ? '归档中…' : '上传 OBS 散件（按原路径）'}
               </button>
               <button
                 role="menuitem"
@@ -241,7 +241,7 @@ function ArtifactPanel({ openFiles, activeRel }) {
                 disabled={s.obsZipArchiving}
                 title="勾选的产物打成一个 zip（自定义包名）上传到 OBS 的 zip/ 目录"
               >
-                {s.obsZipArchiving ? '打包中…' : '📦 上传 OBS 单包（zip/ 目录）'}
+                {s.obsZipArchiving ? '打包中…' : '上传 OBS 单包（zip/ 目录）'}
               </button>
             </div>
           )}
