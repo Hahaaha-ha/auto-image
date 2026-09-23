@@ -8,7 +8,7 @@
 // ECS实例面板 = 华为云实例清单/状态 + 一键存活检查 + 新建（无标签页，
 // 面板内完成）。数据请求：会话列表即摘要轮询已拉的全量，本地产物即清单
 // 刷新，OBS 与 ECS 启动拉一次 + 刷新钮（不随流水线事件联动）。
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import * as store from '../store.js'
 import { tabKey } from '../tabState.js'
 import EcsPanel from './EcsPanel.jsx'
@@ -188,10 +188,21 @@ function ArtifactPanel({ openFiles, activeRel }) {
   const groups = s.artifacts.groups
   const [toggles, setToggles] = useState({})
   const [exportOpen, setExportOpen] = useState(false)
+  const anchorRef = useRef(null)
   const closeExport = (run) => {
     setExportOpen(false)
     run()
   }
+  // 展开期间点外部收起（mousedown 而非 click：事件先于按钮 onClick 落定，
+  // 点菜单项时仍属锚点内部不误收；点空白/其他面板元素即关）
+  useEffect(() => {
+    if (!exportOpen) return
+    const onDown = (e) => {
+      if (anchorRef.current && !anchorRef.current.contains(e.target)) setExportOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [exportOpen])
   const roots = artifactTree(groups)
   const fileCount = artifactFileCount(groups)
   const selCount = Object.keys(s.artifactSel).length
@@ -209,7 +220,7 @@ function ArtifactPanel({ openFiles, activeRel }) {
           {/* 三条导出路径收拢为一个主按钮 + 单选小弹层（差异曾只活在
               tooltip 里——三个同权重蓝钮是全 UI 最差的决策点）。锚定 span
               挂在导出钮外——浮层相对它定位到按钮右侧，而非整个工具行 */}
-          <span className="va-art-export-anchor">
+          <span className="va-art-export-anchor" ref={anchorRef}>
             <button
               className="va-art-zip"
               onClick={() => setExportOpen((v) => !v)}
