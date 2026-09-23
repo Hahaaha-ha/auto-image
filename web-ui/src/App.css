@@ -355,9 +355,11 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-art-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; position: relative; }
 .va-art-tools button { padding: 2px 8px; font-size: 11.5px; }
 .va-art-zip { color: var(--accent); border-color: var(--accent); }
-/* 导出方式菜单：点「导出」展开的三选一（一次性浮层，点击选项即收起） */
+/* 导出锚点：包住导出钮与浮层，浮层相对它定位（不落在整个工具行的坐标上） */
+.va-art-export-anchor { position: relative; display: inline-flex; }
+/* 导出方式菜单：导出按钮右侧外挂、顶部对齐（一次性浮层，点击选项即收起） */
 .va-art-export {
-  position: absolute; top: calc(100% + 4px); left: 0; z-index: 8;
+  position: absolute; top: 0; left: calc(100% + 6px); z-index: 8;
   display: flex; flex-direction: column; gap: 2px;
   background: var(--surface); border: 1px solid var(--line);
   border-radius: 6px; padding: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
