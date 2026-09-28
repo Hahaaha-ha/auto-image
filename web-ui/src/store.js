@@ -104,7 +104,10 @@ function readSidePanel() {
 // 标签页——激活文件标签页时控制面（header/输入条）仍绑定它。
 const restored = restoreTabs()
 let state = {
-  auth: 'checking',             // 认证态：checking → anonymous | user（登录壳 vs 数据面）
+  auth: 'checking',             // checking → anonymous | password-change | user
+  userVersion: null,
+  passwordChange: { busy: false, error: null },
+  authNotice: null,
   canManageUsers: false,
   users: { items: [], loading: false, error: null },
   user: null,                   // 当前用户名（auth === 'user' 时非空）
@@ -417,6 +420,7 @@ function refreshOpenSnapshots() {
 // （已登录，username 就位）。未登录期间一切数据面（EventSource、轮询、
 // 初始拉取）不启动——未认证客户端读不到任何业务数据。
 let globalStream = null
+let identityEpoch = 0
 
 // 认证失效统一出口：回登录壳并关停数据面。SSE onerror / 401 响应都会
 // 走这里；EventSource 关闭后浏览器不再自动重连（不无限重连的权威手段）。
@@ -424,6 +428,7 @@ let globalStream = null
 // 列表/标签页/草稿不残留（服务端列表本就按 owner 过滤，这里是客户端
 // 不暂存他人数据的收尾）
 function deauthed(reasonText) {
+  identityEpoch += 1
   if (globalStream) {
     const stream = globalStream
     globalStream = null
@@ -433,7 +438,8 @@ function deauthed(reasonText) {
   timersRef.clear()
   for (const key of Object.keys(drafts)) delete drafts[key]
   set({
-    auth: 'anonymous', user: null, canManageUsers: false,
+    auth: 'anonymous', user: null, canManageUsers: false, userVersion: null,
+    passwordChange: { busy: false, error: null },
     users: { items: [], loading: false, error: null }, connection: 'connecting',
     runs: {}, order: [], capacity: null,
     tabs: [], activeKey: null, lastSessionKey: null,
@@ -447,8 +453,8 @@ function deauthed(reasonText) {
 // 登录成功后的数据面启动：建全局流（一次）+ 各初始拉取（幂等——已登录
 // 状态下的重复调用不重复建流）
 function startDataPlane() {
+  if (state.auth !== 'user' || globalStream) return
   startTimers()
-  if (globalStream) return
   globalStream = new EventSource('/api/stream')
   for (const type of EVENT_TYPES) globalStream.addEventListener(type, onBroadcastFrame)
   globalStream.onopen = () => {
@@ -494,10 +500,15 @@ async function confirmIdentity() {
 }
 
 function acceptIdentity(data) {
+  if (data.must_change_password === true) {
+    deauthed(null)
+    set({ auth: 'password-change', user: data.username, userVersion: data.user_version, authNotice: null })
+    return
+  }
   const canManageUsers = data.can_manage_users === true
   const users = state.user === data.username && canManageUsers
     ? state.users : { items: [], loading: false, error: null }
-  set({ auth: 'user', user: data.username, canManageUsers, users,
+  set({ auth: 'user', user: data.username, canManageUsers, users, userVersion: null, authNotice: null,
     sidePanel: state.sidePanel === 'users' && !canManageUsers ? 'artifacts' : state.sidePanel })
 }
 
@@ -545,6 +556,51 @@ export async function login(username, password) {
   return data
 }
 
+const PASSWORD_CHANGE_HINT = {
+  current_password_incorrect: '当前密码不正确，请重新输入。',
+  invalid_new_password: '新密码须为 8–128 位可见 ASCII 字符，不含空格、空白、控制字符或中文。',
+  password_confirmation_mismatch: '两次新密码不一致，请检查后提交。',
+  password_unchanged: '新密码必须与当前密码不同。',
+  users_unavailable: '密码尚未修改：用户文件不可用，请联系管理员修复后再试。',
+  audit_unavailable: '密码尚未修改：审计不可用，请联系管理员修复后再试。',
+  state_unavailable: '密码尚未修改：服务处于受限恢复状态，请联系管理员。',
+}
+
+export async function changePassword(currentPassword, newPassword, confirmPassword) {
+  if (state.auth !== 'password-change' || state.passwordChange.busy) return
+  const attempt = { busy: true, error: null }
+  set({ passwordChange: attempt })
+  const backToLogin = (text, tone = 'warning') => {
+    deauthed(null)
+    set({ authNotice: { tone, text } })
+  }
+  try {
+    const resp = await fetch('/api/auth/change-password', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword,
+        confirm_password: confirmPassword, expected_version: state.userVersion }),
+    })
+    const data = await resp.json()
+    if (state.passwordChange !== attempt) return
+    if (data.outcome === 'committed') {
+      const auditFailed = data.audit_status !== 'recorded'
+      backToLogin(auditFailed
+        ? '密码已生效，审计记录异常。请用新密码重新登录，无需重复改密，并联系管理员检查审计。'
+        : '密码已更新，请用新密码重新登录。', auditFailed ? 'warning' : 'success')
+    } else if ([401, 403, 409].includes(resp.status)) {
+      backToLogin('本次密码尚未修改：登录已失效或用户信息已变化，请重新登录确认最新状态。')
+    } else if (data.outcome === 'not_committed') {
+      set({ passwordChange: { busy: false, error: PASSWORD_CHANGE_HINT[data.detail]
+        || '密码尚未修改，请检查输入；仍失败请联系管理员。' } })
+    } else {
+      throw new Error('unknown change outcome')
+    }
+  } catch {
+    if (state.passwordChange !== attempt) return
+    backToLogin('无法确认改密结果。请先用新密码登录；失败可尝试原密码，两者均失败请联系管理员。请勿重复提交原改密请求。')
+  }
+}
+
 // 登出：清服务端 Cookie 后回登录壳（数据面关停由 deauthed 完成）
 export async function logout() {
   try {
@@ -582,9 +638,11 @@ function makeRun(overrides) {
 // 摘要周期一并刷新——跨用户负载可见，他人会话细节不可见。返回列表 order
 // （失败返回 null，调用方各自善后）
 async function fetchSummaries() {
+  const epoch = identityEpoch
   const resp = await fetch('/api/runs')
   if (!resp.ok) return null
   const { runs, running_count: runningCount, max_parallel: maxParallel } = await resp.json()
+  if (epoch !== identityEpoch) return null
   const map = {}
   const order = []
   for (const s of runs ?? []) {
@@ -650,6 +708,7 @@ function mergeSummary(run, s) {
 // 页，他人会话或重启新会话只有列表最知道）。轻字段覆盖，不动 events。
 // （注册在 startTimers——随登录态开合）
 async function pollSummaries() {
+  const epoch = identityEpoch
   try {
     await fetchSummaries()
   } catch {
@@ -657,7 +716,7 @@ async function pollSummaries() {
   }
   // 任务清单随摘要周期刷新：未开标签页的 run 广播帧被丢弃，任务面板/
   // ECS 运行态/会话标签 pill 都靠这里保活（服务端是内存读，开销可忽略）
-  refreshTasks()
+  if (epoch === identityEpoch) refreshTasks()
 }
 
 // 新会话落位（新建/Fork 共用）：run 注册、标签页尾插并切为查看中，再拉一次

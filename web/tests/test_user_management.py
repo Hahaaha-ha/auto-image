@@ -28,7 +28,7 @@ async def test_role_authorized_list():
             async with async_client(app, username=name, password=password) as client:
                 is_admin = name in ('operator', 'second')
                 me = (await client.get('/api/auth/me')).json()
-                assert me == {'username': name, 'can_manage_users': is_admin}
+                assert me == {'username': name, 'can_manage_users': is_admin, 'must_change_password': False}
                 assert (await client.get('/api/obs/config')).json()['can_write'] is is_admin
                 response = await client.get('/api/admin/users')
                 assert response.status_code == (200 if is_admin else 403)

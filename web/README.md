@@ -76,6 +76,54 @@ OBS 配置修改先审计后执行；OBS 全局配置（凭据/桶/endpoint）�
 自救或自动提权。恢复管理能力必须停服备份，再由运维修正管理员角色或启用
 状态。管理员仍无权查看或控制他人的会话；OBS 读取与匿名全局容量保持共享。
 
+## 普通用户强制改密
+
+停服备份后，可为普通用户配置 `must_change_password: true` 以独立使用此流程。
+缺失字段按 `false` 处理，升级不会强制旧用户改密；管理员忽略此字段，密码继续
+部署侧维护。字段必须为布尔值，非法类型使清单无效。运行期间 Web 独占用户
+文件写入，禁止外部编辑器并发修改；缺失或损坏时不会重建清单或恢复管理员。
+
+待改密用户登录或刷新后只显示改密表单，不加载业务数据或建立 SSE。服务端仅
+允许 `GET /api/auth/me`、`POST /api/auth/change-password`、`POST /api/auth/logout`；
+其余业务路径和请求方法均拒绝。登录验证入口仍可使用，Cookie 与同源写保护保持。
+提交当前密码、新密码及确认密码；新密码为 8–128 位可见 ASCII（U+0021–U+007E），
+不含任何空白、控制字符或非 ASCII，不要求组合、不裁剪，且须不同于当前密码。
+原有密码不受新设规则限制，仍可用于登录与当前密码验证。
+
+成功后待改密状态清除，全部旧登录永久撤销；服务重启后也不能恢复。必须使用
+新密码重新登录，其他用户登录与创建时间保持不变。改密页过期或用户状态变化
+时拒绝提交，重新登录确认最新状态。用户名持续代表同一使用者，不得转交新人。
+
+### 用户写入复用契约
+
+- `users.UserRoster.update_user` 是串行提交入口。锁内强制读取完整有效清单，执行
+  命令的身份/启用/权限复核，检查目标版本，再写准备审计和原子替换。后续管理
+  写入须复用这一入口，不得在锁外完成复核后自行写文件。新增身份时需扩展同一
+  入口的“不存在”版本条件，不能另建写入锁。
+- `user_changes.UserChanges` 负责命令输入、审计和结果语义。`valid_new_password`
+  是新增、重置及强制改密共用的新设密码规则。当前命令还复核 Cookie 有效、用户
+  启用且仍待改密，并遵守状态簿记受限恢复和落盘门。
+- `user_version` 是不透明的目标记录指纹；待改密身份查询和登录响应提供此值，
+  提交以 `expected_version` 原样带回。不同用户互不冲突。每次 Web 修改生成新的
+  随机 `revision` 并写入用户记录，使编辑版本和登录指纹同时更新。撤销不依赖
+  密码文本或启用状态是否恢复，旧记录不需预先补版本。后续启停与重置必须保留
+  此机制，不得删除或恢复旧版本；停服人工撤销也须换为全新值。
+- 文件写入使用同目录临时文件、flush/fsync、原子替换；替换完成是提交点。保留
+  其他用户、顶层配置和创建时间，只更新目标记录；文件写失败返回 503。输出为
+  YAML（也可读取 JSON），注释与排版不保留；临时/替换文件使用仅属主读写权限。
+- `change_password` 审计含 `actor`、`target_username`、`request_id`、`result`。
+  同次操作的准备/结果共用请求标识：`prepared` 后才尝试写入，提交后记 `success`，
+  拒绝或冲突记 `denied`，文件失败记 `failure`。沿用按天轮转和默认 90 天保留，
+  不写密码、哈希、Cookie 或请求体。单独的 `prepared` 不能证明已提交。
+
+| HTTP/结果 | 含义与恢复 |
+| --- | --- |
+| 200，`outcome: committed`、`audit_status: recorded` | 密码已生效，使用新密码重新登录 |
+| 200，`outcome: committed`、`audit_status: failed` | 密码已生效但结果审计异常；仍使用新密码登录，联系管理员检查审计，不回滚或重试 |
+| 422/409/503，`outcome: not_committed` | 验证、版本或文件/准备审计/状态簿记失败，密码未修改；按 `detail` 修正或重新确认 |
+| 401/403 | 身份失效或无权限（含跨源），请求被拒；重新登录确认身份 |
+| 网络中断、无法解析或未识别的响应 | 结果未知；先用新密码登录，失败可试原密码，两者均失败联系管理员；不自动重提 |
+
 ## v1 运行约束（多用户形态的边界承诺）
 
 - **单进程单 worker**：全局并发计数（`running_count`/`max_parallel`）、
@@ -132,6 +180,7 @@ OBS 配置修改先审计后执行；OBS 全局配置（凭据/桶/endpoint）�
 python web/tests/test_api.py        # ASGI 主缝（假会话驱动）
 python web/tests/test_artifacts.py  # 产物端点（临时目录造桩）
 python web/tests/test_auth.py       # 登录/登出/过期/禁用/密钥轮换、同源校验、审计文件
+python -m web.tests.test_password_change # 强制改密、全面限制、并发、重启与文件/审计故障
 python web/tests/test_ecs_api.py    # ECS 面板端点（假云函数注入）
 python web/tests/test_events.py     # 事件存储、快照与全局订阅
 python web/tests/test_fixture_isolation.py # 通用 fixture（含验收装配）的生产依赖哨兵
@@ -158,7 +207,9 @@ cd web-ui && npm test && npm run build    # 前端完整测试与生产构建
 | 文件 | 职责 |
 | --- | --- |
 | `app.py` | FastAPI 应用工厂、API 路由（含 `GET /api/runs` 列表，按当前登录用户过滤 owner，随列表下发匿名全局容量 running_count/max_parallel）、SSE 通道两条（全局流常驻广播 + owner 逐帧过滤 + 心跳周期重验身份；per-run 快照：id=seq、Last-Event-ID 重放、重放完即断）、启动接线（重放恢复 + 簿记状态分类——legacy 首启迁移 / 受限恢复判定 + 初始化标记落盘 + 残留 CLI 告警）、控制动作双门（审计前置 503 + 簿记落盘门 503，受限恢复下整体阻断） |
-| `auth.py` | 文件用户清单（`users.yaml`，mtime 热载）与 Cookie 登录态：PBKDF2 口令校验、HMAC 签名令牌（携带密码版本指纹——改密/禁用即撤销该用户 Cookie）、认证密钥解析（`WEB_AUTH_SECRET`，缺省机器派生） |
+| `auth.py` | PBKDF2 口令校验、HMAC 签名 Cookie（携带用户版本指纹）、认证密钥解析 |
+| `users.py` | 文件用户清单读取、目标版本、串行复核与原子替换，持久 revision 撤销旧 Cookie |
+| `user_changes.py` | 用户变更命令、新设密码规则、准备/结果审计、未提交与已提交反馈 |
 | `audit.py` | 控制审计（本地追加 JSONL，按天轮转默认留 90 天）：登录/登出与会话控制动作，带 actor、动作、run id、run owner、结果、拒绝原因与 request id；写失败抛 `AuditWriteError` 由控制动作 503 阻断 |
 | `runs.py` | 会话状态机（READY/RUNNING/ENDED 三态、无全局门禁）、owner 归属（创建注入、Fork 继承）、校验/置位分离（check_* 纯校验 + commit 置位，控制动作审计前置用）、回合计数（`WEB_MAX_PARALLEL_RUNS`）、Fork/end 校验与 409 判定收敛（turn_in_progress / session_running / parallel_limit_reached / session_not_active） |
 | `events.py` | 进程内事件存储：seq 递增、快照重放、全局订阅唤醒 |

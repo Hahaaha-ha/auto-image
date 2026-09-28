@@ -115,13 +115,13 @@ async def test_login_me_logout_flow_and_cookie_attributes():
             r = await client.post("/api/auth/login",
                                   json={"username": "tester", "password": PASSWORD})
             assert r.status_code == 200, r.text
-            assert r.json() == {"username": "tester", "can_manage_users": False}
+            assert r.json() == {"username": "tester", "can_manage_users": False, "must_change_password": False}
             cookie = r.headers.get("set-cookie", "").lower()
             assert "httponly" in cookie and "samesite=lax" in cookie, cookie
             assert f"{COOKIE_NAME}=" in cookie and "max-age=604800" in cookie, cookie
 
             r = await client.get("/api/auth/me")
-            assert r.status_code == 200 and r.json() == {"username": "tester", "can_manage_users": False}
+            assert r.status_code == 200 and r.json() == {"username": "tester", "can_manage_users": False, "must_change_password": False}
 
             r = await client.post("/api/auth/logout")
             assert r.status_code == 200, r.text
@@ -364,7 +364,7 @@ async def test_default_fixture_login_and_basic_flow():
     """make_test_app 默认清单 + async_client 自动登录：既有主缝测试的基座。"""
     app = make_test_app()
     async with async_client(app) as client:
-        assert (await client.get("/api/auth/me")).json() == {"username": "tester", "can_manage_users": True}
+        assert (await client.get("/api/auth/me")).json() == {"username": "tester", "can_manage_users": True, "must_change_password": False}
         r = await client.post("/api/runs", json={})
         assert r.status_code == 200, r.text
     # 指定用户名登录（多用户测试的入口形态）

@@ -46,6 +46,7 @@ from .events import EventStore
 from .runs import ENDED, RunManager
 from .sdk import SDKSessionFactory
 from .session import run_turn
+from .user_changes import UserChangeError, UserChanges
 
 # 前端构建产物（vite build 输出），存在才挂载；开发时走 vite dev proxy
 DEFAULT_STATIC_DIR = Path(__file__).resolve().parent.parent / "web-ui" / "dist"
@@ -79,7 +80,10 @@ DEFAULT_OWNER = os.environ.get("WEB_DEFAULT_OWNER", "admin")
 # 认证旁路：登录端点与静态壳（index.html/JS/CSS——不含业务数据，前端壳
 # 加载后自己查 /api/auth/me 决定登录壳还是数据面）；其余一切 API、全局
 # SSE、产物、OBS、ECS 端点默认 401
-PUBLIC_PATH_PREFIXES = ("/api/auth/login",)
+LOGIN_PATH = "/api/auth/login"
+PASSWORD_CHANGE_PATH = "/api/auth/change-password"
+PENDING_ALLOWED = {("GET", "/api/auth/me"), ("POST", PASSWORD_CHANGE_PATH),
+                   ("POST", "/api/auth/logout")}
 
 # 状态修改请求的同源判定：Host 头与 Origin 不同源即 403（Cookie SameSite=Lax
 # 之外的服务端防线）。非浏览器客户端不带 Origin，不受约束。
@@ -129,6 +133,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     app.state.users = roster
     app.state.auth_secret = secret
     app.state.audit = audit
+    user_changes = UserChanges(roster, audit, secret)
 
     @app.middleware("http")
     async def auth_gate(request: Request, call_next):
@@ -139,20 +144,35 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         旁路名单——它就是「当前身份」探针，未登录 401 即答案本身。
         """
         path = request.url.path
-        if path.startswith(PUBLIC_PATH_PREFIXES):
+        if path == LOGIN_PATH and request.method == "POST":
             return await _login_guard(request, call_next)
         if not path.startswith("/api/"):
             # 静态资源（登录壳的载体）放行；业务面全在 /api/ 下
             return await call_next(request)
         cookie = request.cookies.get(auth_mod.COOKIE_NAME)
+        changing_password = path == PASSWORD_CHANGE_PATH and request.method == "POST"
         username, reason = (None, auth_mod.REASON_BAD_COOKIE)
         if cookie:
-            username, reason = auth_mod.verify_token(secret, cookie, roster)
+            if changing_password:
+                # 写入入口只先验签；用户存在/启用/版本在串行提交内重新复核，
+                # 文件不可读因此能明确返回 503，而非伪装成密码错误。
+                payload, reason = auth_mod.read_token(secret, cookie)
+                username = payload["u"] if payload else None
+            else:
+                username, reason = auth_mod.verify_token(secret, cookie, roster)
         if username is None:
+            if changing_password:
+                user_changes.denied(UNKNOWN_ACTOR, UNKNOWN_ACTOR, "change_password", request_id(request), reason)
             return _unauthorized(reason)
         request.state.username = username
         if request.method not in SAFE_METHODS and not _same_origin(request):
+            if changing_password:
+                user_changes.denied(username, username, "change_password", request_id(request), REASON_CROSS_ORIGIN)
             return JSONResponse(status_code=403, content={"detail": "cross-origin rejected"})
+        if roster.must_change_password(username) and (request.method, path) not in PENDING_ALLOWED:
+            audit_best_effort(actor=username, action="access", result="denied",
+                              request_id=request_id(request), reason="password_change_required")
+            return JSONResponse(status_code=403, content={"detail": "password_change_required"})
         return await call_next(request)
 
     def _unauthorized(reason):
@@ -168,7 +188,8 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
             parsed = urlparse(origin)
         except ValueError:
             return False
-        return parsed.netloc == host and origin == f"{parsed.scheme}://{parsed.netloc}"
+        return (parsed.scheme == request.url.scheme and parsed.netloc == host
+                and origin == f"{parsed.scheme}://{parsed.netloc}")
 
     def audit_best_effort(**kwargs):
         """尽力而为审计（登录失败/被拒类无状态变更动作）：写失败只告警，
@@ -331,7 +352,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         password = body.get("password")
         if not isinstance(username, str) or not isinstance(password, str) or not username:
             raise HTTPException(status_code=422, detail="username and password required")
-        ok, reason = roster.check_password(username, password)
+        ok, reason = auth_mod.check_password(roster, username, password)
         if not ok:
             audit_best_effort(actor=username, action="login", result="failure",
                               request_id=request_id(request), reason=reason)
@@ -362,8 +383,34 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     async def whoami(request: Request):
         return identity(request.state.username)
 
+    @app.post(PASSWORD_CHANGE_PATH)
+    async def change_password(request: Request):
+        body = await _json_body(request)
+
+        def check_writable():
+            if restricted:
+                raise UserChangeError(503, 'state_unavailable')
+            try:
+                persist(strict=True)
+            except state_mod.StatePersistError:
+                raise UserChangeError(503, 'state_unavailable')
+
+        try:
+            result = user_changes.change_password(request.state.username,
+                        request.cookies.get(auth_mod.COOKIE_NAME), body, request_id(request), check_writable)
+        except UserChangeError as exc:
+            return JSONResponse(status_code=exc.status,
+                                content={"outcome": "not_committed", "detail": exc.detail})
+        response = JSONResponse(result)
+        response.delete_cookie(auth_mod.COOKIE_NAME)
+        return response
+
     def identity(username):
-        return {"username": username, "can_manage_users": roster.is_admin(username)}
+        result = {"username": username, "can_manage_users": roster.is_admin(username),
+                  "must_change_password": roster.must_change_password(username)}
+        if result["must_change_password"]:
+            result["user_version"] = roster.fingerprint(username)
+        return result
 
     def require_admin(request, action):
         if not roster.is_admin(request.state.username):
@@ -989,7 +1036,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
             if not cookie:
                 return True
             username, _ = auth_mod.verify_token(secret, cookie, roster)
-            return username != actor
+            return username != actor or roster.must_change_password(actor)
 
         async def generate():
             with store.subscribe_global() as flag:

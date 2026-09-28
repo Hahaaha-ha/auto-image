@@ -14,6 +14,7 @@ import ArtifactView from './components/ArtifactView.jsx'
 import ChatBar from './components/ChatBar.jsx'
 import Tabs from './components/Tabs.jsx'
 import SidePanel from './components/SidePanel.jsx'
+import PasswordChange from './components/PasswordChange.jsx'
 
 const STATUS_TONE = { RUNNING: 'running', ENDED: 'warn' }
 
@@ -276,6 +277,7 @@ function Stream({ run }) {
 
 // 登录壳：未认证时的唯一界面（数据面不启动——不建流、不拉清单）
 function LoginShell() {
+  const { authNotice } = store.useRunState()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState(null)
@@ -299,9 +301,11 @@ function LoginShell() {
     <div className="va-login">
       <form className="va-login-card" onSubmit={onSubmit}>
         <div className="va-login-title">auto-image 部署会话</div>
+        {authNotice && <div className={`va-auth-notice ${authNotice.tone}`} role="status">{authNotice.text}</div>}
         <input
           className="va-login-input"
           placeholder="用户名"
+          aria-label="用户名"
           value={username}
           autoComplete="username"
           onChange={(e) => setUsername(e.target.value)}
@@ -311,6 +315,7 @@ function LoginShell() {
           className="va-login-input"
           type="password"
           placeholder="密码"
+          aria-label="密码"
           value={password}
           autoComplete="current-password"
           onChange={(e) => setPassword(e.target.value)}
@@ -370,7 +375,7 @@ export default function App() {
   if (s.auth !== 'user') {
     return (
       <div className="va-root">
-        {s.auth === 'anonymous' ? <LoginShell /> : (
+        {s.auth === 'anonymous' ? <LoginShell /> : s.auth === 'password-change' ? <PasswordChange /> : (
           <div className="va-login">
             <div className="va-login-card va-login-waiting">正在确认登录状态…</div>
           </div>
