@@ -23,7 +23,7 @@ from web.fake import FakeSessionFactory
 TEST_HEARTBEAT = 0.05
 # 测试默认用户清单：tester 可登录，alice/bob 是两个普通用户（owner ACL
 # 测试的对立双方），ghost 预置禁用（撤销类测试现成素材），admin 供 legacy
-# 迁移归属
+# 迁移归属；tester 与 admin 显式拥有管理员角色，供 OBS 配置测试使用
 TEST_PASSWORD = "test-password"
 TEST_USERS = {
     "tester": TEST_PASSWORD,
@@ -41,6 +41,7 @@ def write_test_users(path):
         users[name] = {
             "password_hash": hash_password(password, 1000),
             "enabled": name != "ghost",
+            "role": "admin" if name in ("tester", "admin") else "user",
         }
     path.write_text(json.dumps({"users": users}), encoding="utf-8")
     return path

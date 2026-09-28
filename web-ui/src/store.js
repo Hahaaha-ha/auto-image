@@ -86,7 +86,7 @@ function persistTabs() {
 
 // 侧栏面板选择持久化（从 SidePanel 上提；跨面板跳转需要 store 持有状态）
 const SIDE_PANEL_KEY = 'va-side-panel'
-const SIDE_PANELS = ['sessions', 'tasks', 'artifacts', 'obs', 'ecs']
+const SIDE_PANELS = ['sessions', 'tasks', 'artifacts', 'obs', 'ecs', 'users']
 function readSidePanel() {
   try {
     const v = localStorage.getItem(SIDE_PANEL_KEY)
@@ -105,6 +105,8 @@ function readSidePanel() {
 const restored = restoreTabs()
 let state = {
   auth: 'checking',             // 认证态：checking → anonymous | user（登录壳 vs 数据面）
+  canManageUsers: false,
+  users: { items: [], loading: false, error: null },
   user: null,                   // 当前用户名（auth === 'user' 时非空）
   runs: {},
   order: [],
@@ -133,7 +135,7 @@ let state = {
 }
 
 export function setSidePanel(panel) {
-  if (!SIDE_PANELS.includes(panel)) return
+  if (!SIDE_PANELS.includes(panel) || (panel === 'users' && !state.canManageUsers)) return
   set({ sidePanel: panel })
   try {
     localStorage.setItem(SIDE_PANEL_KEY, panel)
@@ -431,7 +433,8 @@ function deauthed(reasonText) {
   timersRef.clear()
   for (const key of Object.keys(drafts)) delete drafts[key]
   set({
-    auth: 'anonymous', user: null, connection: 'connecting',
+    auth: 'anonymous', user: null, canManageUsers: false,
+    users: { items: [], loading: false, error: null }, connection: 'connecting',
     runs: {}, order: [], capacity: null,
     tabs: [], activeKey: null, lastSessionKey: null,
     tasks: [], activeTaskId: null,
@@ -483,10 +486,39 @@ async function confirmIdentity() {
     if (!resp.ok) return false
     const data = await resp.json().catch(() => null)
     if (!data?.username) return false
-    set({ auth: 'user', user: data.username })
+    acceptIdentity(data)
     return true
   } catch {
     return false
+  }
+}
+
+function acceptIdentity(data) {
+  const canManageUsers = data.can_manage_users === true
+  const users = state.user === data.username && canManageUsers
+    ? state.users : { items: [], loading: false, error: null }
+  set({ auth: 'user', user: data.username, canManageUsers, users,
+    sidePanel: state.sidePanel === 'users' && !canManageUsers ? 'artifacts' : state.sidePanel })
+}
+
+export async function refreshUsers() {
+  if (!state.canManageUsers || state.users.loading) return
+  const identity = state.users
+  const loading = { ...identity, loading: true, error: null }
+  set({ users: loading })
+  try {
+    const resp = await fetch('/api/admin/users')
+    if (state.users !== loading) return
+    if (resp.status === 401) { deauthed('登录已失效，请重新登录'); return }
+    if (resp.status === 403) {
+      set({ canManageUsers: false, sidePanel: 'artifacts', users: { items: [], loading: false, error: null } })
+      return
+    }
+    if (!resp.ok) throw new Error('用户清单加载失败，请点击刷新重试')
+    const data = await resp.json()
+    if (state.users === loading) set({ users: { items: data.users, loading: false, error: null } })
+  } catch {
+    if (state.users === loading) set({ users: { items: [], loading: false, error: '用户清单加载失败，请点击刷新重试' } })
   }
 }
 
@@ -508,7 +540,7 @@ export async function login(username, password) {
   if (!resp.ok) throw Object.assign(new Error(data.detail || `HTTP ${resp.status}`), {
     status: resp.status, detail: data.detail,
   })
-  set({ auth: 'user', user: data.username })
+  acceptIdentity(data)
   startDataPlane()
   return data
 }

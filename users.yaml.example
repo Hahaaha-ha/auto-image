@@ -1,17 +1,20 @@
 # 仓库根用户清单范本（多用户会话隔离的登录入口）。复制为 users.yaml 后按需
-# 增删用户；users.yaml 已被 .gitignore 忽略。
+# 停服备份后维护用户；users.yaml 已被 .gitignore 忽略。
 #
-# 形状：users: { 用户名: {password_hash, enabled?} }。password_hash 由
+# 形状：users: { 用户名: {password_hash, enabled?, role?, created_at?} }。password_hash 由
 #   python3 -c "from web.auth import hash_password; print(hash_password('你的密码'))"
 # 生成（pbkdf2_sha256$迭代数$盐$派生键，迭代数默认 100000）。enabled 缺省
 # 为 true；置 false 即禁用——既有 Cookie 下一次请求即失效。清单按文件
-# mtime 热载，改文件即时生效，无需重启。
+# mtime 热载，但人工维护须停服并先备份。role 缺省 user，仅可为 admin/user。
+# WEB_DEFAULT_OWNER 不授予权限；旧 created_at 缺失不要补造，页面显示“未知”。
 #
 # 本范本不含任何可登录密码（占位哈希不对应任何口令）。
 users:
   admin:
+    role: admin
     password_hash: pbkdf2_sha256$100000$c2FsdA$cGxhY2Vob2xkZXItbm90LWFsbG9naW5hYmxl
     enabled: true
   alice:
+    role: user
     password_hash: pbkdf2_sha256$100000$c2FsdA$cGxhY2Vob2xkZXItbm90LWFsbG9naW5hYmxl
     enabled: true

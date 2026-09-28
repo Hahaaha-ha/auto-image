@@ -287,7 +287,7 @@ function LoginShell() {
     setBusy(true)
     setError(null)
     try {
-      await store.login(username.trim(), password)
+      await store.login(username, password)
     } catch (err) {
       setError(err.status === 401 ? '用户名或密码错误，或账号已禁用' : `登录失败：${err.message}`)
     } finally {
@@ -315,7 +315,7 @@ function LoginShell() {
           autoComplete="current-password"
           onChange={(e) => setPassword(e.target.value)}
         />
-        <button className="va-login-submit" type="submit" disabled={busy || !username.trim()}>
+        <button className="va-login-submit" type="submit" disabled={busy || !username}>
           {busy ? '登录中…' : '登录'}
         </button>
         {error && <div className="va-login-error" role="alert">{error}</div>}

@@ -291,11 +291,8 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         logging.getLogger("web").warning(
             "状态簿记不可信（%s），服务进入受限恢复：未知归属会话已隐藏、"
             "控制动作被阻断；请停服排查 state 或从备份恢复后重启", state_status)
-    # legacy 迁移归属与 OBS 全局配置的唯一写权限人（部署管理员）：同一
-    # 显式配置源（WEB_DEFAULT_OWNER，缺省 admin），语义独立——普通用户
-    # 读共享、写 403
+    # 默认归属仅用于 legacy 会话迁移，不授予管理权限。
     legacy_owner = default_owner or DEFAULT_OWNER
-    obs_admin = default_owner or DEFAULT_OWNER
     if allow_legacy_migration:
         for r in restored:
             if r.owner is None:
@@ -343,7 +340,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
                       request_id=request_id(request))
         token = auth_mod.issue_token(secret, username, roster.fingerprint(username),
                                      auth_mod.COOKIE_TTL_SECONDS)
-        response = JSONResponse({"username": username})
+        response = JSONResponse(identity(username))
         response.set_cookie(
             auth_mod.COOKIE_NAME, token,
             max_age=auth_mod.COOKIE_TTL_SECONDS, httponly=True, samesite="lax",
@@ -363,7 +360,20 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     # 已拦，这里只会是已登录分支）
     @app.get("/api/auth/me")
     async def whoami(request: Request):
-        return {"username": request.state.username}
+        return identity(request.state.username)
+
+    def identity(username):
+        return {"username": username, "can_manage_users": roster.is_admin(username)}
+
+    def require_admin(request, action):
+        if not roster.is_admin(request.state.username):
+            _audit_denied(request, action, reason=REASON_NOT_ADMIN)
+            raise HTTPException(status_code=403, detail="admin role required")
+
+    @app.get("/api/admin/users")
+    async def list_users(request: Request):
+        require_admin(request, "list_users")
+        return {"users": roster.list_users()}
 
     def _audit_or_503(**kwargs):
         """状态变更类动作的审计前置：写失败抛 503（HTTPException 由调用方
@@ -831,16 +841,13 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     @app.get("/api/obs/config")
     def get_obs_config(request: Request):
         return {**obs_mod.get_config(obs_scope),
-                "can_write": request.state.username == obs_admin}
+                "can_write": roster.is_admin(request.state.username)}
 
     @app.post("/api/obs/config")
     def save_obs_config(request: Request, body: dict | None = None):
         _restricted_or_503()  # 全局配置修改在受限恢复下阻断
         b = body or {}
-        if request.state.username != obs_admin:
-            _audit_denied(request, "obs_config", reason=REASON_NOT_ADMIN)
-            raise HTTPException(
-                status_code=403, detail=f"obs config is admin-only ({obs_admin})")
+        require_admin(request, "obs_config")
         try:  # 入口预检与 save_config 同一份清洗（非法输入 422 先于审计）
             clean = obs_mod.clean_config_input(
                 ak=b.get("ak"), sk=b.get("sk"),

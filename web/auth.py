@@ -1,9 +1,9 @@
 """文件用户清单与 Cookie 登录态（无 Bearer 双轨）。
 
-用户清单是 YAML/JSON 文件：用户名 → {password_hash, enabled?}，另可带
+用户清单是 YAML/JSON 文件：用户名 → {password_hash, enabled?, role?, created_at?}，另可带
 全局 iterations。password_hash 形如 pbkdf2_sha256$<iters>$<salt>$<dk>，
 工具 hash_password 生成；示例清单不含可登录密码。清单按 mtime 热载——
-运维改文件（禁用/改密/增删用户）即时生效，无需重启。
+运维人工维护须停服备份；角色缺省 user，显式 admin 才获管理权限。
 
 Cookie 是自包含 HMAC 签名令牌 v1.<payload_b64url>.<sig_b64url>：payload
 携带用户名、签发/过期时刻和密码版本指纹（该用户条目的稳定短哈希——改密
@@ -91,11 +91,20 @@ class UserRoster:
             return
         users = {}
         if raw.strip():
-            data = yaml.safe_load(raw) or {}
+            try:
+                data = yaml.safe_load(raw) or {}
+            except yaml.YAMLError:
+                logger.warning("用户清单 %s 无效，按无用户处理", self.path)
+                data = {}
             entries = data.get("users") if isinstance(data, dict) else None
             if isinstance(entries, dict):
                 for name, cfg in entries.items():
                     if isinstance(name, str) and isinstance(cfg, dict):
+                        role = cfg.get("role", "user")
+                        if not isinstance(role, str) or role not in ("admin", "user"):
+                            logger.warning("用户清单 %s 含非法角色，按无用户处理", self.path)
+                            users = {}
+                            break
                         users[name] = cfg
             else:
                 logger.warning("用户清单 %s 形状不对（缺 users 映射），按无用户处理", self.path)
@@ -104,7 +113,7 @@ class UserRoster:
         # 其他用户的登录态不受清单任何变动（如新增用户）牵连
         self._fingerprints = {
             name: hashlib.sha256(
-                json.dumps(cfg, sort_keys=True, ensure_ascii=False).encode("utf-8")
+                json.dumps(cfg, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
             ).hexdigest()[:16]
             for name, cfg in users.items()
         }
@@ -122,6 +131,20 @@ class UserRoster:
         """读用户条目（触发热载检查）；不存在返回 None。"""
         self._maybe_refresh()
         return self._data.get(username)
+
+    def is_admin(self, username):
+        entry = self.get(username)
+        return entry is not None and entry.get("enabled", True) is not False and entry.get("role", "user") == "admin"
+
+    def list_users(self):
+        """仅投影管理清单字段，不向调用方暴露凭据或其他条目元数据。"""
+        self._maybe_refresh()
+        return [
+            {"username": name, "role": cfg.get("role", "user"),
+             "enabled": cfg.get("enabled", True) is not False,
+             "created_at": cfg.get("created_at")}
+            for name, cfg in self._data.items()
+        ]
 
     def check_password(self, username, password):
         """登录口令校验：用户存在、启用且口令匹配才通过。返回 (ok, reason)；

@@ -399,3 +399,69 @@ describe('任务面板联动', () => {
     expect(store.getState().tabs.some((t) => t.kind === 'session' && t.runId === 'run_manual')).toBe(true)
   })
 })
+
+describe('管理能力与清单', () => {
+  it('身份能力严格判定，原样提交旧用户名，登出清空用户清单并忽略迟到响应', async () => {
+    await store.logout()
+    let finish
+    fetch.mockImplementation(async (url, options) => {
+      if (url === '/api/auth/login') {
+        expect(JSON.parse(options.body).username).toBe(' Legacy 用户 ')
+        return { ok: true, json: async () => ({ username: ' Legacy 用户 ', can_manage_users: true }) }
+      }
+      if (url === '/api/admin/users') return new Promise((resolve) => { finish = resolve })
+      return { ok: true, json: async () => ({ runs: [], tasks: [] }) }
+    })
+    await store.login(' Legacy 用户 ', 'pw')
+    expect(store.getState().canManageUsers).toBe(true)
+    store.setSidePanel('users')
+    expect(store.getState().sidePanel).toBe('users')
+    const pending = store.refreshUsers()
+    await store.logout()
+    finish({ ok: true, json: async () => ({ users: [{ username: 'private' }] }) })
+    await pending
+    expect(store.getState().users.items).toEqual([])
+    expect(store.getState().canManageUsers).toBe(false)
+    for (const capability of [undefined, false, 'true', 1]) {
+      fetch.mockImplementation(async () => ({ ok: true, json: async () => ({ username: 'admin', can_manage_users: capability, runs: [], tasks: [] }) }))
+      await store.login('admin', 'pw')
+      store.setSidePanel('users')
+      expect(store.getState().canManageUsers).toBe(false)
+      expect(store.getState().sidePanel).toBe('artifacts')
+      await store.logout()
+    }
+  })
+  it('清单可刷新，403 撤去入口和缓存，401 回到登录壳', async () => {
+    for (const status of [403, 401]) {
+      fetch.mockImplementation(async () => ({ ok: true, json: async () => ({ username: 'operator', can_manage_users: true, runs: [], tasks: [] }) }))
+      await store.login('operator', 'pw')
+      fetch.mockResolvedValue({ ok: true, json: async () => ({ users: [{ username: 'alice' }] }) })
+      await store.refreshUsers()
+      expect(store.getState().users.items).toEqual([{ username: 'alice' }])
+      fetch.mockResolvedValue({ ok: false, status })
+      await store.refreshUsers()
+      expect(store.getState().users.items).toEqual([])
+      expect(store.getState().canManageUsers).toBe(false)
+      if (status === 401) expect(store.getState().auth).toBe('anonymous')
+      await store.logout()
+    }
+  })
+})
+
+describe('管理清单在登录复核后保持可见', () => {
+  it('SSE 断开后确认仍是同一管理员，不将已加载的清单误报为空', async () => {
+    await store.logout()
+    fetch.mockImplementation(async (url) => ({ ok: true, json: async () => (
+      url === '/api/admin/users' ? { users: [{ username: 'alice' }] }
+        : { username: 'operator', can_manage_users: true, runs: [], tasks: [] }
+    ) }))
+    await store.login('operator', 'pw')
+    store.setSidePanel('users')
+    await store.refreshUsers()
+    globalSource.readyState = EventSource.CLOSED
+    await globalSource.onerror()
+    expect(store.getState().sidePanel).toBe('users')
+    expect(store.getState().users.items).toEqual([{ username: 'alice' }])
+    await store.logout()
+  })
+})

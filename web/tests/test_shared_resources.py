@@ -2,8 +2,7 @@
 """共享产物与 OBS 权限 —— 多用户共享读取、归档共享、OBS 配置仅管理员可写。
 
 缝：FastAPI ASGI 测试客户端 ×2（alice/bob 普通用户）+ admin 客户端，产物
-根与 OBS 函数注入假实现（不触云）；admin 为部署管理员（default_owner=admin，
-与生产 WEB_DEFAULT_OWNER 同源）。覆盖：双用户产物四端点与 OBS 三端点共享
+根与 OBS 函数注入假实现（不触云）；admin 通过测试清单的显式 role: admin 获得管理权限。覆盖：双用户产物四端点与 OBS 三端点共享
 读取、脱敏配置与健康状态共享、共享归档（不按 owner 过滤）、普通用户配置
 写入 403（请求体伪造无效）、admin 配置写入、归档与配置修改审计前置（写
 失败 503 不执行共享资源写）。纯 assert，无 pytest。
@@ -52,7 +51,7 @@ def shared_app(tmp, **overrides):
     options = {
         "artifact_roots": {"deploy": root / "art" / "deploy"},
         "audit_dir": Path(tmp) / "audit",
-        "default_owner": "admin",  # 部署管理员 = 用户名 admin（生产同源）
+        "default_owner": "admin",  # 仅配置历史会话迁移归属
     }
     options.update(overrides)
     return make_test_app(**options)
