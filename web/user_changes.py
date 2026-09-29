@@ -1,9 +1,11 @@
 """用户变更命令：复核、版本冲突、准备/结果审计和明确的提交结果。"""
 import logging
+import re
+from datetime import datetime, timezone
 
 from . import auth
 from .audit import AuditWriteError
-from .users import UserFileError, UserVersionConflict
+from .users import UserAlreadyExists, UserFileError, UserVersionConflict
 
 logger = logging.getLogger('web')
 
@@ -34,16 +36,18 @@ class UserChanges:
         except AuditWriteError:
             logger.warning('用户变更拒绝审计不可用')
 
-    def _commit(self, actor, target, action, request_id, expected_version, transform):
+    def _commit(self, actor, target, action, request_id, expected_version, transform, *, create=False):
         def record(result, reason=None):
             self._record(actor, target, action, request_id, result, reason)
 
         try:
             self.roster.update_user(target, expected_version, transform,
-                                    lambda: record('prepared'))
-        except (UserChangeError, UserVersionConflict, UserFileError, AuditWriteError) as exc:
+                                    lambda: record('prepared'), create=create)
+        except (UserChangeError, UserVersionConflict, UserAlreadyExists, UserFileError, AuditWriteError) as exc:
             if isinstance(exc, UserVersionConflict):
                 exc = UserChangeError(409, 'user_version_conflict')
+            elif isinstance(exc, UserAlreadyExists):
+                exc = UserChangeError(409, 'username_exists')
             elif isinstance(exc, UserFileError):
                 exc = UserChangeError(503, 'users_unavailable')
             elif isinstance(exc, AuditWriteError):
@@ -59,6 +63,27 @@ class UserChanges:
             logger.error('用户变更已提交，结果审计不可用')
             return {'outcome': 'committed', 'audit_status': 'failed'}
         return {'outcome': 'committed', 'audit_status': 'recorded'}
+
+    def create_user(self, actor, token, body, request_id, check_writable):
+        name = body.get('username')
+        target = name if isinstance(name, str) else None
+
+        def transform(entry):
+            username, reason = auth.verify_token(self.secret, token, self.roster)
+            if username != actor:
+                raise UserChangeError(401, reason or auth.REASON_BAD_COOKIE)
+            if not self.roster.is_admin(actor):
+                raise UserChangeError(403, 'not_admin')
+            check_writable()
+            if not isinstance(name, str) or re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', name) is None:
+                raise UserChangeError(422, 'invalid_username')
+            if not valid_new_password(body.get('password')):
+                raise UserChangeError(422, 'invalid_new_password')
+            return {'password_hash': auth.hash_password(body.get('password')),
+                    'role': 'user', 'enabled': True, 'must_change_password': True,
+                    'created_at': datetime.now(timezone.utc).isoformat()}
+
+        return self._commit(actor, target, 'create_user', request_id, None, transform, create=True)
 
     def change_password(self, actor, token, body, request_id, check_writable):
         def transform(entry):

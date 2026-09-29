@@ -22,6 +22,10 @@ class UserVersionConflict(RuntimeError):
     """提交引用的用户版本已过期。"""
 
 
+class UserAlreadyExists(RuntimeError):
+    """新增用户名已存在，不得覆盖原身份。"""
+
+
 class UserRoster:
     def __init__(self, path):
         self.path = Path(path)
@@ -100,17 +104,20 @@ class UserRoster:
         return hashlib.sha256(json.dumps(entry, sort_keys=True, ensure_ascii=False,
                                         default=str).encode('utf-8')).hexdigest()[:16]
 
-    def update_user(self, username, expected_version, transform, prepare):
+    def update_user(self, username, expected_version, transform, prepare, *, create=False):
         """同一把锁内重新读取、复核身份、检查版本、准备审计并提交。
 
         transform 接收目标条目的副本，复核当前身份与业务输入后返回新条目；
-        prepare 必须成功才写文件。调用方只在返回后记录已提交的结果审计。
+        create 要求目标不存在；否则检查目标版本。prepare 必须成功才写文件。
+        调用方只在返回后记录已提交的结果审计。
         所有用户写入口必须复用此方法，不能先在锁外验证再直接写文件。
         """
         with self._lock:
             self._reload(strict=True)
             updated = transform(copy.deepcopy(self._data.get(username)))
-            if not isinstance(expected_version, str) or expected_version != self.fingerprint(username):
+            if create and username in self._data:
+                raise UserAlreadyExists()
+            if not create and (not isinstance(expected_version, str) or expected_version != self.fingerprint(username)):
                 raise UserVersionConflict()
             document = copy.deepcopy(self._document)
             updated['revision'] = secrets.token_hex(16)

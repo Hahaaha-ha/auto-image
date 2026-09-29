@@ -110,6 +110,7 @@ let state = {
   authNotice: null,
   canManageUsers: false,
   users: { items: [], loading: false, error: null },
+  userCreate: { busy: false, error: null, notice: null, verifyUsername: null },
   user: null,                   // 当前用户名（auth === 'user' 时非空）
   runs: {},
   order: [],
@@ -441,6 +442,7 @@ function deauthed(reasonText) {
     auth: 'anonymous', user: null, canManageUsers: false, userVersion: null,
     passwordChange: { busy: false, error: null },
     users: { items: [], loading: false, error: null }, connection: 'connecting',
+    userCreate: { busy: false, error: null, notice: null, verifyUsername: null },
     runs: {}, order: [], capacity: null,
     tabs: [], activeKey: null, lastSessionKey: null,
     tasks: [], activeTaskId: null,
@@ -508,12 +510,14 @@ function acceptIdentity(data) {
   const canManageUsers = data.can_manage_users === true
   const users = state.user === data.username && canManageUsers
     ? state.users : { items: [], loading: false, error: null }
-  set({ auth: 'user', user: data.username, canManageUsers, users, userVersion: null, authNotice: null,
+  const userCreate = state.user === data.username && canManageUsers
+    ? state.userCreate : { busy: false, error: null, notice: null, verifyUsername: null }
+  set({ auth: 'user', user: data.username, canManageUsers, users, userCreate, userVersion: null, authNotice: null,
     sidePanel: state.sidePanel === 'users' && !canManageUsers ? 'artifacts' : state.sidePanel })
 }
 
-export async function refreshUsers() {
-  if (!state.canManageUsers || state.users.loading) return
+export async function refreshUsers(force = false) {
+  if (!state.canManageUsers || (state.users.loading && !force)) return
   const identity = state.users
   const loading = { ...identity, loading: true, error: null }
   set({ users: loading })
@@ -522,14 +526,82 @@ export async function refreshUsers() {
     if (state.users !== loading) return
     if (resp.status === 401) { deauthed('登录已失效，请重新登录'); return }
     if (resp.status === 403) {
-      set({ canManageUsers: false, sidePanel: 'artifacts', users: { items: [], loading: false, error: null } })
+      revokeUserManagement()
       return
     }
     if (!resp.ok) throw new Error('用户清单加载失败，请点击刷新重试')
     const data = await resp.json()
-    if (state.users === loading) set({ users: { items: data.users, loading: false, error: null } })
+    if (!Array.isArray(data.users)) throw new Error('invalid users response')
+    if (state.users === loading) {
+      set({ users: { items: data.users, loading: false, error: null } })
+      const username = state.userCreate.verifyUsername
+      if (username) {
+        const exists = data.users.some((user) => user.username === username)
+        set({ userCreate: { ...state.userCreate, verifyUsername: null, notice: { tone: 'warning',
+          text: exists
+            ? `清单中已有同名用户「${username}」。无法仅凭清单确认是否由本次创建或密码是否匹配，请先核实，不要重复新增。`
+            : `刷新后清单中未找到「${username}」。如仍需新增，请重新填写并明确提交。`,
+        } } })
+      }
+    }
   } catch {
     if (state.users === loading) set({ users: { items: [], loading: false, error: '用户清单加载失败，请点击刷新重试' } })
+  }
+}
+
+function revokeUserManagement() {
+  set({ canManageUsers: false, sidePanel: 'artifacts', users: { items: [], loading: false, error: null },
+    userCreate: { busy: false, error: null, notice: null, verifyUsername: null } })
+}
+
+const CREATE_USER_HINT = {
+  invalid_username: '用户名须为 1–64 位英文字母、数字、下划线、短横线或点；区分大小写，不可含空格。',
+  invalid_new_password: '初始密码须为 8–128 位可见 ASCII 字符（英文字母、数字或半角符号），不可含空格、其他空白或中文。',
+  username_exists: '用户名已存在，未覆盖原用户。请为新使用者选择独立用户名。',
+  users_unavailable: '用户尚未创建：用户文件不可用，请联系管理员修复后再试。',
+  audit_unavailable: '用户尚未创建：审计不可用，请联系管理员修复后再试。',
+  state_unavailable: '用户尚未创建：服务处于受限恢复状态，请联系管理员。',
+}
+
+export async function createUser(username, password) {
+  if (!state.canManageUsers || state.userCreate.busy || state.userCreate.verifyUsername) return
+  const attempt = { busy: true, error: null, notice: null, verifyUsername: null }
+  set({ userCreate: attempt })
+  try {
+    const resp = await fetch('/api/admin/users', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    })
+    const data = await resp.json()
+    if (state.userCreate !== attempt) return
+    if (data.outcome === 'committed') {
+      const auditFailed = data.audit_status !== 'recorded'
+      set({ userCreate: { ...attempt, busy: false, notice: {
+        tone: auditFailed ? 'warning' : 'success',
+        text: `用户「${username}」已创建。${auditFailed ? '变更已生效，审计记录异常；无需重复新增，请联系管理员检查审计。' : '请自行交付初始密码；用户首次登录须改密。'}`,
+      } } })
+      refreshUsers(true)
+      return 'committed'
+    }
+    if (resp.status === 401) { deauthed('登录已失效，请重新登录'); return 'not_committed' }
+    if (resp.status === 403) {
+      if (data.detail === 'not_admin' || data.detail === 'password_change_required') revokeUserManagement()
+      else set({ userCreate: { ...attempt, busy: false, error: '新增请求被拒绝，请刷新页面并确认管理权限后再试。' } })
+      return 'not_committed'
+    }
+    if (data.outcome === 'not_committed') {
+      set({ userCreate: { ...attempt, busy: false, error: CREATE_USER_HINT[data.detail]
+        || '用户尚未创建，请检查输入；仍失败请联系管理员。' } })
+      return 'not_committed'
+    }
+    throw new Error('unknown create outcome')
+  } catch {
+    if (state.userCreate !== attempt) return
+    set({ userCreate: { ...attempt, busy: false, verifyUsername: username, notice: {
+      tone: 'warning', text: `无法确认「${username}」的新增结果。请先刷新清单核实；核实前不能再次新增，系统不会自动重提。`,
+    } } })
+    refreshUsers(true)
+    return 'unknown'
   }
 }
 

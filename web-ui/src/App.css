@@ -787,5 +787,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-users-list { list-style: none; margin: 0; padding: 0; }
 .va-users-row { padding: 12px; border-bottom: 1px solid var(--line); color: var(--ink-2); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .va-users-name { color: var(--ink); font-weight: 600; white-space: pre-wrap; }
+.va-user-create { margin: 12px; font-size: 13px; }
+.va-user-create summary { width: fit-content; cursor: pointer; color: var(--accent); font-weight: 600; padding: 4px 0; }
+.va-user-create form { display: flex; flex-direction: column; gap: 10px; padding-block: 12px; }
+.va-user-create .va-login-input { width: 100%; min-width: 0; color: var(--ink); background: var(--surface); }
+.va-user-create .va-login-input:disabled { background: var(--surface-dim); }
+.va-user-create .va-auth-help { font-size: 12px; }
+.va-user-create .va-login-submit:disabled { color: var(--ink-2); background: var(--surface-dim); border-color: var(--line); opacity: 1; }
+.va-user-create :is(summary, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .va-side-tabs.has-users { gap: 0; padding-inline: 4px; }
 .va-side-tabs.has-users button { flex: 1; padding-inline: 1px; }

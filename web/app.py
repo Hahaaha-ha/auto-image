@@ -82,6 +82,7 @@ DEFAULT_OWNER = os.environ.get("WEB_DEFAULT_OWNER", "admin")
 # SSE、产物、OBS、ECS 端点默认 401
 LOGIN_PATH = "/api/auth/login"
 PASSWORD_CHANGE_PATH = "/api/auth/change-password"
+CREATE_USER_PATH = "/api/admin/users"
 PENDING_ALLOWED = {("GET", "/api/auth/me"), ("POST", PASSWORD_CHANGE_PATH),
                    ("POST", "/api/auth/logout")}
 
@@ -151,9 +152,12 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
             return await call_next(request)
         cookie = request.cookies.get(auth_mod.COOKIE_NAME)
         changing_password = path == PASSWORD_CHANGE_PATH and request.method == "POST"
+        creating_user = path == CREATE_USER_PATH and request.method == "POST"
+        user_write = changing_password or creating_user
+        user_action = "change_password" if changing_password else "create_user"
         username, reason = (None, auth_mod.REASON_BAD_COOKIE)
         if cookie:
-            if changing_password:
+            if user_write:
                 # 写入入口只先验签；用户存在/启用/版本在串行提交内重新复核，
                 # 文件不可读因此能明确返回 503，而非伪装成密码错误。
                 payload, reason = auth_mod.read_token(secret, cookie)
@@ -161,15 +165,16 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
             else:
                 username, reason = auth_mod.verify_token(secret, cookie, roster)
         if username is None:
-            if changing_password:
-                user_changes.denied(UNKNOWN_ACTOR, UNKNOWN_ACTOR, "change_password", request_id(request), reason)
+            if user_write:
+                user_changes.denied(UNKNOWN_ACTOR, UNKNOWN_ACTOR, user_action, request_id(request), reason)
             return _unauthorized(reason)
         request.state.username = username
         if request.method not in SAFE_METHODS and not _same_origin(request):
-            if changing_password:
-                user_changes.denied(username, username, "change_password", request_id(request), REASON_CROSS_ORIGIN)
+            if user_write:
+                user_changes.denied(username, username if changing_password else UNKNOWN_ACTOR,
+                                    user_action, request_id(request), REASON_CROSS_ORIGIN)
             return JSONResponse(status_code=403, content={"detail": "cross-origin rejected"})
-        if roster.must_change_password(username) and (request.method, path) not in PENDING_ALLOWED:
+        if not creating_user and roster.must_change_password(username) and (request.method, path) not in PENDING_ALLOWED:
             audit_best_effort(actor=username, action="access", result="denied",
                               request_id=request_id(request), reason="password_change_required")
             return JSONResponse(status_code=403, content={"detail": "password_change_required"})
@@ -383,27 +388,37 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     async def whoami(request: Request):
         return identity(request.state.username)
 
+    def check_users_writable():
+        if restricted:
+            raise UserChangeError(503, 'state_unavailable')
+        try:
+            persist(strict=True)
+        except state_mod.StatePersistError:
+            raise UserChangeError(503, 'state_unavailable')
+
     @app.post(PASSWORD_CHANGE_PATH)
     async def change_password(request: Request):
         body = await _json_body(request)
-
-        def check_writable():
-            if restricted:
-                raise UserChangeError(503, 'state_unavailable')
-            try:
-                persist(strict=True)
-            except state_mod.StatePersistError:
-                raise UserChangeError(503, 'state_unavailable')
-
         try:
             result = user_changes.change_password(request.state.username,
-                        request.cookies.get(auth_mod.COOKIE_NAME), body, request_id(request), check_writable)
+                        request.cookies.get(auth_mod.COOKIE_NAME), body, request_id(request), check_users_writable)
         except UserChangeError as exc:
             return JSONResponse(status_code=exc.status,
                                 content={"outcome": "not_committed", "detail": exc.detail})
         response = JSONResponse(result)
         response.delete_cookie(auth_mod.COOKIE_NAME)
         return response
+
+    @app.post(CREATE_USER_PATH)
+    async def create_user(request: Request):
+        body = await _json_body(request)
+        try:
+            result = user_changes.create_user(request.state.username,
+                        request.cookies.get(auth_mod.COOKIE_NAME), body, request_id(request), check_users_writable)
+        except UserChangeError as exc:
+            return JSONResponse(status_code=exc.status,
+                                content={"outcome": "not_committed", "detail": exc.detail})
+        return JSONResponse(status_code=201, content=result)
 
     def identity(username):
         result = {"username": username, "can_manage_users": roster.is_admin(username),
