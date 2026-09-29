@@ -129,3 +129,21 @@ class UserChanges:
 
         return self._commit(actor, target, 'enable_user' if enabled else 'disable_user', request_id,
                             body.get('expected_version'), transform)
+
+    def reset_password(self, actor, token, body, request_id, check_writable):
+        name = body.get('username')
+        target = name if isinstance(name, str) else None
+
+        def transform(entry):
+            self._require_admin(actor, token, check_writable)
+            if entry is None:
+                raise UserChangeError(404, 'no_such_user')
+            if entry.get('role', 'user') == 'admin':
+                raise UserChangeError(403, 'admin_read_only')
+            if not valid_new_password(body.get('password')):
+                raise UserChangeError(422, 'invalid_new_password')
+            entry.update(password_hash=auth.hash_password(body['password']), must_change_password=True)
+            return entry
+
+        return self._commit(actor, target, 'reset_password', request_id,
+                            body.get('expected_version'), transform)

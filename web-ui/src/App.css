@@ -801,5 +801,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-user-access-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .va-user-access-actions .va-user-disable { color: var(--bad); }
 .va-user-access-actions .va-user-disable:hover { border-color: var(--bad); }
+.va-user-reset .va-password-field { margin-bottom: 10px; }
+.va-user-reset .va-login-input { width: 100%; min-width: 0; }
+.va-user-reset .va-auth-help { font-size: 12px; }
 .va-side-tabs.has-users { gap: 0; padding-inline: 4px; }
 .va-side-tabs.has-users button { flex: 1; padding-inline: 1px; }

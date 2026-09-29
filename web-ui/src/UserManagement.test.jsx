@@ -9,6 +9,7 @@ const { state } = vi.hoisted(() => ({ state: {
     { username: 'legacy', role: 'user', enabled: false, created_at: null, user_version: 'v1' },
   ], loading: false, error: null },
   userCreate: { busy: false, error: null, notice: null, verifyUsername: null },
+  userReset: { target: null, busy: false, error: null, notice: null, verifyUsername: null, unknown: false },
   userAccess: { target: null, busy: false, error: null, notice: null, verifyUsername: null },
   artifacts: { groups: [] }, artifactSel: {},
 } }))
@@ -16,6 +17,27 @@ vi.mock('./store.js', () => ({ useRunState: () => state, refreshUsers: vi.fn(), 
 import SidePanel from './components/SidePanel.jsx'
 
 describe('用户管理侧栏', () => {
+  it('重置仅面向普通用户，确认目标、撤销与交付说明，禁用状态保留', () => {
+    let html = renderToStaticMarkup(<SidePanel />)
+    expect(html).toContain('重置密码 legacy')
+    expect(html).not.toContain('重置密码 operator')
+    expect(html).not.toContain('重置密码 second')
+    state.userReset.target = { username: 'legacy', enabled: false }
+    html = renderToStaticMarkup(<SidePanel />)
+    expect(html).toContain('确认重置「legacy」的密码')
+    expect(html).toContain('全部既有登录')
+    expect(html).toContain('自行交付')
+    expect(html).toContain('仍保持禁用')
+    expect(html).toContain('无法回看')
+    expect(html).toContain('name="reset_password"')
+    expect(html).toContain('type="password"')
+    state.userReset = { target: null, busy: false, unknown: true,
+      notice: { tone: 'warning', text: '清单无法验证密码，重置结果仍未知。' } }
+    html = renderToStaticMarkup(<SidePanel />)
+    expect(html).toContain('重置结果仍未知')
+    expect(html).toContain('发起新的重置 legacy')
+    state.userReset = { target: null, busy: false, error: null, notice: null, verifyUsername: null, unknown: false }
+  })
   it('只有普通用户有启停按钮；确认清楚展示目标和影响', () => {
     let html = renderToStaticMarkup(<SidePanel />)
     expect(html).toContain('启用用户 legacy')
@@ -52,7 +74,7 @@ describe('用户管理侧栏', () => {
     expect(html).toContain(new Intl.DateTimeFormat('zh-CN', {
       dateStyle: 'medium', timeStyle: 'short',
     }).format(new Date('2026-09-01T02:00:00Z')))
-    for (const operation of ['重置密码', '删除', '改名']) expect(html).not.toContain(operation)
+    for (const operation of ['删除', '改名']) expect(html).not.toContain(operation)
     expect(html).toContain('新增用户')
     expect(html).toContain('初始密码')
     expect(html).toContain('type="password"')

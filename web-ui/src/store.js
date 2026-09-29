@@ -103,6 +103,7 @@ function readSidePanel() {
 // tabState 纯模块，这里只当状态容器。lastSessionKey 记住最后激活的会话
 // 标签页——激活文件标签页时控制面（header/输入条）仍绑定它。
 const restored = restoreTabs()
+const emptyUserReset = () => ({ target: null, busy: false, error: null, notice: null, verifyUsername: null, unknown: false })
 const emptyUserAccess = () => ({ target: null, busy: false, error: null, notice: null, verifyUsername: null })
 let state = {
   auth: 'checking',             // checking → anonymous | password-change | user
@@ -112,7 +113,7 @@ let state = {
   canManageUsers: false,
   users: { items: [], loading: false, error: null },
   userCreate: { busy: false, error: null, notice: null, verifyUsername: null },
-  userAccess: emptyUserAccess(),
+  userAccess: emptyUserAccess(), userReset: emptyUserReset(),
   user: null,                   // 当前用户名（auth === 'user' 时非空）
   runs: {},
   order: [],
@@ -445,7 +446,7 @@ function deauthed(reasonText) {
     passwordChange: { busy: false, error: null },
     users: { items: [], loading: false, error: null }, connection: 'connecting',
     userCreate: { busy: false, error: null, notice: null, verifyUsername: null },
-    userAccess: emptyUserAccess(),
+    userAccess: emptyUserAccess(), userReset: emptyUserReset(),
     runs: {}, order: [], capacity: null,
     tabs: [], activeKey: null, lastSessionKey: null,
     tasks: [], activeTaskId: null,
@@ -516,7 +517,8 @@ function acceptIdentity(data) {
   const userCreate = state.user === data.username && canManageUsers
     ? state.userCreate : { busy: false, error: null, notice: null, verifyUsername: null }
   const userAccess = state.user === data.username && canManageUsers ? state.userAccess : emptyUserAccess()
-  set({ auth: 'user', user: data.username, canManageUsers, users, userCreate, userAccess, userVersion: null, authNotice: null,
+  const userReset = state.user === data.username && canManageUsers ? state.userReset : emptyUserReset()
+  set({ auth: 'user', user: data.username, canManageUsers, users, userCreate, userAccess, userReset, userVersion: null, authNotice: null,
     sidePanel: state.sidePanel === 'users' && !canManageUsers ? 'artifacts' : state.sidePanel })
 }
 
@@ -524,6 +526,7 @@ export async function refreshUsers(force = false) {
   if (!state.canManageUsers || (state.users.loading && !force)) return
   const identity = state.users
   const accessToVerify = state.userAccess
+  const resetToVerify = state.userReset
   const loading = { ...identity, loading: true, error: null }
   set({ users: loading })
   try {
@@ -548,6 +551,14 @@ export async function refreshUsers(force = false) {
             : `清单中未找到「${verifyAccess}」，请联系管理员核实身份后再操作。`,
         } } })
       }
+      if (state.userReset === resetToVerify && resetToVerify.verifyUsername) {
+        const username = resetToVerify.verifyUsername
+        set({ userReset: { ...resetToVerify, verifyUsername: null, error: null, notice: { tone: 'warning',
+          text: resetToVerify.unknown
+            ? `已刷新「${username}」的用户信息，但清单无法验证密码，重置结果仍未知。请通过外部渠道核实；仍无法核实且需要继续时，请明确发起新的重置。`
+            : `已刷新用户信息。如仍需重置「${username}」的密码，请重新选择目标并确认。`,
+        } } })
+      }
       const username = state.userCreate.verifyUsername
       if (username) {
         const exists = data.users.some((user) => user.username === username)
@@ -565,12 +576,26 @@ export async function refreshUsers(force = false) {
 
 function revokeUserManagement() {
   set({ canManageUsers: false, sidePanel: 'artifacts', users: { items: [], loading: false, error: null },
-    userAccess: emptyUserAccess(),
+    userAccess: emptyUserAccess(), userReset: emptyUserReset(),
     userCreate: { busy: false, error: null, notice: null, verifyUsername: null } })
 }
 
+function userManagementAccessLost(status, detail) {
+  if (status === 401) {
+    deauthed('登录已失效，请重新登录')
+    return true
+  }
+  if (status === 403 && (detail === 'not_admin' || detail === 'password_change_required')) {
+    revokeUserManagement()
+    return true
+  }
+  return false
+}
+
+const USER_RECONFIRM_ERRORS = ['user_version_conflict', 'admin_read_only', 'no_such_user']
+
 export function beginUserAccess(username) {
-  if (!state.canManageUsers || state.users.loading || state.users.error || state.userAccess.busy || state.userAccess.verifyUsername) return
+  if (!state.canManageUsers || state.users.loading || state.users.error || state.userAccess.busy || state.userAccess.verifyUsername || state.userReset.busy || state.userReset.target) return
   const user = state.users.items.find(item => item.username === username)
   if (user?.role !== 'user' || !user.user_version) return
   set({ userAccess: { ...emptyUserAccess(), target: { ...user } } })
@@ -612,13 +637,9 @@ export async function submitUserAccess() {
       refreshUsers(true)
       return 'committed'
     }
-    if (resp.status === 401) { deauthed('登录已失效，请重新登录'); return 'not_committed' }
-    if (resp.status === 403 && (data.detail === 'not_admin' || data.detail === 'password_change_required')) {
-      revokeUserManagement()
-      return 'not_committed'
-    }
+    if (userManagementAccessLost(resp.status, data.detail)) return 'not_committed'
     if (data.outcome === 'not_committed' || resp.status === 403) {
-      const recheck = ['user_version_conflict', 'admin_read_only', 'no_such_user'].includes(data.detail)
+      const recheck = USER_RECONFIRM_ERRORS.includes(data.detail)
       set({ userAccess: { ...attempt, busy: false, target: recheck ? null : target,
         verifyUsername: recheck ? target.username : null,
         error: USER_ACCESS_HINT[data.detail] || '状态尚未修改，请刷新页面后重新确认操作。',
@@ -630,6 +651,68 @@ export async function submitUserAccess() {
     if (state.userAccess !== attempt) return
     set({ userAccess: { ...emptyUserAccess(), verifyUsername: target.username, notice: {
       tone: 'warning', text: `无法确认「${target.username}」的${action}结果。请先刷新清单核实当前状态，再决定是否重新操作；系统不会自动重提。`,
+    } } })
+    return 'unknown'
+  }
+}
+
+export function beginUserReset(username) {
+  if (!state.canManageUsers || state.users.loading || state.users.error || state.userReset.busy
+      || state.userReset.verifyUsername || state.userAccess.busy || state.userAccess.target) return
+  const user = state.users.items.find(item => item.username === username)
+  if (user?.role !== 'user' || !user.user_version) return
+  set({ userReset: { ...emptyUserReset(), target: { ...user } } })
+}
+
+export function cancelUserReset() {
+  if (!state.userReset.busy) set({ userReset: { ...state.userReset, target: null, error: null } })
+}
+
+const RESET_PASSWORD_HINT = {
+  user_version_conflict: '目标用户已发生变化，本次未提交。请刷新清单，重新选择并确认。',
+  invalid_new_password: '新密码须为 8–128 位英文字母、数字或半角符号，不含空格、其他空白或中文；不要求组合。',
+  users_unavailable: '密码尚未修改：用户文件不可用，请联系管理员修复后再试。',
+  audit_unavailable: '密码尚未修改：审计不可用，请联系管理员修复后再试。',
+  state_unavailable: '密码尚未修改：服务处于受限恢复状态，请联系管理员。',
+  admin_read_only: '管理员只读，不能重置密码。请刷新清单。',
+  no_such_user: '目标用户不存在，请刷新清单核实。',
+}
+
+export async function resetUserPassword(password) {
+  const { target, busy, verifyUsername } = state.userReset
+  if (!state.canManageUsers || !target || busy || verifyUsername) return
+  const attempt = { ...emptyUserReset(), target, busy: true }
+  set({ userReset: attempt })
+  try {
+    const resp = await fetch('/api/admin/users/reset-password', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: target.username, expected_version: target.user_version, password }),
+    })
+    const data = await resp.json()
+    if (state.userReset !== attempt) return
+    if (data.outcome === 'committed') {
+      const auditFailed = data.audit_status !== 'recorded'
+      set({ userReset: { ...emptyUserReset(), notice: {
+        tone: auditFailed ? 'warning' : 'success',
+        text: `用户「${target.username}」的密码已重置，既有登录已撤销。请自行交付新密码，下次登录须再次改密。${target.enabled ? '' : '该用户仍已禁用，不能登录。'}${auditFailed ? '重置已生效，审计记录异常；请联系管理员检查审计，无需重复提交。' : ''}`,
+      } } })
+      refreshUsers(true)
+      return 'committed'
+    }
+    if (userManagementAccessLost(resp.status, data.detail)) return 'not_committed'
+    if (data.outcome === 'not_committed' || resp.status === 403) {
+      const recheck = USER_RECONFIRM_ERRORS.includes(data.detail)
+      set({ userReset: { ...attempt, busy: false, target: recheck ? null : target,
+        verifyUsername: recheck ? target.username : null,
+        error: RESET_PASSWORD_HINT[data.detail] || '密码尚未修改，请刷新页面后重新确认操作。',
+      } })
+      return 'not_committed'
+    }
+    throw new Error('unknown reset outcome')
+  } catch {
+    if (state.userReset !== attempt) return
+    set({ userReset: { ...emptyUserReset(), verifyUsername: target.username, unknown: true, notice: {
+      tone: 'warning', text: `无法确认「${target.username}」的重置结果，系统不会自动重提。请先刷新清单并通过外部渠道核实；清单无法验证密码，仍无法核实时须明确发起新的重置。`,
     } } })
     return 'unknown'
   }
