@@ -239,6 +239,8 @@ python web/tests/test_auth.py       # 登录/登出/过期/禁用/密钥轮换�
 python -m web.tests.test_password_change # 强制改密、全面限制、并发、重启与文件/审计故障
 python -m web.tests.test_create_user # 管理员新增、首次登录闭环、同名竞争和故障结果
 python -m web.tests.test_reset_password # 管理员重置、再次改密、同密码撤销、并发和故障结果
+python -m web.tests.test_user_lifecycle_acceptance # 跨操作生命周期、交错、组合故障与停服升级演练
+python -m web.tests.test_user_management # 角色、只读清单、无可用管理员与 OBS 权限
 python -m web.tests.test_user_access # 管理员启停、永久撤销、SSE/回合语义、并发和故障结果
 python web/tests/test_ecs_api.py    # ECS 面板端点（假云函数注入）
 python web/tests/test_events.py     # 事件存储、快照与全局订阅
