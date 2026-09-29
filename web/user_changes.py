@@ -64,17 +64,21 @@ class UserChanges:
             return {'outcome': 'committed', 'audit_status': 'failed'}
         return {'outcome': 'committed', 'audit_status': 'recorded'}
 
+    def _require_admin(self, actor, token, check_writable):
+        """仅在目标 transform 内调用，与版本复核和提交共用清单锁。"""
+        username, reason = auth.verify_token(self.secret, token, self.roster)
+        if username != actor:
+            raise UserChangeError(401, reason or auth.REASON_BAD_COOKIE)
+        if not self.roster.is_admin(actor):
+            raise UserChangeError(403, 'not_admin')
+        check_writable()
+
     def create_user(self, actor, token, body, request_id, check_writable):
         name = body.get('username')
         target = name if isinstance(name, str) else None
 
         def transform(entry):
-            username, reason = auth.verify_token(self.secret, token, self.roster)
-            if username != actor:
-                raise UserChangeError(401, reason or auth.REASON_BAD_COOKIE)
-            if not self.roster.is_admin(actor):
-                raise UserChangeError(403, 'not_admin')
-            check_writable()
+            self._require_admin(actor, token, check_writable)
             if not isinstance(name, str) or re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', name) is None:
                 raise UserChangeError(422, 'invalid_username')
             if not valid_new_password(body.get('password')):
@@ -108,4 +112,20 @@ class UserChanges:
             return entry
 
         return self._commit(actor, actor, 'change_password', request_id,
+                            body.get('expected_version'), transform)
+
+    def set_enabled(self, actor, token, body, request_id, check_writable, *, enabled):
+        name = body.get('username')
+        target = name if isinstance(name, str) else None
+
+        def transform(entry):
+            self._require_admin(actor, token, check_writable)
+            if entry is None:
+                raise UserChangeError(404, 'no_such_user')
+            if entry.get('role', 'user') == 'admin':
+                raise UserChangeError(403, 'admin_read_only')
+            entry['enabled'] = enabled
+            return entry
+
+        return self._commit(actor, target, 'enable_user' if enabled else 'disable_user', request_id,
                             body.get('expected_version'), transform)

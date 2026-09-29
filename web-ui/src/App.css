@@ -795,5 +795,11 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-user-create .va-auth-help { font-size: 12px; }
 .va-user-create .va-login-submit:disabled { color: var(--ink-2); background: var(--surface-dim); border-color: var(--line); opacity: 1; }
 .va-user-create :is(summary, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.va-user-access-button { margin-top: 6px; }
+.va-user-access-confirm { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.va-user-access-confirm p { margin: 0 0 10px; }
+.va-user-access-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.va-user-access-actions .va-user-disable { color: var(--bad); }
+.va-user-access-actions .va-user-disable:hover { border-color: var(--bad); }
 .va-side-tabs.has-users { gap: 0; padding-inline: 4px; }
 .va-side-tabs.has-users button { flex: 1; padding-inline: 1px; }

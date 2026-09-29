@@ -34,7 +34,8 @@ async def test_role_authorized_list():
                 assert response.status_code == (200 if is_admin else 403)
                 if is_admin:
                     rows = response.json()['users']
-                    assert rows == [dict(username=n, role=c.get('role', 'user'),
+                    assert all(isinstance(row['user_version'], str) and row['user_version'] for row in rows)
+                    assert [{k: v for k, v in row.items() if k != 'user_version'} for row in rows] == [dict(username=n, role=c.get('role', 'user'),
                                          enabled=c.get('enabled', True), created_at=c.get('created_at'))
                                     for n, c in entries.items()]
                 else:

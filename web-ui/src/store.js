@@ -103,6 +103,7 @@ function readSidePanel() {
 // tabState 纯模块，这里只当状态容器。lastSessionKey 记住最后激活的会话
 // 标签页——激活文件标签页时控制面（header/输入条）仍绑定它。
 const restored = restoreTabs()
+const emptyUserAccess = () => ({ target: null, busy: false, error: null, notice: null, verifyUsername: null })
 let state = {
   auth: 'checking',             // checking → anonymous | password-change | user
   userVersion: null,
@@ -111,6 +112,7 @@ let state = {
   canManageUsers: false,
   users: { items: [], loading: false, error: null },
   userCreate: { busy: false, error: null, notice: null, verifyUsername: null },
+  userAccess: emptyUserAccess(),
   user: null,                   // 当前用户名（auth === 'user' 时非空）
   runs: {},
   order: [],
@@ -443,6 +445,7 @@ function deauthed(reasonText) {
     passwordChange: { busy: false, error: null },
     users: { items: [], loading: false, error: null }, connection: 'connecting',
     userCreate: { busy: false, error: null, notice: null, verifyUsername: null },
+    userAccess: emptyUserAccess(),
     runs: {}, order: [], capacity: null,
     tabs: [], activeKey: null, lastSessionKey: null,
     tasks: [], activeTaskId: null,
@@ -512,13 +515,15 @@ function acceptIdentity(data) {
     ? state.users : { items: [], loading: false, error: null }
   const userCreate = state.user === data.username && canManageUsers
     ? state.userCreate : { busy: false, error: null, notice: null, verifyUsername: null }
-  set({ auth: 'user', user: data.username, canManageUsers, users, userCreate, userVersion: null, authNotice: null,
+  const userAccess = state.user === data.username && canManageUsers ? state.userAccess : emptyUserAccess()
+  set({ auth: 'user', user: data.username, canManageUsers, users, userCreate, userAccess, userVersion: null, authNotice: null,
     sidePanel: state.sidePanel === 'users' && !canManageUsers ? 'artifacts' : state.sidePanel })
 }
 
 export async function refreshUsers(force = false) {
   if (!state.canManageUsers || (state.users.loading && !force)) return
   const identity = state.users
+  const accessToVerify = state.userAccess
   const loading = { ...identity, loading: true, error: null }
   set({ users: loading })
   try {
@@ -534,6 +539,15 @@ export async function refreshUsers(force = false) {
     if (!Array.isArray(data.users)) throw new Error('invalid users response')
     if (state.users === loading) {
       set({ users: { items: data.users, loading: false, error: null } })
+      const verifyAccess = state.userAccess === accessToVerify && accessToVerify.verifyUsername
+      if (verifyAccess) {
+        const user = data.users.find(item => item.username === verifyAccess)
+        set({ userAccess: { ...emptyUserAccess(), notice: { tone: 'warning',
+          text: user
+            ? `清单中「${verifyAccess}」当前${user.enabled ? '已启用' : '已禁用'}。如仍需变更，请重新选择并确认；本次刷新仅核实当前状态。`
+            : `清单中未找到「${verifyAccess}」，请联系管理员核实身份后再操作。`,
+        } } })
+      }
       const username = state.userCreate.verifyUsername
       if (username) {
         const exists = data.users.some((user) => user.username === username)
@@ -551,7 +565,74 @@ export async function refreshUsers(force = false) {
 
 function revokeUserManagement() {
   set({ canManageUsers: false, sidePanel: 'artifacts', users: { items: [], loading: false, error: null },
+    userAccess: emptyUserAccess(),
     userCreate: { busy: false, error: null, notice: null, verifyUsername: null } })
+}
+
+export function beginUserAccess(username) {
+  if (!state.canManageUsers || state.users.loading || state.users.error || state.userAccess.busy || state.userAccess.verifyUsername) return
+  const user = state.users.items.find(item => item.username === username)
+  if (user?.role !== 'user' || !user.user_version) return
+  set({ userAccess: { ...emptyUserAccess(), target: { ...user } } })
+}
+
+export function cancelUserAccess() {
+  if (!state.userAccess.busy) set({ userAccess: { ...state.userAccess, target: null, error: null } })
+}
+
+const USER_ACCESS_HINT = {
+  user_version_conflict: '目标用户已发生变化，本次未提交。请刷新清单，重新选择并确认。',
+  users_unavailable: '状态尚未修改：用户文件不可用，请联系管理员修复后再试。',
+  audit_unavailable: '状态尚未修改：审计不可用，请联系管理员修复后再试。',
+  state_unavailable: '状态尚未修改：服务处于受限恢复状态，请联系管理员。',
+  admin_read_only: '管理员只读，不能启用或禁用。请刷新清单。',
+  no_such_user: '目标用户不存在，请刷新清单核实。',
+}
+
+export async function submitUserAccess() {
+  // 仅确认时保存的版本可提交，清单刷新不能偷偷替换旧表单的版本。
+  const { target, busy, verifyUsername } = state.userAccess
+  if (!state.canManageUsers || !target || busy || verifyUsername) return
+  const attempt = { ...emptyUserAccess(), target, busy: true }
+  const action = target.enabled ? '禁用' : '启用'
+  set({ userAccess: attempt })
+  try {
+    const resp = await fetch(`/api/admin/users/${target.enabled ? 'disable' : 'enable'}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: target.username, expected_version: target.user_version }),
+    })
+    const data = await resp.json()
+    if (state.userAccess !== attempt) return
+    if (data.outcome === 'committed') {
+      const auditFailed = data.audit_status !== 'recorded'
+      set({ userAccess: { ...emptyUserAccess(), notice: {
+        tone: auditFailed ? 'warning' : 'success',
+        text: `用户「${target.username}」已${action}。${target.enabled ? '既有登录已撤销；执行中的回合继续。' : '请原使用者重新登录，旧登录仍无效。'}${auditFailed ? '变更已生效，审计记录异常；请联系管理员检查审计，无需重复提交。' : ''}`,
+      } } })
+      refreshUsers(true)
+      return 'committed'
+    }
+    if (resp.status === 401) { deauthed('登录已失效，请重新登录'); return 'not_committed' }
+    if (resp.status === 403 && (data.detail === 'not_admin' || data.detail === 'password_change_required')) {
+      revokeUserManagement()
+      return 'not_committed'
+    }
+    if (data.outcome === 'not_committed' || resp.status === 403) {
+      const recheck = ['user_version_conflict', 'admin_read_only', 'no_such_user'].includes(data.detail)
+      set({ userAccess: { ...attempt, busy: false, target: recheck ? null : target,
+        verifyUsername: recheck ? target.username : null,
+        error: USER_ACCESS_HINT[data.detail] || '状态尚未修改，请刷新页面后重新确认操作。',
+      } })
+      return 'not_committed'
+    }
+    throw new Error('unknown access outcome')
+  } catch {
+    if (state.userAccess !== attempt) return
+    set({ userAccess: { ...emptyUserAccess(), verifyUsername: target.username, notice: {
+      tone: 'warning', text: `无法确认「${target.username}」的${action}结果。请先刷新清单核实当前状态，再决定是否重新操作；系统不会自动重提。`,
+    } } })
+    return 'unknown'
+  }
 }
 
 const CREATE_USER_HINT = {

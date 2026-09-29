@@ -27,7 +27,7 @@ from web.tests.support import (  # noqa: E402
     TEST_PASSWORD, audit_lines, async_client, make_test_app, write_test_users,
 )
 from web.tests.test_stream_isolation import (  # noqa: E402
-    collect_frames, open_global_stream, rewrite_users, wait_status,
+    collect_frames, open_global_stream, wait_status,
 )
 
 REL = "deploy/nginx/1.25/result.md"
@@ -295,11 +295,19 @@ async def test_restart_keeps_owner_tombstone_fork_and_revocation():
             assert r.status_code == 409 and r.json()["detail"] == "session_not_active"
             await wait_ready(alice, a_run)
 
-            # 登录撤销语义：禁用即时 401（同一 Cookie），重新启用恢复访问
-            rewrite_users(users_path, lambda users: users["alice"].update(enabled=False))
+            # 管理启停永久撤销旧登录，重新登录仍可见原会话。
+            async with async_client(app_b, username="admin") as admin:
+                for action in ('disable', 'enable'):
+                    rows = (await admin.get('/api/admin/users')).json()['users']
+                    target = next(row for row in rows if row['username'] == 'alice')
+                    response = await admin.post(f'/api/admin/users/{action}', json={
+                        'username': 'alice', 'expected_version': target['user_version']})
+                    assert response.status_code == 200
+                    assert (await alice.get('/api/runs')).status_code == 401
             assert (await alice.get("/api/runs")).status_code == 401
-            rewrite_users(users_path, lambda users: users["alice"].update(enabled=True))
-            assert (await alice.get("/api/runs")).status_code == 200
+            alice.cookies.clear()
+            assert (await alice.post('/api/auth/login', json={'username': 'alice', 'password': TEST_PASSWORD})).status_code == 200
+            assert {r['run_id'] for r in (await alice.get('/api/runs')).json()['runs']} == {a_run, fork}
 
 
 async def main():

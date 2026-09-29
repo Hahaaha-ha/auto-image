@@ -6,15 +6,41 @@ const { state } = vi.hoisted(() => ({ state: {
   users: { items: [
     { username: 'operator', role: 'admin', enabled: true, created_at: '2026-09-01T02:00:00Z' },
     { username: 'second', role: 'admin', enabled: true, created_at: null },
-    { username: 'legacy', role: 'user', enabled: false, created_at: null },
+    { username: 'legacy', role: 'user', enabled: false, created_at: null, user_version: 'v1' },
   ], loading: false, error: null },
   userCreate: { busy: false, error: null, notice: null, verifyUsername: null },
+  userAccess: { target: null, busy: false, error: null, notice: null, verifyUsername: null },
   artifacts: { groups: [] }, artifactSel: {},
 } }))
 vi.mock('./store.js', () => ({ useRunState: () => state, refreshUsers: vi.fn(), createUser: vi.fn() }))
 import SidePanel from './components/SidePanel.jsx'
 
 describe('用户管理侧栏', () => {
+  it('只有普通用户有启停按钮；确认清楚展示目标和影响', () => {
+    let html = renderToStaticMarkup(<SidePanel />)
+    expect(html).toContain('启用用户 legacy')
+    expect(html).not.toContain('禁用用户 operator')
+    expect(html).not.toContain('禁用用户 second')
+    state.userAccess.target = { username: 'legacy', enabled: true }
+    html = renderToStaticMarkup(<SidePanel />)
+    expect(html).toContain('确认禁用「legacy」')
+    expect(html).toContain('撤销既有登录')
+    expect(html).toContain('不停止回合')
+    expect(html).toContain('不撤销已提交的云操作')
+    expect(html).toContain('取消')
+    state.userAccess.busy = true
+    html = renderToStaticMarkup(<SidePanel />)
+    expect(html).toContain('提交中…')
+    state.userAccess = { target: null, busy: false, error: '请刷新清单重新确认', verifyUsername: 'legacy' }
+    html = renderToStaticMarkup(<SidePanel />)
+    expect(html).toContain('role="alert"')
+    expect(html).toContain('刷新清单核实')
+    state.userAccess = { target: { username: 'legacy', enabled: false }, busy: false }
+    html = renderToStaticMarkup(<SidePanel />)
+    expect(html).toContain('原使用者')
+    expect(html).toContain('重新登录')
+    state.userAccess = { target: null, busy: false, error: null, notice: null, verifyUsername: null }
+  })
   it('管理员可见只读用户清单、本地时区创建时间及未知时间', () => {
     const html = renderToStaticMarkup(<SidePanel />)
     expect(html).toContain('用户管理')

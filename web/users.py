@@ -93,7 +93,8 @@ class UserRoster:
         with self._lock:
             self._maybe_refresh()
             return [{'username': name, 'role': cfg.get('role', 'user'),
-                     'enabled': cfg.get('enabled', True), 'created_at': cfg.get('created_at')}
+                     'enabled': cfg.get('enabled', True), 'created_at': cfg.get('created_at'),
+                     'user_version': self.fingerprint(name)}
                     for name, cfg in self._data.items()]
 
     def fingerprint(self, username):

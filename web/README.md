@@ -67,8 +67,25 @@ OBS 配置修改先审计后执行；OBS 全局配置（凭据/桶/endpoint）�
 
 管理员登录后可从侧栏“用户”进入用户管理，读取用户名、启用状态、管理员只读标记和
 创建时间（`GET /api/admin/users`）；当前身份通过 `can_manage_users` 下发能力。
-管理员可展开“新增用户”表单；所有管理员记录均只读，此版本尚无启停、重置、
+管理员可展开“新增用户”表单，或确认后启用、禁用普通用户；所有管理员记录均只读，此版本尚无重置、
 删除、改名或角色编辑入口。
+
+### 启用与禁用普通用户
+
+`POST /api/admin/users/disable` 和 `POST /api/admin/users/enable` 接受 `username`、
+`expected_version`；版本取自清单每行的 `user_version`，用户名原样传回，兼容旧名称。
+仅有效管理员可调用，所有管理员（包括自己）均不可被启停。过期版本返回 409，
+必须刷新清单并重新选择、确认；不同用户的变更互不冲突。
+
+禁用前展示目标用户名及影响：永久撤销既有登录，下次 API 鉴权或最迟下次 SSE
+心跳拒绝访问；执行中回合、会话 owner 和已提交的云操作不受影响，匿名容量继续计数。
+启用仅恢复原使用者资格，必须重新登录，旧 Cookie 跨重启仍无效。待改密状态和创建
+时间保留，缺失时间仍为“未知”；账号不能转交新人。
+
+成功返回 200、`outcome: committed`；`audit_status: failed` 仍表示变更已生效，只是
+结果审计异常，不回滚、不重复提交。文件、准备审计或状态簿记失败返回 503、
+`not_committed`，启用状态和登录版本均不改变。网络结果未知时先点击“刷新清单核实”，
+刷新成功前禁用启停按钮；读取当前状态后仍需重新选择并确认，不自动重试写请求。
 
 ### 新增普通用户
 
@@ -119,17 +136,17 @@ OBS 配置修改先审计后执行；OBS 全局配置（凭据/桶/endpoint）�
   写入须复用这一入口，不得在锁外完成复核后自行写文件。新增使用同一入口的
   `create=True` 条件：仅当目标不存在才提交，并发同名只有一个成功。
 - `user_changes.UserChanges` 负责命令输入、审计和结果语义。`valid_new_password`
-  是新增、重置及强制改密共用的新设密码规则。新增复核有效管理员身份，改密复核
-  Cookie 有效、用户启用且仍待改密；两者均遵守状态簿记受限恢复和落盘门。
-- `user_version` 是不透明的目标记录指纹；待改密身份查询和登录响应提供此值，
+  是新增、重置及强制改密共用的新设密码规则。新增与启停复核有效管理员身份，启停
+  另复核目标为普通用户；改密复核 Cookie 有效、用户启用且仍待改密，均遵守状态簿记受限恢复和落盘门。
+- `user_version` 是不透明的目标记录指纹；用户清单、待改密身份查询和登录响应提供此值，
   提交以 `expected_version` 原样带回。不同用户互不冲突。每次 Web 修改生成新的
   随机 `revision` 并写入用户记录，使编辑版本和登录指纹同时更新。撤销不依赖
-  密码文本或启用状态是否恢复，旧记录不需预先补版本。后续启停与重置必须保留
+  密码文本或启用状态是否恢复，旧记录不需预先补版本。后续重置必须保留
   此机制，不得删除或恢复旧版本；停服人工撤销也须换为全新值。
 - 文件写入使用同目录临时文件、flush/fsync、原子替换；替换完成是提交点。保留
   其他用户、顶层配置和创建时间，只更新目标记录；文件写失败返回 503。输出为
   YAML（也可读取 JSON），注释与排版不保留；临时/替换文件使用仅属主读写权限。
-- `create_user`、`change_password` 审计含 `actor`、`target_username`、`request_id`、`result`。
+- `create_user`、`change_password`、`enable_user`、`disable_user` 审计含 `actor`、`target_username`、`request_id`、`result`。
   同次操作的准备/结果共用请求标识：`prepared` 后才尝试写入，提交后记 `success`，
   拒绝或冲突记 `denied`，文件失败记 `failure`。沿用按天轮转和默认 90 天保留，
   不写密码、哈希、Cookie 或请求体。单独的 `prepared` 不能证明已提交。
@@ -200,6 +217,7 @@ python web/tests/test_artifacts.py  # 产物端点（临时目录造桩）
 python web/tests/test_auth.py       # 登录/登出/过期/禁用/密钥轮换、同源校验、审计文件
 python -m web.tests.test_password_change # 强制改密、全面限制、并发、重启与文件/审计故障
 python -m web.tests.test_create_user # 管理员新增、首次登录闭环、同名竞争和故障结果
+python -m web.tests.test_user_access # 管理员启停、永久撤销、SSE/回合语义、并发和故障结果
 python web/tests/test_ecs_api.py    # ECS 面板端点（假云函数注入）
 python web/tests/test_events.py     # 事件存储、快照与全局订阅
 python web/tests/test_fixture_isolation.py # 通用 fixture（含验收装配）的生产依赖哨兵

@@ -69,7 +69,9 @@ async def test_create_restart_required_change_and_first_business_login():
             run = (await user.post('/api/runs')).json()['run_id']
             assert (await admin.get(f'/api/runs/{run}')).status_code == 404
             rows = (await admin.get(CREATE)).json()['users']
-            assert next(row for row in rows if row['username'] == 'New.user-1') == new
+            current = next(row for row in rows if row['username'] == 'New.user-1')
+            assert current['user_version'] != new['user_version']
+            assert {k: v for k, v in current.items() if k != 'user_version'} == {k: v for k, v in new.items() if k != 'user_version'}
         records = [r for r in audit_lines(options['audit_dir']) if r['request_id'] == 'create-new']
         assert [r['result'] for r in records] == ['prepared', 'success']
         assert all(r['actor'] == 'tester' and r['target_username'] == 'New.user-1'
@@ -112,7 +114,7 @@ async def test_input_boundaries_exact_names_and_server_owned_fields():
                     assert (await user.post(CREATE, json={'username': 'injected', 'password': INITIAL})).status_code == 403
             rows = (await admin.get(CREATE)).json()['users']
             for row in rows:
-                assert set(row) == {'username', 'role', 'enabled', 'created_at'}
+                assert set(row) == {'username', 'role', 'enabled', 'created_at', 'user_version'}
                 assert row['created_at'] != '2000-01-01T00:00:00Z'
             response = await admin.post(CREATE, json={'username': 'a', 'password': PERSONAL})
             assert response.status_code == 409 and response.json()['detail'] == 'username_exists'

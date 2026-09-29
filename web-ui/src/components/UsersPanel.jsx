@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import * as store from '../store.js'
 
 function CreatedAt({ value }) {
@@ -10,13 +10,19 @@ function CreatedAt({ value }) {
 }
 
 export default function UsersPanel() {
-  const { users, userCreate } = store.useRunState()
+  const { users, userCreate, userAccess } = store.useRunState()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const feedbackRef = useRef(null)
   const busy = userCreate.busy || submitting
   const blocked = busy || Boolean(userCreate.verifyUsername)
   useEffect(() => { store.refreshUsers() }, [])
+  useEffect(() => {
+    if (userAccess.notice || (userAccess.error && !userAccess.target)) {
+      feedbackRef.current?.scrollIntoView({ block: 'nearest' })
+    }
+  }, [userAccess.notice, userAccess.error, userAccess.target])
   const onSubmit = async (event) => {
     event.preventDefault()
     if (blocked) return
@@ -35,8 +41,8 @@ export default function UsersPanel() {
     <section className="va-side-panel" aria-label="用户清单" aria-busy={users.loading}>
       <div className="va-art-panel-head">用户管理</div>
       <div className="va-art-tools">
-        <button onClick={() => store.refreshUsers()} disabled={users.loading || busy}>
-          {userCreate.verifyUsername ? '刷新清单核实' : '刷新'}
+        <button onClick={() => store.refreshUsers()} disabled={users.loading || busy || userAccess.busy}>
+          {userCreate.verifyUsername || userAccess.verifyUsername ? '刷新清单核实' : '刷新'}
         </button>
       </div>
       {userCreate.notice && <p className={`va-users-zone va-auth-notice ${userCreate.notice.tone}`} role="status">
@@ -64,6 +70,10 @@ export default function UsersPanel() {
           <button className="va-login-submit" type="submit" disabled={blocked}>{busy ? '提交中…' : '创建普通用户'}</button>
         </form>
       </details>
+      {userAccess.notice && <p ref={feedbackRef} className={`va-users-zone va-auth-notice ${userAccess.notice.tone}`} role="status">
+        {userAccess.notice.text}
+      </p>}
+      {userAccess.error && !userAccess.target && <p ref={feedbackRef} className="va-users-zone va-login-error" role="alert">{userAccess.error}</p>}
       <p className="va-users-zone">创建时间时区：{Intl.DateTimeFormat().resolvedOptions().timeZone}</p>
       {users.loading && <div className="va-side-empty" role="status">正在加载用户清单…</div>}
       {users.error && <div className="va-side-empty" role="alert">{users.error}</div>}
@@ -74,9 +84,34 @@ export default function UsersPanel() {
             <div className="va-users-name">{user.username}</div>
             <div>{user.enabled ? '已启用' : '已禁用'} · {user.role === 'admin' ? '管理员 · 只读' : '普通用户'}</div>
             <div>创建时间：<CreatedAt value={user.created_at} /></div>
+            {user.role === 'user' && (userAccess.target?.username === user.username
+              ? <AccessConfirmation key={user.username} access={userAccess} />
+              : <button className="va-user-access-button" aria-label={`${user.enabled ? '禁用' : '启用'}用户 ${user.username}`}
+                  disabled={userAccess.busy || Boolean(userAccess.verifyUsername) || users.loading || Boolean(users.error) || !user.user_version}
+                  onClick={() => store.beginUserAccess(user.username)}>{user.enabled ? '禁用' : '启用'}</button>)}
           </li>
         ))}
       </ul>
     </section>
   )
+}
+
+function AccessConfirmation({ access }) {
+  const cancelRef = useRef(null)
+  useEffect(() => { cancelRef.current?.focus() }, [])
+  const action = access.target.enabled ? '禁用' : '启用'
+  return <form className="va-user-access-confirm" aria-label={`确认${action}「${access.target.username}」`}
+    aria-busy={access.busy} onSubmit={(event) => { event.preventDefault(); store.submitUserAccess() }}>
+    <p className="va-users-name">确认{action}「{access.target.username}」</p>
+    <p>{access.target.enabled
+      ? '将撤销既有登录并停止后续访问。不停止回合、不结束会话、不撤销已提交的云操作。'
+      : '仅恢复原使用者的访问资格，请勿转交新人。原会话归属保留，须重新登录；旧登录仍无效，待改密要求保留。'}</p>
+    {access.error && <p className="va-login-error" role="alert">{access.error}</p>}
+    <div className="va-user-access-actions">
+      <button ref={cancelRef} type="button" disabled={access.busy} onClick={() => store.cancelUserAccess()}>取消</button>
+      <button className={access.target.enabled ? 'va-user-disable' : ''} type="submit" disabled={access.busy}>
+        {access.busy ? '提交中…' : `确认${action}`}
+      </button>
+    </div>
+  </form>
 }

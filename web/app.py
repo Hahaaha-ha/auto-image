@@ -83,6 +83,7 @@ DEFAULT_OWNER = os.environ.get("WEB_DEFAULT_OWNER", "admin")
 LOGIN_PATH = "/api/auth/login"
 PASSWORD_CHANGE_PATH = "/api/auth/change-password"
 CREATE_USER_PATH = "/api/admin/users"
+USER_ACCESS_ACTIONS = {"/api/admin/users/enable": "enable_user", "/api/admin/users/disable": "disable_user"}
 PENDING_ALLOWED = {("GET", "/api/auth/me"), ("POST", PASSWORD_CHANGE_PATH),
                    ("POST", "/api/auth/logout")}
 
@@ -153,8 +154,9 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         cookie = request.cookies.get(auth_mod.COOKIE_NAME)
         changing_password = path == PASSWORD_CHANGE_PATH and request.method == "POST"
         creating_user = path == CREATE_USER_PATH and request.method == "POST"
-        user_write = changing_password or creating_user
-        user_action = "change_password" if changing_password else "create_user"
+        access_action = USER_ACCESS_ACTIONS.get(path) if request.method == "POST" else None
+        user_write = changing_password or creating_user or access_action
+        user_action = access_action or ("change_password" if changing_password else "create_user")
         username, reason = (None, auth_mod.REASON_BAD_COOKIE)
         if cookie:
             if user_write:
@@ -174,7 +176,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
                 user_changes.denied(username, username if changing_password else UNKNOWN_ACTOR,
                                     user_action, request_id(request), REASON_CROSS_ORIGIN)
             return JSONResponse(status_code=403, content={"detail": "cross-origin rejected"})
-        if not creating_user and roster.must_change_password(username) and (request.method, path) not in PENDING_ALLOWED:
+        if not (creating_user or access_action) and roster.must_change_password(username) and (request.method, path) not in PENDING_ALLOWED:
             audit_best_effort(actor=username, action="access", result="denied",
                               request_id=request_id(request), reason="password_change_required")
             return JSONResponse(status_code=403, content={"detail": "password_change_required"})
@@ -419,6 +421,19 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
             return JSONResponse(status_code=exc.status,
                                 content={"outcome": "not_committed", "detail": exc.detail})
         return JSONResponse(status_code=201, content=result)
+
+    @app.post("/api/admin/users/enable")
+    @app.post("/api/admin/users/disable")
+    async def set_user_enabled(request: Request):
+        body = await _json_body(request)
+        try:
+            result = user_changes.set_enabled(request.state.username,
+                        request.cookies.get(auth_mod.COOKIE_NAME), body, request_id(request), check_users_writable,
+                        enabled=USER_ACCESS_ACTIONS[request.url.path] == "enable_user")
+        except UserChangeError as exc:
+            return JSONResponse(status_code=exc.status,
+                                content={"outcome": "not_committed", "detail": exc.detail})
+        return JSONResponse(result)
 
     def identity(username):
         result = {"username": username, "can_manage_users": roster.is_admin(username),
