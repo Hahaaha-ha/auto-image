@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as store from '../store.js'
 import CreateUserDialog from './CreateUserDialog.jsx'
 import UserAccessDialog from './UserAccessDialog.jsx'
+import ResetPasswordDialog from './ResetPasswordDialog.jsx'
 
 function CreatedAt({ value }) {
   const date = typeof value === 'string' && /(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? new Date(value) : null
@@ -18,6 +19,7 @@ export default function UsersPanel() {
   const feedbackRef = useRef(null)
   const accessTriggerRef = useRef(null)
   const resetFeedbackRef = useRef(null)
+  const resetTriggerRef = useRef(null)
   const busy = userCreate.busy
   useEffect(() => { store.refreshUsers() }, [])
   useEffect(() => {
@@ -51,10 +53,13 @@ export default function UsersPanel() {
         {userAccess.error && !userAccess.target && <p className="va-users-zone va-login-error" role="alert">{userAccess.error}</p>}
       </div>
       {userAccess.target && <UserAccessDialog access={userAccess} fallbackFocusRef={feedbackRef} returnFocusRef={accessTriggerRef} />}
-      {userReset.notice && <p ref={resetFeedbackRef} className={`va-users-zone va-auth-notice ${userReset.notice.tone}`} role="status">
-        {userReset.notice.text}
-      </p>}
-      {userReset.error && !userReset.target && <p ref={resetFeedbackRef} className="va-users-zone va-login-error" role="alert">{userReset.error}</p>}
+      <div ref={resetFeedbackRef} tabIndex={-1}>
+        {userReset.notice && <p className={`va-users-zone va-auth-notice ${userReset.notice.tone}`} role="status">
+          {userReset.notice.text}
+        </p>}
+        {userReset.error && !userReset.target && <p className="va-users-zone va-login-error" role="alert">{userReset.error}</p>}
+      </div>
+      {userReset.target && <ResetPasswordDialog reset={userReset} fallbackFocusRef={resetFeedbackRef} returnFocusRef={resetTriggerRef} />}
       <p className="va-users-zone">创建时间时区：{Intl.DateTimeFormat().resolvedOptions().timeZone}</p>
       {users.loading && <div className="va-side-empty" role="status">正在加载用户清单…</div>}
       {users.error && <div className="va-side-empty" role="alert">{users.error}</div>}
@@ -72,38 +77,12 @@ export default function UsersPanel() {
                   onClick={(event) => { accessTriggerRef.current = event.currentTarget; store.beginUserAccess(user.username) }}>{user.enabled ? '禁用' : '启用'}</button>
                 <button aria-label={`${userReset.unknown ? '发起新的重置' : '重置密码'} ${user.username}`}
                   disabled={Boolean(userAccess.target || userReset.target || userReset.verifyUsername) || users.loading || Boolean(users.error) || !user.user_version}
-                  onClick={() => store.beginUserReset(user.username)}>{userReset.unknown ? '发起新的重置' : '重置密码'}</button>
+                  onClick={(event) => { resetTriggerRef.current = event.currentTarget; store.beginUserReset(user.username) }}>{userReset.unknown ? '发起新的重置' : '重置密码'}</button>
               </div>
-              {userReset.target?.username === user.username && <ResetConfirmation reset={userReset} />}
             </>}
           </li>
         ))}
       </ul>
     </section>
   )
-}
-
-function ResetConfirmation({ reset }) {
-  const [password, setPassword] = useState('')
-  const cancelRef = useRef(null)
-  useEffect(() => { cancelRef.current?.focus() }, [])
-  return <form className="va-user-access-confirm va-user-reset" aria-label={`确认重置「${reset.target.username}」的密码`}
-    aria-busy={reset.busy} onSubmit={(event) => { event.preventDefault(); store.resetUserPassword(password) }}>
-    <p className="va-users-name">确认重置「{reset.target.username}」的密码</p>
-    <p>将撤销全部既有登录，下次登录须再次改密。不停止执行中的回合，不改变会话归属。</p>
-    {!reset.target.enabled && <p>该用户仍保持禁用，不能登录。</p>}
-    <label className="va-password-field">
-      新密码
-      <input className="va-login-input" name="reset_password" type="password" autoComplete="new-password"
-        value={password} onChange={(event) => setPassword(event.target.value)} disabled={reset.busy}
-        required aria-describedby="reset-password-rules reset-password-delivery" />
-    </label>
-    <p className="va-auth-help" id="reset-password-rules">8–128 位英文字母、数字或半角符号，不含空格、其他空白或中文；不要求组合。</p>
-    <p id="reset-password-delivery">请自行交付新密码，提交后无法回看。</p>
-    {reset.error && <p className="va-login-error" role="alert">{reset.error}</p>}
-    <div className="va-user-access-actions">
-      <button ref={cancelRef} type="button" disabled={reset.busy} onClick={() => store.cancelUserReset()}>取消</button>
-      <button type="submit" disabled={reset.busy}>{reset.busy ? '提交中…' : '确认重置密码'}</button>
-    </div>
-  </form>
 }

@@ -797,7 +797,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-management-body { overflow: auto; flex: 1; padding: 24px max(16px, calc((100% - 1080px) / 2)); }
 .va-management-body > .va-side-panel { padding-bottom: 24px; }
 .va-management .va-users-row { font-size: 14px; padding-block: 16px; }
-.va-management .va-user-access-confirm { max-width: 640px; }
 .va-access-denied { max-width: 60ch; padding: 24px 0; }
 @media (max-width: 640px) {
   .va-head { flex-wrap: wrap; gap: 8px; }
@@ -813,21 +812,16 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-users-row { padding: 12px; border-bottom: 1px solid var(--line); color: var(--ink-2); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .va-users-name { color: var(--ink); font-weight: 600; white-space: pre-wrap; }
 .va-user-access-button { margin-top: 6px; }
-.va-user-access-confirm { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
-.va-user-access-confirm p { margin: 0 0 10px; }
 .va-user-access-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .va-access-dialog .va-user-disable { color: var(--bad); }
 .va-access-dialog .va-user-disable:hover { border-color: var(--bad); }
-.va-user-reset .va-password-field { margin-bottom: 10px; }
-.va-user-reset .va-login-input { width: 100%; min-width: 0; }
-.va-user-reset .va-auth-help { font-size: 12px; }
 
-.va-create-dialog, .va-access-dialog { overflow-wrap: anywhere; }
-.va-create-dialog h2, .va-access-dialog h2 { margin: 0; font-size: inherit; font-weight: inherit; min-width: 0; }
-.va-access-dialog .va-modal-close { flex-shrink: 0; }
-.va-access-dialog p { line-height: 1.6; }
-.va-create-dialog .va-password-field { margin-top: 16px; }
-.va-create-dialog .va-modal-actions, .va-access-dialog .va-modal-actions { flex-wrap: wrap; }
-.va-create-dialog:focus-visible, .va-access-dialog:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.va-create-dialog .va-login-input { width: 100%; min-width: 0; color: var(--ink); background: var(--surface); }
-.va-create-dialog .va-login-input:disabled { background: var(--surface-dim); }
+.va-create-dialog, .va-access-dialog, .va-reset-dialog { overflow-wrap: anywhere; }
+.va-create-dialog h2, .va-access-dialog h2, .va-reset-dialog h2 { margin: 0; font-size: inherit; font-weight: inherit; min-width: 0; }
+.va-access-dialog .va-modal-close, .va-reset-dialog .va-modal-close { flex-shrink: 0; }
+.va-access-dialog p, .va-reset-dialog p { line-height: 1.6; }
+.va-create-dialog .va-password-field, .va-reset-dialog .va-password-field { margin-top: 16px; }
+.va-create-dialog .va-modal-actions, .va-access-dialog .va-modal-actions, .va-reset-dialog .va-modal-actions { flex-wrap: wrap; }
+.va-create-dialog:focus-visible, .va-access-dialog:focus-visible, .va-reset-dialog:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.va-create-dialog .va-login-input, .va-reset-dialog .va-login-input { width: 100%; min-width: 0; color: var(--ink); background: var(--surface); }
+.va-create-dialog .va-login-input:disabled, .va-reset-dialog .va-login-input:disabled { background: var(--surface-dim); }

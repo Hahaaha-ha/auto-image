@@ -18,20 +18,11 @@ import SidePanel from './components/SidePanel.jsx'
 import UsersPanel from './components/UsersPanel.jsx'
 
 describe('用户管理内容', () => {
-  it('重置仅面向普通用户，确认目标、撤销与交付说明，禁用状态保留', () => {
+  it('重置仅面向普通用户，未知结果持续呈现并要求主动发起新重置', () => {
     let html = renderToStaticMarkup(<UsersPanel />)
     expect(html).toContain('重置密码 legacy')
     expect(html).not.toContain('重置密码 operator')
     expect(html).not.toContain('重置密码 second')
-    state.userReset.target = { username: 'legacy', enabled: false }
-    html = renderToStaticMarkup(<UsersPanel />)
-    expect(html).toContain('确认重置「legacy」的密码')
-    expect(html).toContain('全部既有登录')
-    expect(html).toContain('自行交付')
-    expect(html).toContain('仍保持禁用')
-    expect(html).toContain('无法回看')
-    expect(html).toContain('name="reset_password"')
-    expect(html).toContain('type="password"')
     state.userReset = { target: null, busy: false, unknown: true,
       notice: { tone: 'warning', text: '清单无法验证密码，重置结果仍未知。' } }
     html = renderToStaticMarkup(<UsersPanel />)

@@ -115,6 +115,15 @@ describe('管理员重置密码', () => {
     if (status === 401) expect(store.getState().auth).toBe('anonymous')
   })
 
+  it('401 响应无需解析正文，立即清理失效身份与重置确认', async () => {
+    store.beginUserReset(alice.username)
+    fetch.mockResolvedValue({ status: 401, json: async () => { throw new SyntaxError('not JSON') } })
+    expect(await store.resetUserPassword('temporary-password')).toBe('not_committed')
+    expect(store.getState().auth).toBe('anonymous')
+    expect(store.getState().userReset.target).toBeNull()
+    expect(store.getState().userReset.notice).toBeNull()
+  })
+
   it('提交期间不能取消或重复提交，切换身份后忽略迟到响应', async () => {
     store.beginUserReset(alice.username)
     let finish

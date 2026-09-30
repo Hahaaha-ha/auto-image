@@ -711,6 +711,8 @@ export async function resetUserPassword(password) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: target.username, expected_version: target.user_version, password }),
     })
+    if (state.userReset !== attempt) return
+    if (userManagementAccessLost(resp.status)) return 'not_committed'
     const data = await resp.json()
     if (state.userReset !== attempt) return
     if (data.outcome === 'committed') {
