@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import * as store from '../store.js'
-import { USERS_HREF } from '../navigation.js'
+import { USERS_HREF, mayLeavePage } from '../navigation.js'
 
 export default function AccountMenu({ visible }) {
   const { user, canManageUsers } = store.useRunState()
@@ -54,7 +54,7 @@ export default function AccountMenu({ visible }) {
         if (next !== undefined) { event.preventDefault(); items[next].focus() }
       }}>
       {canManageUsers === true && <a role="menuitem" tabIndex={-1} href={USERS_HREF} onClick={close}>用户管理</a>}
-      <button role="menuitem" tabIndex={-1} onClick={() => { close(); store.logout() }}>登出</button>
+      <button role="menuitem" tabIndex={-1} onClick={() => { if (mayLeavePage()) { close(); store.logout() } }}>登出</button>
     </div>}
   </div>
 }

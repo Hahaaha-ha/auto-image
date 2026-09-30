@@ -16,6 +16,19 @@ beforeEach(async () => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('新增用户', () => {
+  it('关闭或重开表单清除输入错误，保留需要核实的结果', async () => {
+    fetch.mockResolvedValue(response({ outcome: 'not_committed', detail: 'username_exists' }, 409))
+    await store.createUser('existing', 'initial-password')
+    store.clearUserCreateError()
+    expect(store.getState().userCreate.error).toBeNull()
+    fetch.mockRejectedValue(new TypeError('offline'))
+    await store.createUser('uncertain', 'initial-password')
+    const notice = store.getState().userCreate.notice
+    store.clearUserCreateError()
+    expect(store.getState().userCreate.notice).toEqual(notice)
+    expect(store.getState().userCreate.verifyUsername).toBe('uncertain')
+  })
+
   it.each(['committed', 'unknown'])('清单读取挂起不阻止返回 %s，让表单及时清空密码', async (outcome) => {
     let finishRead, result
     fetch.mockImplementation(async (url, options) => {

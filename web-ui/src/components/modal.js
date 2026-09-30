@@ -1,25 +1,51 @@
-// 模态对话框共享行为：Esc 关闭（请求在飞时拦下）+ 打开时聚焦面板 +
-// 关闭后焦点归还触发钮。三个对话框（任务/OBS 配置/ECS 新建）同用。
-import { useEffect, useRef } from 'react'
+import { useLayoutEffect, useRef } from 'react'
 
-export function useModal(closable, onClose) {
+// 共享焦点范围、背景隔离与焦点归还；关闭规则由具体操作决定。
+export function useModal(closable, onClose, initialFocusRef, fallbackFocusRef) {
   const panelRef = useRef(null)
-  const restoreRef = useRef(null)
-  // 挂卸只随对话框开关发生一次，closable/onClose 每渲染都是新闭包——
-  // 存进 ref 让 keydown 总调最新版，否则挂载初版（在飞=false）永远生效，
-  // 请求中按 Esc 会误关（ECS 密码正是一次性凭证）
   const liveRef = useRef(null)
   liveRef.current = { closable, onClose }
-  useEffect(() => {
-    restoreRef.current = document.activeElement
-    panelRef.current?.focus()
-    const onKey = (e) => {
-      if (e.key === 'Escape' && liveRef.current.closable()) liveRef.current.onClose()
+  useLayoutEffect(() => {
+    const panel = panelRef.current
+    const restore = document.activeElement
+    const background = []
+    for (let node = panel; node?.parentElement; node = node.parentElement) {
+      for (const sibling of node.parentElement.children) {
+        if (sibling !== node && !sibling.contains(panel)) {
+          background.push([sibling, sibling.inert])
+          sibling.inert = true
+        }
+      }
+      if (node.parentElement === document.body) break
     }
-    document.addEventListener('keydown', onKey)
+    const focusPanel = () => (initialFocusRef?.current || panel)?.focus()
+    focusPanel()
+    const onFocus = (event) => { if (!panel.contains(event.target)) panel.focus() }
+    const onKey = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        if (liveRef.current.closable()) liveRef.current.onClose()
+      }
+      if (event.key === 'Tab') {
+        const items = Array.from(panel.querySelectorAll('a[href], button, input, select, textarea, [tabindex]'))
+          .filter(el => !el.disabled && el.tabIndex >= 0 && el.getClientRects().length && !el.closest('[inert]'))
+        const index = items.indexOf(document.activeElement)
+        if (!items.length || index === -1 || (event.shiftKey ? index === 0 : index === items.length - 1)) {
+          event.preventDefault()
+          ;(event.shiftKey ? items.at(-1) : items[0])?.focus()
+          if (!items.length) panel.focus()
+        }
+      }
+    }
+    document.addEventListener('keydown', onKey, true)
+    document.addEventListener('focusin', onFocus)
     return () => {
-      document.removeEventListener('keydown', onKey)
-      restoreRef.current?.focus?.()
+      document.removeEventListener('keydown', onKey, true)
+      document.removeEventListener('focusin', onFocus)
+      for (const [node, inert] of background) node.inert = inert
+      if (restore?.isConnected && !restore.disabled && !restore.closest('[inert]') && restore.getClientRects().length) restore.focus()
+      else fallbackFocusRef?.current?.focus()
     }
   }, [])
   return panelRef

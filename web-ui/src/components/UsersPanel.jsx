@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import * as store from '../store.js'
+import CreateUserDialog from './CreateUserDialog.jsx'
 
 function CreatedAt({ value }) {
   const date = typeof value === 'string' && /(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? new Date(value) : null
@@ -11,13 +12,11 @@ function CreatedAt({ value }) {
 
 export default function UsersPanel() {
   const { users, userCreate, userAccess, userReset } = store.useRunState()
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [submitting, setSubmitting] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const createFeedbackRef = useRef(null)
   const feedbackRef = useRef(null)
   const resetFeedbackRef = useRef(null)
-  const busy = userCreate.busy || submitting
-  const blocked = busy || Boolean(userCreate.verifyUsername)
+  const busy = userCreate.busy
   useEffect(() => { store.refreshUsers() }, [])
   useEffect(() => {
     if (userAccess.notice || (userAccess.error && !userAccess.target)) {
@@ -29,53 +28,20 @@ export default function UsersPanel() {
       resetFeedbackRef.current?.scrollIntoView({ block: 'nearest' })
     }
   }, [userReset.notice, userReset.error, userReset.target])
-  const onSubmit = async (event) => {
-    event.preventDefault()
-    if (blocked) return
-    setSubmitting(true)
-    try {
-      const outcome = await store.createUser(username, password)
-      if (outcome === 'committed' || outcome === 'unknown') {
-        setPassword('')
-        setUsername('')
-      }
-    } finally {
-      setSubmitting(false)
-    }
-  }
   return (
     <section className="va-side-panel" aria-label="用户清单" aria-busy={users.loading}>
       <div className="va-art-panel-head">用户管理</div>
       <div className="va-art-tools">
+        <button disabled={busy || Boolean(userCreate.verifyUsername || userAccess.target || userReset.target)}
+          onClick={() => { store.clearUserCreateError(); setCreating(true) }}>创建用户</button>
         <button onClick={() => store.refreshUsers()} disabled={users.loading || busy || userAccess.busy || userReset.busy}>
           {userCreate.verifyUsername || userAccess.verifyUsername || userReset.verifyUsername ? '刷新清单核实' : '刷新'}
         </button>
       </div>
-      {userCreate.notice && <p className={`va-users-zone va-auth-notice ${userCreate.notice.tone}`} role="status">
+      {userCreate.notice && <p ref={createFeedbackRef} tabIndex={-1} className={`va-users-zone va-auth-notice ${userCreate.notice.tone}`} role="status">
         {userCreate.notice.text}
       </p>}
-      <details className="va-user-create">
-        <summary>新增用户</summary>
-        <form onSubmit={onSubmit} aria-label="新增普通用户" aria-busy={busy}>
-          <p className="va-auth-help">新用户默认启用，首次登录须改密。初始密码请自行交付，提交后无法回看。新人请使用独立用户名，不要转交他人旧账号。</p>
-          <label className="va-password-field">
-            用户名
-            <input className="va-login-input" name="username" autoComplete="off" autoCapitalize="none" spellCheck={false}
-              value={username} onChange={(e) => setUsername(e.target.value)} disabled={blocked}
-              required aria-describedby="create-username-rules" />
-          </label>
-          <p className="va-auth-help" id="create-username-rules">1–64 位英文字母、数字、下划线、短横线或点，区分大小写，不可含空格。</p>
-          <label className="va-password-field">
-            初始密码
-            <input className="va-login-input" name="password" type="password" autoComplete="new-password"
-              value={password} onChange={(e) => setPassword(e.target.value)} disabled={blocked}
-              required aria-describedby="create-password-rules" />
-          </label>
-          <p className="va-auth-help" id="create-password-rules">8–128 位英文字母、数字或半角符号，不含空格、其他空白或中文；不要求组合。</p>
-          {userCreate.error && <div className="va-login-error" role="alert">{userCreate.error}</div>}
-          <button className="va-login-submit" type="submit" disabled={blocked}>{busy ? '提交中…' : '创建普通用户'}</button>
-        </form>
-      </details>
+      {creating && <CreateUserDialog fallbackFocusRef={createFeedbackRef} onClose={() => setCreating(false)} />}
       {userAccess.notice && <p ref={feedbackRef} className={`va-users-zone va-auth-notice ${userAccess.notice.tone}`} role="status">
         {userAccess.notice.text}
       </p>}

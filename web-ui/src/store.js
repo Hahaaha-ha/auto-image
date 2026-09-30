@@ -748,6 +748,12 @@ const CREATE_USER_HINT = {
   state_unavailable: '用户尚未创建：服务处于受限恢复状态，请联系管理员。',
 }
 
+export function clearUserCreateError() {
+  if (!state.userCreate.busy && state.userCreate.error) {
+    set({ userCreate: { ...state.userCreate, error: null } })
+  }
+}
+
 export async function createUser(username, password) {
   if (!state.canManageUsers || state.userCreate.busy || state.userCreate.verifyUsername) return
   const attempt = { busy: true, error: null, notice: null, verifyUsername: null }
