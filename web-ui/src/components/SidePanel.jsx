@@ -14,7 +14,6 @@ import { tabKey } from '../tabState.js'
 import EcsPanel from './EcsPanel.jsx'
 import ObsPanel from './ObsPanel.jsx'
 import TasksPanel from './TasksPanel.jsx'
-import UsersPanel from './UsersPanel.jsx'
 import StageBadge from './StageBadge.jsx'
 import {
   RUN_STATUS_LABEL, STAGE_LABEL, firstPromptPreview, lastActivityAt, tabDot, fmtAgo,
@@ -270,15 +269,14 @@ function ArtifactPanel({ openFiles, activeRel }) {
   )
 }
 
-// 侧栏本体：pin 开合钮在 App 内（骑缝移动），管理入口按当前身份能力开放。
+// 侧栏本体：pin 开合钮在 Workbench 内（骑缝移动）。
 // 面板选择在 store（localStorage 持久化——刷新后仍是切过的面板，首次默认
 // 产物）：会话标签的任务 pill 要跨面板跳到任务面板，本地 state 不够用。
 // 各面板的「当前对象」标记从 tabs 派生：会话面板高亮控制面会话，产物面板
 // 高亮激活的文件标签页（弱标记则覆盖全部已开文件）。
 export default function SidePanel() {
   const s = store.useRunState()
-  const canManage = s.canManageUsers === true
-  const panel = s.sidePanel === 'users' && !canManage ? 'artifacts' : s.sidePanel
+  const panel = s.sidePanel === 'users' ? 'artifacts' : s.sidePanel
   const openIds = new Set(s.tabs.filter((t) => t.kind === 'session').map((t) => t.runId))
   const openFiles = new Set(s.tabs.filter((t) => t.kind === 'file').map((t) => t.relPath))
   const openObsKeys = new Set(s.tabs.filter((t) => t.kind === 'obs').map((t) => t.key))
@@ -286,13 +284,12 @@ export default function SidePanel() {
   const switchPanel = (p) => store.setSidePanel(p)
   return (
     <aside className="va-side" id="task-side">
-      <div className={`va-side-tabs${canManage ? ' has-users' : ''}`} role="tablist" aria-label="侧栏面板">
+      <div className="va-side-tabs" role="tablist" aria-label="侧栏面板">
         {[
           ['sessions', '会话'], ['tasks', '任务'], ['artifacts', '产物'],
           ['obs', 'OBS产物'], ['ecs', 'ECS实例'],
-          ...(canManage ? [['users', '用户']] : []),
         ].map(([key, label]) => (
-          <button key={key} role="tab" aria-label={key === 'users' ? '用户管理' : label} aria-selected={panel === key}
+          <button key={key} role="tab" aria-label={label} aria-selected={panel === key}
             aria-controls="va-side-panel" tabIndex={panel === key ? 0 : -1}
             className={panel === key ? 'on' : ''} onClick={() => switchPanel(key)}
             onKeyDown={(event) => {
@@ -310,9 +307,7 @@ export default function SidePanel() {
         ))}
       </div>
       <div className="va-side-panel-wrap" id="va-side-panel" role="tabpanel">
-        {panel === 'users' && canManage ? (
-          <UsersPanel />
-        ) : panel === 'sessions' ? (
+        {panel === 'sessions' ? (
           <SessionPanel order={s.order} runs={s.runs} controlId={store.controlRunId()} openIds={openIds} />
         ) : panel === 'tasks' ? (
           <TasksPanel />

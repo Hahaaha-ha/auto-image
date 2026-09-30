@@ -15,15 +15,16 @@ const { state } = vi.hoisted(() => ({ state: {
 } }))
 vi.mock('./store.js', () => ({ useRunState: () => state, refreshUsers: vi.fn(), createUser: vi.fn() }))
 import SidePanel from './components/SidePanel.jsx'
+import UsersPanel from './components/UsersPanel.jsx'
 
-describe('用户管理侧栏', () => {
+describe('用户管理内容', () => {
   it('重置仅面向普通用户，确认目标、撤销与交付说明，禁用状态保留', () => {
-    let html = renderToStaticMarkup(<SidePanel />)
+    let html = renderToStaticMarkup(<UsersPanel />)
     expect(html).toContain('重置密码 legacy')
     expect(html).not.toContain('重置密码 operator')
     expect(html).not.toContain('重置密码 second')
     state.userReset.target = { username: 'legacy', enabled: false }
-    html = renderToStaticMarkup(<SidePanel />)
+    html = renderToStaticMarkup(<UsersPanel />)
     expect(html).toContain('确认重置「legacy」的密码')
     expect(html).toContain('全部既有登录')
     expect(html).toContain('自行交付')
@@ -33,38 +34,38 @@ describe('用户管理侧栏', () => {
     expect(html).toContain('type="password"')
     state.userReset = { target: null, busy: false, unknown: true,
       notice: { tone: 'warning', text: '清单无法验证密码，重置结果仍未知。' } }
-    html = renderToStaticMarkup(<SidePanel />)
+    html = renderToStaticMarkup(<UsersPanel />)
     expect(html).toContain('重置结果仍未知')
     expect(html).toContain('发起新的重置 legacy')
     state.userReset = { target: null, busy: false, error: null, notice: null, verifyUsername: null, unknown: false }
   })
   it('只有普通用户有启停按钮；确认清楚展示目标和影响', () => {
-    let html = renderToStaticMarkup(<SidePanel />)
+    let html = renderToStaticMarkup(<UsersPanel />)
     expect(html).toContain('启用用户 legacy')
     expect(html).not.toContain('禁用用户 operator')
     expect(html).not.toContain('禁用用户 second')
     state.userAccess.target = { username: 'legacy', enabled: true }
-    html = renderToStaticMarkup(<SidePanel />)
+    html = renderToStaticMarkup(<UsersPanel />)
     expect(html).toContain('确认禁用「legacy」')
     expect(html).toContain('撤销既有登录')
     expect(html).toContain('不停止回合')
     expect(html).toContain('不撤销已提交的云操作')
     expect(html).toContain('取消')
     state.userAccess.busy = true
-    html = renderToStaticMarkup(<SidePanel />)
+    html = renderToStaticMarkup(<UsersPanel />)
     expect(html).toContain('提交中…')
     state.userAccess = { target: null, busy: false, error: '请刷新清单重新确认', verifyUsername: 'legacy' }
-    html = renderToStaticMarkup(<SidePanel />)
+    html = renderToStaticMarkup(<UsersPanel />)
     expect(html).toContain('role="alert"')
     expect(html).toContain('刷新清单核实')
     state.userAccess = { target: { username: 'legacy', enabled: false }, busy: false }
-    html = renderToStaticMarkup(<SidePanel />)
+    html = renderToStaticMarkup(<UsersPanel />)
     expect(html).toContain('原使用者')
     expect(html).toContain('重新登录')
     state.userAccess = { target: null, busy: false, error: null, notice: null, verifyUsername: null }
   })
   it('管理员可见只读用户清单、本地时区创建时间及未知时间', () => {
-    const html = renderToStaticMarkup(<SidePanel />)
+    const html = renderToStaticMarkup(<UsersPanel />)
     expect(html).toContain('用户管理')
     expect(html).toContain('operator')
     expect(html.match(/管理员 · 只读/g)).toHaveLength(2)
@@ -86,16 +87,16 @@ describe('用户管理侧栏', () => {
   })
   it('提交状态、校验错误、审计异常和未知结果展示于表单旁', () => {
     state.userCreate = { busy: true }
-    let html = renderToStaticMarkup(<SidePanel />)
+    let html = renderToStaticMarkup(<UsersPanel />)
     expect(html).toContain('提交中…')
     expect(html.match(/disabled=""/g).length).toBeGreaterThanOrEqual(3)
     state.userCreate = { busy: false, error: '用户名已存在，未覆盖原用户。' }
-    html = renderToStaticMarkup(<SidePanel />)
+    html = renderToStaticMarkup(<UsersPanel />)
     expect(html).toContain('role="alert"')
     expect(html).toContain('用户名已存在')
     for (const text of ['变更已生效，审计记录异常', '无法确认新增结果，请先核实']) {
       state.userCreate = { busy: false, notice: { tone: 'warning', text }, verifyUsername: 'new-user' }
-      html = renderToStaticMarkup(<SidePanel />)
+      html = renderToStaticMarkup(<UsersPanel />)
       expect(html).toContain('role="status"')
       expect(html).toContain(text)
       expect(html).toContain('刷新清单核实')
@@ -103,8 +104,8 @@ describe('用户管理侧栏', () => {
     }
     state.userCreate = { busy: false, error: null, notice: null, verifyUsername: null }
   })
-  it('能力缺失、非布尔或普通用户即使残留用户面板选择也看不到管理清单', () => {
-    for (const value of [false, undefined, 'true', 1]) {
+  it('侧栏对所有身份均移除管理入口，旧面板选择不再渲染管理内容', () => {
+    for (const value of [true, false, undefined, 'true', 1]) {
       state.canManageUsers = value
       const html = renderToStaticMarkup(<SidePanel />)
       expect(html).not.toContain('用户管理')

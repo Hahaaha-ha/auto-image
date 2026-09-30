@@ -7,11 +7,11 @@ import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('./store.js', () => ({ logout: vi.fn() }))
 
-// App.jsx 默认导出整树依赖 store 太多，直接测 Stream 不可行——改为从模块
+// Workbench.jsx 默认导出整树依赖 store 太多，直接测 Stream 不可行——改为从模块
 // 源断言关键结构（memo 包裹 + finishedIds 换引用），行为级由手测覆盖。
 import { readFileSync } from 'node:fs'
 
-const source = readFileSync(new URL('App.jsx', import.meta.url), 'utf-8')
+const source = readFileSync(new URL('Workbench.jsx', import.meta.url), 'utf-8')
 
 describe('事件流 tools 索引与 memo 协作', () => {
   it('EventRow 经 memo 包裹（时长针/轮询高频渲染短路的前提）', () => {

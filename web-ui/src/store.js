@@ -86,7 +86,7 @@ function persistTabs() {
 
 // 侧栏面板选择持久化（从 SidePanel 上提；跨面板跳转需要 store 持有状态）
 const SIDE_PANEL_KEY = 'va-side-panel'
-const SIDE_PANELS = ['sessions', 'tasks', 'artifacts', 'obs', 'ecs', 'users']
+const SIDE_PANELS = ['sessions', 'tasks', 'artifacts', 'obs', 'ecs']
 function readSidePanel() {
   try {
     const v = localStorage.getItem(SIDE_PANEL_KEY)
@@ -142,7 +142,7 @@ let state = {
 }
 
 export function setSidePanel(panel) {
-  if (!SIDE_PANELS.includes(panel) || (panel === 'users' && !state.canManageUsers)) return
+  if (!SIDE_PANELS.includes(panel)) return
   set({ sidePanel: panel })
   try {
     localStorage.setItem(SIDE_PANEL_KEY, panel)
@@ -193,9 +193,11 @@ function makeTask(t) {
 // 任务清单刷新（阶段事件/摘要周期/启动驱动；尽力而为，失败静默——
 // 面板下一周期自愈）
 export async function refreshTasks() {
+  const epoch = identityEpoch
   try {
     const resp = await fetch('/api/tasks')
     const data = await resp.json().catch(() => ({}))
+    if (epoch !== identityEpoch) return
     if (!resp.ok) return
     set({ tasks: (data.tasks ?? []).map(makeTask) })
   } catch {
@@ -212,7 +214,9 @@ export function openTask(taskId) {
 // 手动建任务（「+ 新建任务」表单提交）：INIT 待运行态落服务端；返回任务
 // 供对话框收尾（失败抛错由对话框行内展示）
 export async function createTask(spec) {
+  const epoch = identityEpoch
   const data = await postJson('/api/tasks', spec)
+  if (epoch !== identityEpoch) return
   refreshTasks()
   return data
 }
@@ -221,7 +225,9 @@ export async function createTask(spec) {
 // 本地落位（adoptNewRun，同新建会话路径）即自动跳到该会话标签页看
 // agent 执行（用户已确认此交互）
 export async function runTask(taskId) {
+  const epoch = identityEpoch
   const data = await postJson(`/api/tasks/${encodeURIComponent(taskId)}/run`, {})
+  if (epoch !== identityEpoch) return
   adoptNewRun(makeRun({
     runId: data.run_id,
     status: data.status,
@@ -251,6 +257,7 @@ export function runningTaskByInstance(inst) {
 // 登出→登录后轮询不丢）
 const timersRef = new Set()
 function startTimers() {
+  if (timersRef.size) return
   timersRef.add(setInterval(() => {
     if (state.runs[controlRunId()]?.status === RUNNING) set({ now: Date.now() })
   }, 1000))
@@ -399,6 +406,7 @@ function parseSseEvents(text) {
 // 事件由纯归并入口的 seq 去重吸收。run 已不在（服务端重启丢了空会话等）
 // 静默作罢——摘要轮询会把它从列表剪掉。
 async function loadSnapshot(runId) {
+  const epoch = identityEpoch
   const run = state.runs[runId]
   if (!run) return
   const lastSeq = run.maxSeq ?? 0
@@ -406,7 +414,7 @@ async function loadSnapshot(runId) {
     const resp = await fetch(`/api/runs/${runId}/events`, { headers: { 'Last-Event-ID': String(lastSeq) } })
     if (!resp.ok) return
     const events = parseSseEvents(await resp.text())
-    if (!events.length) return
+    if (epoch !== identityEpoch || !events.length) return
     ingestEvents(runId, events)
   } catch {
     // 快照失败不打断使用：全局流仍在，断线恢复或下次打开再补
@@ -438,6 +446,8 @@ function deauthed(reasonText) {
     globalStream = null
     stream.close()
   }
+  clearTimeout(errorTimer)
+  clearTimeout(noticeTimer)
   for (const id of timersRef) clearInterval(id)
   timersRef.clear()
   for (const key of Object.keys(drafts)) delete drafts[key]
@@ -451,6 +461,11 @@ function deauthed(reasonText) {
     tabs: [], activeKey: null, lastSessionKey: null,
     tasks: [], activeTaskId: null,
     drafts: {},
+    artifacts: { groups: [] }, artifactCache: {}, artifactSel: {}, artifactZipping: false,
+    obs: { objects: [], bucket: null, region: null, domain: null, error: null, loading: false },
+    obsCache: {}, obsArchiving: false, obsZipArchiving: false,
+    ecs: { instances: [], region: null, error: null, loading: false, checking: false }, ecsCreating: false,
+    submitError: null, notice: null,
   })
   persistTabs()
   if (reasonText) fail(reasonText)
@@ -475,11 +490,13 @@ function startDataPlane() {
       const stream = globalStream
       stream.close()
       globalStream = null
-      if (!await confirmIdentity()) {
+      const confirmed = await confirmIdentity()
+      if (confirmed === null) return
+      if (!confirmed) {
         deauthed('登录已失效，请重新登录')
         return
       }
-      set({ connection: 'reconnecting' })
+      startDataPlane()
       return
     }
     set({ connection: 'reconnecting' })
@@ -491,21 +508,25 @@ function startDataPlane() {
   refreshTasks()
 }
 
-// 当前身份确认：200 → true；401/其他 → false（登录壳）
+// 当前身份确认：有效身份 true，失败 false，旧登录的迟到响应 null。
 async function confirmIdentity() {
+  const epoch = identityEpoch
   try {
     const resp = await fetch('/api/auth/me')
+    if (epoch !== identityEpoch) return null
     if (!resp.ok) return false
     const data = await resp.json().catch(() => null)
+    if (epoch !== identityEpoch) return null
     if (!data?.username) return false
     acceptIdentity(data)
     return true
   } catch {
-    return false
+    return epoch === identityEpoch ? false : null
   }
 }
 
 function acceptIdentity(data) {
+  if (state.user && state.user !== data.username) deauthed(null)
   if (data.must_change_password === true) {
     deauthed(null)
     set({ auth: 'password-change', user: data.username, userVersion: data.user_version, authNotice: null })
@@ -518,8 +539,7 @@ function acceptIdentity(data) {
     ? state.userCreate : { busy: false, error: null, notice: null, verifyUsername: null }
   const userAccess = state.user === data.username && canManageUsers ? state.userAccess : emptyUserAccess()
   const userReset = state.user === data.username && canManageUsers ? state.userReset : emptyUserReset()
-  set({ auth: 'user', user: data.username, canManageUsers, users, userCreate, userAccess, userReset, userVersion: null, authNotice: null,
-    sidePanel: state.sidePanel === 'users' && !canManageUsers ? 'artifacts' : state.sidePanel })
+  set({ auth: 'user', user: data.username, canManageUsers, users, userCreate, userAccess, userReset, userVersion: null, authNotice: null })
 }
 
 export async function refreshUsers(force = false) {
@@ -534,8 +554,9 @@ export async function refreshUsers(force = false) {
     if (state.users !== loading) return
     if (resp.status === 401) { deauthed('登录已失效，请重新登录'); return }
     if (resp.status === 403) {
-      revokeUserManagement()
-      return
+      const data = await resp.json().catch(() => ({}))
+      if (state.users !== loading) return
+      if (userManagementAccessLost(resp.status, data.detail)) return
     }
     if (!resp.ok) throw new Error('用户清单加载失败，请点击刷新重试')
     const data = await resp.json()
@@ -772,18 +793,22 @@ export async function createUser(username, password) {
 // 启动身份检查：通过即带用户名进入数据面；否则登录壳（不建 EventSource）
 export async function initAuth() {
   set({ auth: 'checking' })
-  if (await confirmIdentity()) startDataPlane()
-  else set({ auth: 'anonymous' })
+  const confirmed = await confirmIdentity()
+  if (confirmed === null) return
+  if (confirmed) startDataPlane()
+  else deauthed(null)
 }
 
 // 登录：成功后带用户名进入数据面（登录壳表单提交入口）
 export async function login(username, password) {
+  const epoch = identityEpoch
   const resp = await fetch('/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
   })
   const data = await resp.json().catch(() => ({}))
+  if (epoch !== identityEpoch) return
   if (!resp.ok) throw Object.assign(new Error(data.detail || `HTTP ${resp.status}`), {
     status: resp.status, detail: data.detail,
   })
@@ -966,8 +991,10 @@ function adoptNewRun(run) {
 
 // 新建 = 一步创建空会话（READY），无中间表单；新建不受其他会话执行影响
 export async function createRun() {
+  const epoch = identityEpoch
   try {
     const data = await postJson('/api/runs', {})
+    if (epoch !== identityEpoch) return
     adoptNewRun(
       makeRun({
         runId: data.run_id,
@@ -977,6 +1004,7 @@ export async function createRun() {
       })
     )
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`新建会话失败：${conflictMessage(err)}`)
   }
 }
@@ -984,10 +1012,12 @@ export async function createRun() {
 // Fork = 从控制面会话（READY/ENDED）分叉新会话：事件流转录、标题继承
 // （转录历史经 adoptNewRun 的快照补齐——转录不带 session.started）
 export async function cloneRun() {
+  const epoch = identityEpoch
   const src = state.runs[controlRunId()]
   if (!src) return
   try {
     const data = await postJson(`/api/runs/${src.runId}/clone`, {})
+    if (epoch !== identityEpoch) return
     adoptNewRun(
       makeRun({
         runId: data.run_id,
@@ -997,17 +1027,21 @@ export async function cloneRun() {
       })
     )
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`Fork 失败：${conflictMessage(err)}`)
   }
 }
 
 // 停止：打断控制面会话的当前回合（只作用它，不误停别人）
 export async function stop() {
+  const epoch = identityEpoch
   const run = state.runs[controlRunId()]
   if (!run || run.status !== RUNNING) return
   try {
     await postJson(`/api/runs/${run.runId}/stop`, {})
+    if (epoch !== identityEpoch) return
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`停止失败：${err.message}`)
   }
 }
@@ -1015,6 +1049,7 @@ export async function stop() {
 // 向控制面会话发指令：执行中发送由服务端 409（turn_in_progress）拒绝，
 // 想改方向先显式停止。返回是否投递成功（失败时输入由调用方保留）。
 export async function send(text) {
+  const epoch = identityEpoch
   const trimmed = (text ?? '').trim()
   const run = state.runs[controlRunId()]
   if (!run || !trimmed) return false
@@ -1025,9 +1060,11 @@ export async function send(text) {
   }
   try {
     const data = await postJson(`/api/runs/${run.runId}/messages`, { text: trimmed })
+    if (epoch !== identityEpoch) return
     setRun(run.runId, { status: data.status })
     return true
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`发送失败：${conflictMessage(err)}`)
     return false
   }
@@ -1035,11 +1072,14 @@ export async function send(text) {
 
 // 结束控制面会话（显式、不可逆；执行中或挂起均可）
 export async function endRun() {
+  const epoch = identityEpoch
   const run = state.runs[controlRunId()]
   if (!run || !isOperable(run.status)) return
   try {
     await postJson(`/api/runs/${run.runId}/end`, {})
+    if (epoch !== identityEpoch) return
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`结束会话失败：${err.message}`)
   }
 }
@@ -1106,10 +1146,12 @@ function pruneSelection(groups) {
 
 // 清单刷新：阶段推进/终态事件触发（无 run 参数，全局镜像）
 export async function refreshArtifacts() {
+  const epoch = identityEpoch
   try {
     const resp = await fetch('/api/artifacts')
     if (!resp.ok) return
     const data = await resp.json()
+    if (epoch !== identityEpoch) return
     set({ artifacts: data, artifactSel: pruneSelection(data.groups) })
   } catch {
     // 清单刷新是尽力而为：失败不打断会话观察，下次阶段事件再试
@@ -1168,6 +1210,7 @@ export function clearDraft(runId) {
 // encode 会把 / 也编码）。内容缓存与标签页独立——关标签页不清缓存，
 // 重开瞬开。
 export async function openArtifact(relPath, entry) {
+  const epoch = identityEpoch
   if (entry?.binary) {
     const cut = relPath.lastIndexOf('/')
     set({
@@ -1186,12 +1229,14 @@ export async function openArtifact(relPath, entry) {
     try {
       const resp = await fetch(`/api/artifacts/file/${relPath.split('/').map(encodeURIComponent).join('/')}`)
       const data = await resp.json().catch(() => ({}))
+      if (epoch !== identityEpoch) return
       if (!resp.ok) {
         fail(`打开产物失败：${data.detail || `HTTP ${resp.status}`}`)
         return
       }
       set({ artifactCache: { ...state.artifactCache, [relPath]: data } })
     } catch (err) {
+      if (epoch !== identityEpoch) return
       fail(`打开产物失败：${err.message}`)
       return
     }
@@ -1211,6 +1256,7 @@ export function downloadArtifact(relPath) {
 // 批量下载：勾选集 POST 到 zip 端点，blob 经 objectURL 触发下载；文件名
 // 取服务端 Content-Disposition（auto-image-artifacts-<n>-<时间戳>.zip）
 export async function downloadArtifactZip() {
+  const epoch = identityEpoch
   const paths = Object.keys(state.artifactSel)
   if (!paths.length || state.artifactZipping) return
   set({ artifactZipping: true })
@@ -1222,12 +1268,15 @@ export async function downloadArtifactZip() {
     })
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}))
+      if (epoch !== identityEpoch) return
       fail(`打包下载失败：${data.detail || `HTTP ${resp.status}`}`)
       return
     }
     const disposition = resp.headers.get('Content-Disposition') || ''
     const match = disposition.match(/filename="?([^";]+)"?/)
-    const url = URL.createObjectURL(await resp.blob())
+    const blob = await resp.blob()
+    if (epoch !== identityEpoch) return
+    const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
     a.download = match ? match[1] : 'auto-image-artifacts.zip'
@@ -1236,9 +1285,10 @@ export async function downloadArtifactZip() {
     a.remove()
     URL.revokeObjectURL(url)
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`打包下载失败：${err.message}`)
   } finally {
-    set({ artifactZipping: false })
+    if (epoch === identityEpoch) set({ artifactZipping: false })
   }
 }
 
@@ -1247,11 +1297,13 @@ export async function downloadArtifactZip() {
 // 桶内清单刷新（启动即拉一次 + 面板刷新钮；尽力而为，失败落面板错误行
 // 不打断使用。流水线事件不联动——OBS 上传不经过本服务的已知事件面）
 export async function refreshObs() {
+  const epoch = identityEpoch
   if (state.obs.loading) return
   set({ obs: { ...state.obs, loading: true } })
   try {
     const resp = await fetch('/api/obs/objects?limit=1000')
     const data = await resp.json().catch(() => ({}))
+    if (epoch !== identityEpoch) return
     if (!resp.ok) {
       set({ obs: { ...state.obs, loading: false, error: data.detail || `HTTP ${resp.status}` } })
       return
@@ -1267,6 +1319,7 @@ export async function refreshObs() {
       },
     })
   } catch (err) {
+    if (epoch !== identityEpoch) return
     set({ obs: { ...state.obs, loading: false, error: err.message } })
   }
 }
@@ -1275,10 +1328,12 @@ export async function refreshObs() {
 // 寻址，fetch 前逐段编码）。二进制/超限对象（端点 422）不拉内容，占位
 // 视图元信息取清单条目。
 export async function openObsObject(key, entry) {
+  const epoch = identityEpoch
   if (!state.obsCache[key]) {
     try {
       const resp = await fetch(`/api/obs/content?key=${encodeURIComponent(key)}`)
       const data = await resp.json().catch(() => ({}))
+      if (epoch !== identityEpoch) return
       if (resp.ok) {
         set({ obsCache: { ...state.obsCache, [key]: data } })
       } else if (resp.status === 422) {
@@ -1300,6 +1355,7 @@ export async function openObsObject(key, entry) {
         return
       }
     } catch (err) {
+      if (epoch !== identityEpoch) return
       fail(`打开 OBS 对象失败：${err.message}`)
       return
     }
@@ -1310,9 +1366,11 @@ export async function openObsObject(key, entry) {
 // OBS 对象下载：先取签名链接（服务端本地签名），临时 <a> 新标签打开——
 // 文本浏览器直接渲染，二进制按 OBS 响应下载
 export async function downloadObsObject(key) {
+  const epoch = identityEpoch
   try {
     const resp = await fetch(`/api/obs/url?key=${encodeURIComponent(key)}`)
     const data = await resp.json().catch(() => ({}))
+    if (epoch !== identityEpoch) return
     if (!resp.ok) {
       fail(`获取 OBS 下载链接失败：${data.detail || `HTTP ${resp.status}`}`)
       return
@@ -1325,6 +1383,7 @@ export async function downloadObsObject(key) {
     a.click()
     a.remove()
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`获取 OBS 下载链接失败：${err.message}`)
   }
 }
@@ -1359,14 +1418,18 @@ export async function copyText(text) {
 // 复制 OBS 对象签名下载链接（7 天有效）：返回是否复制成功（行级按钮据此
 // 打 ✓ 反馈）。两条兜底出口：剪贴板全拒时链接打到控制台供手动复制
 export async function copyObsLink(key) {
+  const epoch = identityEpoch
   try {
     const resp = await fetch(`/api/obs/url?key=${encodeURIComponent(key)}&expires=604800`)
     const data = await resp.json().catch(() => ({}))
+    if (epoch !== identityEpoch) return
     if (!resp.ok) {
       fail(`获取 OBS 下载链接失败：${data.detail || `HTTP ${resp.status}`}`)
       return false
     }
-    if (await copyText(data.signed_url)) {
+    const copied = await copyText(data.signed_url)
+    if (epoch !== identityEpoch) return
+    if (copied) {
       ok(`已复制下载链接（签名 7 天有效）：${key}`)
       return true
     }
@@ -1375,6 +1438,7 @@ export async function copyObsLink(key) {
     fail('复制到剪贴板失败（浏览器限制）——链接已打印到控制台（F12），可手动复制')
     return false
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`获取 OBS 下载链接失败：${err.message}`)
     return false
   }
@@ -1384,6 +1448,7 @@ export async function copyObsLink(key) {
 // 路径约束解析后逐个 putFile，对象名 = 产物路径），完成后刷新 OBS 清单；
 // 部分失败如实逐项点名
 export async function archiveToObs() {
+  const epoch = identityEpoch
   const paths = Object.keys(state.artifactSel)
   if (!paths.length || state.obsArchiving) return
   set({ obsArchiving: true })
@@ -1394,6 +1459,7 @@ export async function archiveToObs() {
       body: JSON.stringify({ paths }),
     })
     const data = await resp.json().catch(() => ({}))
+    if (epoch !== identityEpoch) return
     if (!resp.ok) {
       fail(`归档到 OBS 失败：${data.detail || `HTTP ${resp.status}`}`)
       return
@@ -1405,15 +1471,17 @@ export async function archiveToObs() {
       ok(`已归档 ${data.count} 个产物到 OBS（对象名 = 产物路径）`)
     }
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`归档到 OBS 失败：${err.message}`)
   } finally {
-    set({ obsArchiving: false })
+    if (epoch === identityEpoch) set({ obsArchiving: false })
   }
 }
 
 // 打包归档：勾选集 → 自定义包名（prompt，取消即中止）→ 服务端内存打 zip
 // 直传 OBS（对象名固定 zip/ 前缀，.zip 后缀服务端自动补，同名覆盖）
 export async function archiveZipToObs() {
+  const epoch = identityEpoch
   const paths = Object.keys(state.artifactSel)
   if (!paths.length || state.obsZipArchiving) return
   const d = new Date()
@@ -1434,6 +1502,7 @@ export async function archiveZipToObs() {
       body: JSON.stringify({ paths, name }),
     })
     const data = await resp.json().catch(() => ({}))
+    if (epoch !== identityEpoch) return
     if (!resp.ok) {
       fail(`打包归档失败：${data.detail || `HTTP ${resp.status}`}`)
       return
@@ -1441,9 +1510,10 @@ export async function archiveZipToObs() {
     refreshObs()
     ok(`已打包 ${data.zipped} 个产物 → ${data.key}（${fmtSize(data.size)}，同名覆盖）`)
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`打包归档失败：${err.message}`)
   } finally {
-    set({ obsZipArchiving: false })
+    if (epoch === identityEpoch) set({ obsZipArchiving: false })
   }
 }
 
@@ -1459,11 +1529,13 @@ const ecsErrText = (detail, fallback) =>
 // 不打断使用。云侧变化不经本服务事件面，无联动——刷新钮手动重拉。已有
 // 存活检查结果按 id 保留，✓/✗ 不被刷新清掉）
 export async function refreshEcs() {
+  const epoch = identityEpoch
   if (state.ecs.loading) return
   set({ ecs: { ...state.ecs, loading: true } })
   try {
     const resp = await fetch('/api/ecs/instances?limit=1000')
     const data = await resp.json().catch(() => ({}))
+    if (epoch !== identityEpoch) return
     if (!resp.ok) {
       set({ ecs: { ...state.ecs, loading: false, error: ecsErrText(data.detail, `HTTP ${resp.status}`) } })
       return
@@ -1485,6 +1557,7 @@ export async function refreshEcs() {
       },
     })
   } catch (err) {
+    if (epoch !== identityEpoch) return
     set({ ecs: { ...state.ecs, loading: false, error: err.message } })
   }
 }
@@ -1492,10 +1565,12 @@ export async function refreshEcs() {
 // 一键存活检查：POST /api/ecs/check（服务端并发探测 22 端口），结果按 id
 // 合并进清单（行内 ✓/✗）；列表里已消失的实例如实清掉检查标记
 export async function checkEcs() {
+  const epoch = identityEpoch
   if (state.ecs.checking) return
   set({ ecs: { ...state.ecs, checking: true } })
   try {
     const data = await postJson('/api/ecs/check', {})
+    if (epoch !== identityEpoch) return
     const byId = Object.fromEntries((data.instances ?? []).map((i) => [i.id, i]))
     set({
       ecs: {
@@ -1511,6 +1586,7 @@ export async function checkEcs() {
     })
     ok(`存活检查：${data.alive_count ?? 0}/${data.count ?? 0} 存活`)
   } catch (err) {
+    if (epoch !== identityEpoch) return
     set({ ecs: { ...state.ecs, checking: false } })
     fail(`存活检查失败：${ecsErrText(err.detail, err.message)}`)
   }
@@ -1520,17 +1596,20 @@ export async function checkEcs() {
 // 机器可能已建出）都返回服务端契约供对话框渲染，HTTP 层失败抛错由对话
 // 框行内展示；两种收尾都刷新清单
 export async function createEcs(body) {
+  const epoch = identityEpoch
   if (state.ecsCreating) throw new Error('建机请求进行中')
   set({ ecsCreating: true })
   try {
     const data = await postJson('/api/ecs/create', body)
+    if (epoch !== identityEpoch) return
     refreshEcs()
     return data
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`创建 ECS 失败：${ecsErrText(err.detail, err.message)}`)
     throw err
   } finally {
-    set({ ecsCreating: false })
+    if (epoch === identityEpoch) set({ ecsCreating: false })
   }
 }
 

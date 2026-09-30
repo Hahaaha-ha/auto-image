@@ -414,8 +414,8 @@ describe('管理能力与清单', () => {
     })
     await store.login(' Legacy 用户 ', 'pw')
     expect(store.getState().canManageUsers).toBe(true)
-    store.setSidePanel('users')
-    expect(store.getState().sidePanel).toBe('users')
+    store.setSidePanel('artifacts')
+    expect(store.getState().sidePanel).toBe('artifacts')
     const pending = store.refreshUsers()
     await store.logout()
     finish({ ok: true, json: async () => ({ users: [{ username: 'private' }] }) })
@@ -431,20 +431,29 @@ describe('管理能力与清单', () => {
       await store.logout()
     }
   })
-  it('清单可刷新，403 撤去入口和缓存，401 回到登录壳', async () => {
+  it('清单可刷新，明确撤权清空缓存，401 回到登录壳', async () => {
     for (const status of [403, 401]) {
       fetch.mockImplementation(async () => ({ ok: true, json: async () => ({ username: 'operator', can_manage_users: true, runs: [], tasks: [] }) }))
       await store.login('operator', 'pw')
       fetch.mockResolvedValue({ ok: true, json: async () => ({ users: [{ username: 'alice' }] }) })
       await store.refreshUsers()
       expect(store.getState().users.items).toEqual([{ username: 'alice' }])
-      fetch.mockResolvedValue({ ok: false, status })
+      fetch.mockResolvedValue({ ok: false, status, json: async () => ({ detail: 'not_admin' }) })
       await store.refreshUsers()
       expect(store.getState().users.items).toEqual([])
       expect(store.getState().canManageUsers).toBe(false)
       if (status === 401) expect(store.getState().auth).toBe('anonymous')
       await store.logout()
     }
+  })
+  it('清单读取的其他 403 保留管理能力并允许重试', async () => {
+    fetch.mockResolvedValue({ ok: true, json: async () => ({ username: 'operator', can_manage_users: true, runs: [], tasks: [] }) })
+    await store.login('operator', 'pw')
+    fetch.mockResolvedValue({ ok: false, status: 403, json: async () => ({ detail: 'request_rejected' }) })
+    await store.refreshUsers()
+    expect(store.getState().canManageUsers).toBe(true)
+    expect(store.getState().users.error).toContain('刷新重试')
+    await store.logout()
   })
 })
 
@@ -456,11 +465,11 @@ describe('管理清单在登录复核后保持可见', () => {
         : { username: 'operator', can_manage_users: true, runs: [], tasks: [] }
     ) }))
     await store.login('operator', 'pw')
-    store.setSidePanel('users')
+    store.setSidePanel('artifacts')
     await store.refreshUsers()
     globalSource.readyState = EventSource.CLOSED
     await globalSource.onerror()
-    expect(store.getState().sidePanel).toBe('users')
+    expect(store.getState().sidePanel).toBe('artifacts')
     expect(store.getState().users.items).toEqual([{ username: 'alice' }])
     await store.logout()
   })

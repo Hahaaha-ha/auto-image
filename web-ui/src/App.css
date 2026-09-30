@@ -774,13 +774,39 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-auth-notice { font-size: 13px; overflow-wrap: anywhere; }
 .va-auth-notice.success { color: var(--ok); }
 .va-auth-notice.warning { color: var(--warn); }
-/* header 登录用户标识（消息流用户气泡是 .va-stream-user，勿混用） */
-.va-head-user { color: var(--ink-2); font-size: 12.5px; margin: 0 6px; }
-.va-logout {
-  padding: 2px 10px; font-size: 12.5px; cursor: pointer; border-radius: 4px;
-  border: 1px solid var(--line); background: var(--surface);
+.va-workbench, .va-management { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.va-workbench[hidden], .va-management[hidden] { display: none; }
+.va-account { position: relative; flex-shrink: 0; margin-inline-start: auto; max-width: min(240px, 45vw); }
+.va-account-button { display: flex; align-items: center; gap: 8px; max-width: 100%; min-height: 36px; }
+.va-account-button span { overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.va-account-button svg { flex-shrink: 0; }
+.va-account-menu {
+  position: absolute; z-index: 50; right: 0; top: calc(100% + 6px); min-width: 160px;
+  padding: 4px; border-radius: 6px; background: var(--surface);
+  box-shadow: 0 6px 24px #0003;
 }
-.va-logout:hover { background: var(--surface-dim); }
+.va-account-menu :is(a, button) {
+  display: block; width: 100%; padding: 10px 12px; border: 0; border-radius: 4px;
+  color: var(--ink); text-align: left; text-decoration: none; font: inherit;
+}
+.va-account-menu :is(a, button):hover { background: var(--surface-dim); }
+.va-account :focus-visible, .va-back:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.va-management-head { flex-wrap: wrap; gap: 12px 20px; padding-block: 16px; }
+.va-management-head h1 { margin: 0; font-size: 20px; line-height: 1.4; }
+.va-back { color: var(--accent); text-underline-offset: 3px; }
+.va-management-body { overflow: auto; flex: 1; padding: 24px max(16px, calc((100% - 1080px) / 2)); }
+.va-management-body > .va-side-panel { padding-bottom: 24px; }
+.va-management .va-users-row { font-size: 14px; padding-block: 16px; }
+.va-management .va-user-create form { max-width: 560px; }
+.va-management .va-user-access-confirm { max-width: 640px; }
+.va-access-denied { max-width: 60ch; padding: 24px 0; }
+@media (max-width: 640px) {
+  .va-head { flex-wrap: wrap; gap: 8px; }
+  .va-runid { overflow-wrap: anywhere; }
+  .va-management-head { gap: 12px; }
+  .va-management-head h1 { order: 1; flex-basis: 100%; }
+  .va-management-body { padding: 16px 8px; }
+}
 
 /* 用户清单沿用侧栏分隔行，长旧用户名按原文换行。 */
 .va-users-zone { margin: 8px 12px; color: var(--ink-2); font-size: 12px; overflow-wrap: anywhere; }
@@ -804,5 +830,3 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-user-reset .va-password-field { margin-bottom: 10px; }
 .va-user-reset .va-login-input { width: 100%; min-width: 0; }
 .va-user-reset .va-auth-help { font-size: 12px; }
-.va-side-tabs.has-users { gap: 0; padding-inline: 4px; }
-.va-side-tabs.has-users button { flex: 1; padding-inline: 1px; }

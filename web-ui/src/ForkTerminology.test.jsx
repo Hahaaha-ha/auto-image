@@ -43,7 +43,7 @@ describe('Fork 术语', () => {
   })
 
   it('按钮、错误提示、来源标记与 ENDED 出路不再保留旧称', () => {
-    for (const file of ['App.jsx', 'components/ChatBar.jsx', 'derive.js', 'store.js']) {
+    for (const file of ['App.jsx', 'Workbench.jsx', 'components/ChatBar.jsx', 'derive.js', 'store.js']) {
       const source = readFileSync(new URL(file, import.meta.url), 'utf-8')
       expect(source, file).not.toContain('克隆')
     }
