@@ -27,6 +27,8 @@ describe('用户管理内容', () => {
     try {
       let html = renderToStaticMarkup(<UsersPanel />)
       expect(html).toContain('共 105 名用户')
+      expect(html).toContain('aria-label="用户清单顶部分页"')
+      expect(html).toContain('aria-label="用户清单分页"')
       expect(html).toContain('member-019')
       expect(html).not.toContain('member-020')
       expect(html.indexOf('member-000')).toBeLessThan(html.indexOf('member-019'))
@@ -34,6 +36,9 @@ describe('用户管理内容', () => {
       html = renderToStaticMarkup(<UsersPanel />)
       expect(html).toContain('member-104')
       expect(html).not.toContain('member-000')
+      expect(html).not.toContain('aria-label="用户清单顶部分页"')
+      expect(html).not.toContain('aria-label="用户清单分页"')
+      expect(html).toContain('每页条数')
       state.users.items.push({ username: '旧 身份@EXAMPLE.test', role: 'user', enabled: false })
       state.usersQuery.keyword = '@example'
       html = renderToStaticMarkup(<UsersPanel />)
