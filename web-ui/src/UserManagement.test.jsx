@@ -73,7 +73,7 @@ describe('用户管理内容', () => {
     expect(html.match(/管理员 · 只读/g)).toHaveLength(2)
     expect(html).toContain('已禁用')
     expect(html).toContain('未知')
-    expect(html).toContain(Intl.DateTimeFormat().resolvedOptions().timeZone)
+    expect(html).not.toContain(Intl.DateTimeFormat().resolvedOptions().timeZone)
     expect(html).toContain(new Intl.DateTimeFormat('zh-CN', {
       dateStyle: 'medium', timeStyle: 'short',
     }).format(new Date('2026-09-01T02:00:00Z')))

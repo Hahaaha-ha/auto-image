@@ -794,18 +794,16 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-account-menu :is(a, button):hover { background: var(--surface-dim); }
 .va-account :focus-visible, .va-back:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .va-back { align-self: center; color: var(--accent); text-underline-offset: 3px; }
-.va-management-body { overflow: auto; flex: 1; padding: 0 max(24px, calc((100% - 1120px) / 2)) 28px; scrollbar-color: var(--line) var(--surface); }
+.va-management-body { overflow: auto; flex: 1; padding: 0 16px 28px; scrollbar-color: var(--line) var(--surface); }
 .va-access-denied { max-width: 60ch; padding: 24px 0; }
 .va-users-panel { padding: 28px 0 8px; }
-.va-users-heading, .va-users-heading-label, .va-users-toolbar { display: flex; align-items: center; gap: 16px; }
+.va-users-heading, .va-users-toolbar { display: flex; align-items: center; gap: 16px; }
 .va-users-heading { justify-content: space-between; margin-bottom: 24px; }
 .va-users-heading h1 { margin: 0; font-size: 24px; font-weight: 600; line-height: 1.4; }
-.va-users-heading-label { flex-wrap: wrap; gap: 4px 12px; }
-.va-users-heading-label > span { color: var(--ink-2); font-size: 13px; }
 .va-users-panel button { min-height: 36px; }
 .va-users-create { flex-shrink: 0; color: var(--surface); background: var(--accent); border-color: var(--accent); }
 .va-users-create:hover:not(:disabled) { background: var(--accent); opacity: 0.88; }
-.va-users-toolbar { justify-content: space-between; }
+.va-users-toolbar { margin-bottom: 20px; }
 .va-users-search { display: flex; align-items: center; gap: 12px; flex: 1; max-width: 460px; min-width: 0; }
 .va-users-search input, .va-users-pagination select {
   min-width: 0; color: var(--ink); background: var(--surface); border: 1px solid var(--line);
@@ -813,8 +811,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .va-users-search input { width: 0; flex: 1; }
 .va-users-search input::placeholder { color: var(--ink-3); }
-.va-users-help { color: var(--ink-2); font-size: 12px; margin: 8px 0 0; }
-.va-users-mobile-zone { display: none; }
 .va-users-loading { min-height: 28px; padding: 4px 0; font-size: 13px; color: var(--ink-2); }
 .va-users-feedback { display: flex; flex-direction: column; }
 .va-users-feedback > div:empty { display: none; }
@@ -885,9 +881,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .va-users-panel { padding-top: 24px; }
   .va-users-heading { gap: 12px; margin-bottom: 20px; }
   .va-users-heading h1 { font-size: 20px; }
-  .va-users-heading-label { gap: 2px 8px; }
-  .va-users-heading-label > span { font-size: 12px; }
-  .va-users-mobile-zone { display: block; margin-top: 4px; }
   .va-users-toolbar { gap: 12px; }
   .va-users-toolbar > button { flex-shrink: 0; }
   .va-users-search { gap: 8px; }

@@ -24,7 +24,6 @@ export default function UsersPanel() {
   const accessTriggerRef = useRef(null)
   const resetFeedbackRef = useRef(null)
   const resetTriggerRef = useRef(null)
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
   const focusFirstRow = () => requestAnimationFrame(() => {
     const row = listRef.current?.querySelector('tbody tr')
     row?.focus({ preventScroll: true })
@@ -49,24 +48,19 @@ export default function UsersPanel() {
   return (
     <section className="va-users-panel" aria-label="用户清单" aria-busy={users.loading}>
       <div className="va-users-heading">
-        <div className="va-users-heading-label">
-          <h1 tabIndex={-1}>用户管理</h1>
-          {!users.error && users.items.length > 0 && <span>{users.items.length} 名用户</span>}
-        </div>
+        <h1 tabIndex={-1}>用户管理</h1>
         <button className="va-users-create" disabled={users.loading || busy || Boolean(userCreate.verifyUsername || userAccess.target || userReset.target)}
           onClick={() => { store.clearUserCreateError(); setCreating(true) }}>创建用户</button>
       </div>
       <div className="va-users-toolbar">
         <label className="va-users-search">搜索
           <input type="search" value={usersQuery.keyword} placeholder="输入用户名"
-            aria-describedby="users-search-help"
             onChange={event => store.setUsersKeyword(event.target.value)} />
         </label>
         <button onClick={() => store.refreshUsers()} disabled={users.loading || busy || userAccess.busy || userReset.busy}>
           <span aria-hidden="true">⟳ </span>{userCreate.verifyUsername || userAccess.verifyUsername || userReset.verifyUsername ? '刷新清单核实' : '刷新'}
         </button>
       </div>
-      <p id="users-search-help" className="va-users-help">按用户名排序 · 搜索不区分大小写<span className="va-users-mobile-zone">创建时间时区：{timeZone}</span></p>
       <div className="va-users-feedback">
         {userCreate.notice && <p ref={createFeedbackRef} tabIndex={-1} className={`va-users-zone va-auth-notice ${userCreate.notice.tone}`} role="status">
           {userCreate.notice.text}
@@ -107,7 +101,7 @@ export default function UsersPanel() {
         {usersQuery.keyword && <button onClick={() => store.setUsersKeyword('')}>清空搜索</button>}
       </div>}
       {!users.error && view.items.length > 0 && <table ref={listRef} className="va-users-list" role="table" aria-label="用户信息">
-        <thead><tr role="row"><th scope="col">用户名</th><th scope="col">角色</th><th scope="col">状态</th><th scope="col">创建时间<small className="va-users-zone">{timeZone}</small></th><th scope="col">操作</th></tr></thead>
+        <thead><tr role="row"><th scope="col">用户名</th><th scope="col">角色</th><th scope="col">状态</th><th scope="col">创建时间</th><th scope="col">操作</th></tr></thead>
         <tbody>
         {view.items.map((user) => (
           <tr key={user.username} className="va-users-row" role="row" tabIndex={-1}
