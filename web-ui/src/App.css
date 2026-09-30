@@ -809,7 +809,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-users-search-actions { display: flex; flex: 1; align-items: center; gap: 16px; min-width: min(100%, 360px); }
 .va-users-refresh { flex-shrink: 0; min-width: 100px; }
 .va-users-page-tools, .va-users-page-tools nav { display: flex; align-items: center; gap: 12px; }
-.va-users-page-tools { flex-basis: 100%; justify-content: space-between; font-size: 13px; color: var(--ink-2); }
+.va-users-page-tools { flex-basis: 100%; justify-content: flex-end; font-size: 13px; color: var(--ink-2); }
 .va-users-page-tools label { display: flex; align-items: center; gap: 8px; }
 .va-users-page-tools nav { font-variant-numeric: tabular-nums; }
 .va-users-search { display: flex; align-items: center; gap: 12px; flex: 1; max-width: 460px; min-width: 0; }
@@ -891,7 +891,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .va-users-workarea { width: 100%; }
   .va-users-toolbar, .va-users-search-actions { gap: 12px; }
   .va-users-search-actions { flex-basis: 100%; }
-  .va-users-page-tools { flex-wrap: wrap; justify-content: space-between; gap: 8px; width: 100%; }
+  .va-users-page-tools { flex-wrap: wrap; justify-content: flex-end; gap: 8px; width: 100%; }
   .va-users-page-tools nav { gap: 4px; }
   .va-users-page-tools nav button { padding-inline: 8px; }
   .va-users-search { gap: 8px; }
