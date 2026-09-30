@@ -70,7 +70,7 @@ describe('用户管理内容', () => {
     const html = renderToStaticMarkup(<UsersPanel />)
     expect(html).toContain('用户管理')
     expect(html).toContain('operator')
-    expect(html.match(/管理员 · 只读/g)).toHaveLength(2)
+    expect(html.match(/管理员/g)).toHaveLength(2)
     expect(html).toContain('已禁用')
     expect(html).toContain('未知')
     expect(html).not.toContain(Intl.DateTimeFormat().resolvedOptions().timeZone)

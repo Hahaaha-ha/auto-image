@@ -107,7 +107,7 @@ export default function UsersPanel() {
           <tr key={user.username} className="va-users-row" role="row" tabIndex={-1}
             ref={user.username === userCreate.createdUsername ? createdRowRef : null}>
             <th scope="row" role="rowheader" className="va-users-name">{user.username}</th>
-            <td role="cell" className="va-users-role"><span className="va-users-field" aria-hidden="true">角色</span>{user.role === 'admin' ? '管理员 · 只读' : '普通用户'}</td>
+            <td role="cell" className="va-users-role"><span className="va-users-field" aria-hidden="true">角色</span>{user.role === 'admin' ? '管理员' : '普通用户'}</td>
             <td role="cell" className="va-users-status-cell"><span className={`va-users-status ${user.enabled ? 'enabled' : 'disabled'}`}>{user.enabled ? '已启用' : '已禁用'}</span></td>
             <td role="cell" className="va-users-created"><span className="va-users-field" aria-hidden="true">创建时间</span><CreatedAt value={user.created_at} /></td>
             <td role="cell">
