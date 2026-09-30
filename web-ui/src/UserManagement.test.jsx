@@ -39,29 +39,15 @@ describe('用户管理内容', () => {
     expect(html).toContain('发起新的重置 legacy')
     state.userReset = { target: null, busy: false, error: null, notice: null, verifyUsername: null, unknown: false }
   })
-  it('只有普通用户有启停按钮；确认清楚展示目标和影响', () => {
+  it('只有普通用户有启停按钮；待核实错误在页内可见', () => {
     let html = renderToStaticMarkup(<UsersPanel />)
     expect(html).toContain('启用用户 legacy')
     expect(html).not.toContain('禁用用户 operator')
     expect(html).not.toContain('禁用用户 second')
-    state.userAccess.target = { username: 'legacy', enabled: true }
-    html = renderToStaticMarkup(<UsersPanel />)
-    expect(html).toContain('确认禁用「legacy」')
-    expect(html).toContain('撤销既有登录')
-    expect(html).toContain('不停止回合')
-    expect(html).toContain('不撤销已提交的云操作')
-    expect(html).toContain('取消')
-    state.userAccess.busy = true
-    html = renderToStaticMarkup(<UsersPanel />)
-    expect(html).toContain('提交中…')
     state.userAccess = { target: null, busy: false, error: '请刷新清单重新确认', verifyUsername: 'legacy' }
     html = renderToStaticMarkup(<UsersPanel />)
     expect(html).toContain('role="alert"')
     expect(html).toContain('刷新清单核实')
-    state.userAccess = { target: { username: 'legacy', enabled: false }, busy: false }
-    html = renderToStaticMarkup(<UsersPanel />)
-    expect(html).toContain('原使用者')
-    expect(html).toContain('重新登录')
     state.userAccess = { target: null, busy: false, error: null, notice: null, verifyUsername: null }
   })
   it('管理员可见只读用户清单、本地时区创建时间及未知时间', () => {

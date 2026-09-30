@@ -1,13 +1,13 @@
 import { useLayoutEffect, useRef } from 'react'
 
 // 共享焦点范围、背景隔离与焦点归还；关闭规则由具体操作决定。
-export function useModal(closable, onClose, initialFocusRef, fallbackFocusRef) {
+export function useModal(closable, onClose, initialFocusRef, fallbackFocusRef, returnFocusRef) {
   const panelRef = useRef(null)
   const liveRef = useRef(null)
   liveRef.current = { closable, onClose }
   useLayoutEffect(() => {
     const panel = panelRef.current
-    const restore = document.activeElement
+    const restore = returnFocusRef?.current || document.activeElement
     const background = []
     for (let node = panel; node?.parentElement; node = node.parentElement) {
       for (const sibling of node.parentElement.children) {
@@ -44,8 +44,13 @@ export function useModal(closable, onClose, initialFocusRef, fallbackFocusRef) {
       document.removeEventListener('keydown', onKey, true)
       document.removeEventListener('focusin', onFocus)
       for (const [node, inert] of background) node.inert = inert
-      if (restore?.isConnected && !restore.disabled && !restore.closest('[inert]') && restore.getClientRects().length) restore.focus()
-      else fallbackFocusRef?.current?.focus()
+      // 关闭提交完成后再判断触发钮，避免读取到同次渲染尚未解除的 disabled。
+      queueMicrotask(() => {
+        if (document.querySelector('[aria-modal="true"]')) return
+        const available = el => el?.isConnected && !el.disabled && !el.closest('[inert]') && el.getClientRects().length
+        if (available(restore)) restore.focus()
+        else if (available(fallbackFocusRef?.current)) fallbackFocusRef.current.focus()
+      })
     }
   }, [])
   return panelRef

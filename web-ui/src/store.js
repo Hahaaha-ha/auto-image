@@ -647,6 +647,8 @@ export async function submitUserAccess() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: target.username, expected_version: target.user_version }),
     })
+    if (state.userAccess !== attempt) return
+    if (userManagementAccessLost(resp.status)) return 'not_committed'
     const data = await resp.json()
     if (state.userAccess !== attempt) return
     if (data.outcome === 'committed') {

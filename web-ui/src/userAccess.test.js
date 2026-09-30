@@ -20,6 +20,14 @@ beforeEach(async () => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('用户访问资格', () => {
+  it('401 无 JSON 时仍立即清除身份与过期确认', async () => {
+    store.beginUserAccess(alice.username)
+    fetch.mockResolvedValue({ status: 401, json: async () => { throw new SyntaxError('invalid') } })
+    expect(await store.submitUserAccess()).toBe('not_committed')
+    expect(store.getState().auth).toBe('anonymous')
+    expect(store.getState().userAccess.target).toBeNull()
+    expect(store.getState().userAccess.notice).toBeNull()
+  })
   it('提交前在途的清单不能核实之后才出现的未知结果', async () => {
     store.beginUserAccess(alice.username)
     let finish
@@ -41,7 +49,7 @@ describe('用户访问资格', () => {
       expect(await store.submitUserAccess()).toBe('not_committed')
       expect(store.getState().userAccess.error).toContain(hint)
       expect(fetch).toHaveBeenCalledTimes(1)
-      if (status === 409) {
+      if (['user_version_conflict', 'admin_read_only', 'no_such_user'].includes(detail)) {
         expect(store.getState().userAccess.target).toBeNull()
         store.beginUserAccess(alice.username)
         await store.submitUserAccess()
@@ -51,6 +59,11 @@ describe('用户访问资格', () => {
         expect(store.getState().userAccess.target).toBeNull()
         store.beginUserAccess(alice.username)
         expect(store.getState().userAccess.target.user_version).toBe('fresh')
+      } else {
+        expect(store.getState().userAccess.target).toEqual(alice)
+        fetch.mockResolvedValue(response({ outcome: 'committed', audit_status: 'recorded' }))
+        expect(await store.submitUserAccess()).toBe('committed')
+        expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ username: alice.username, expected_version: 'alice-v1' })
       }
     })
 
@@ -91,7 +104,7 @@ describe('用户访问资格', () => {
     if (status === 401) expect(store.getState().auth).toBe('anonymous')
   })
 
-  it('提交中锁定操作，身份切换后忽略迟到响应', async () => {
+  it.each(['committed', 'unauthenticated', 'not_admin'])('提交中锁定操作，身份切换后忽略迟到 %s', async outcome => {
     store.beginUserAccess(alice.username)
     let finish
     fetch.mockImplementation(() => new Promise(done => { finish = done }))
@@ -103,9 +116,30 @@ describe('用户访问资格', () => {
     expect(store.getState().userAccess.busy).toBe(true)
     fetch.mockResolvedValue(response({ username: 'second', can_manage_users: true, runs: [], tasks: [] }))
     await store.login('second', 'password')
-    finish(response({ outcome: 'committed', audit_status: 'recorded' }))
+    finish(outcome === 'committed' ? response({ outcome, audit_status: 'recorded' })
+      : response({ detail: outcome }, outcome === 'not_admin' ? 403 : 401))
     await saving
     expect(store.getState().userAccess.notice).toBeNull()
+    expect(store.getState().userAccess.target).toBeNull()
+    expect(store.getState().user).toBe('second')
+    expect(store.getState().canManageUsers).toBe(true)
+  })
+  it('其他 403 拒绝保留确认与管理权限，不显示成功', async () => {
+    store.beginUserAccess(alice.username)
+    fetch.mockResolvedValue(response({ detail: 'cross_origin' }, 403))
+    expect(await store.submitUserAccess()).toBe('not_committed')
+    expect(store.getState().canManageUsers).toBe(true)
+    expect(store.getState().userAccess.target).toEqual(alice)
+    expect(store.getState().userAccess.error).toContain('尚未修改')
+    expect(store.getState().userAccess.notice).toBeNull()
+  })
+  it('成功后清单刷新失败仍保留已生效结论', async () => {
+    store.beginUserAccess(alice.username)
+    fetch.mockResolvedValueOnce(response({ outcome: 'committed', audit_status: 'recorded' }))
+      .mockRejectedValue(new TypeError('offline'))
+    expect(await store.submitUserAccess()).toBe('committed')
+    expect(store.getState().users.error).toContain('加载失败')
+    expect(store.getState().userAccess.notice.text).toContain(`用户「${alice.username}」已禁用`)
     expect(store.getState().userAccess.target).toBeNull()
   })
   it.each(['recorded', 'failed'])('确认提交保留精确用户名和原版本，结果审计 %s 后刷新清单', async (auditStatus) => {

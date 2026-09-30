@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import * as store from '../store.js'
 import CreateUserDialog from './CreateUserDialog.jsx'
+import UserAccessDialog from './UserAccessDialog.jsx'
 
 function CreatedAt({ value }) {
   const date = typeof value === 'string' && /(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? new Date(value) : null
@@ -15,6 +16,7 @@ export default function UsersPanel() {
   const [creating, setCreating] = useState(false)
   const createFeedbackRef = useRef(null)
   const feedbackRef = useRef(null)
+  const accessTriggerRef = useRef(null)
   const resetFeedbackRef = useRef(null)
   const busy = userCreate.busy
   useEffect(() => { store.refreshUsers() }, [])
@@ -42,10 +44,13 @@ export default function UsersPanel() {
         {userCreate.notice.text}
       </p>}
       {creating && <CreateUserDialog fallbackFocusRef={createFeedbackRef} onClose={() => setCreating(false)} />}
-      {userAccess.notice && <p ref={feedbackRef} className={`va-users-zone va-auth-notice ${userAccess.notice.tone}`} role="status">
-        {userAccess.notice.text}
-      </p>}
-      {userAccess.error && !userAccess.target && <p ref={feedbackRef} className="va-users-zone va-login-error" role="alert">{userAccess.error}</p>}
+      <div ref={feedbackRef} tabIndex={-1}>
+        {userAccess.notice && <p className={`va-users-zone va-auth-notice ${userAccess.notice.tone}`} role="status">
+          {userAccess.notice.text}
+        </p>}
+        {userAccess.error && !userAccess.target && <p className="va-users-zone va-login-error" role="alert">{userAccess.error}</p>}
+      </div>
+      {userAccess.target && <UserAccessDialog access={userAccess} fallbackFocusRef={feedbackRef} returnFocusRef={accessTriggerRef} />}
       {userReset.notice && <p ref={resetFeedbackRef} className={`va-users-zone va-auth-notice ${userReset.notice.tone}`} role="status">
         {userReset.notice.text}
       </p>}
@@ -64,12 +69,11 @@ export default function UsersPanel() {
               <div className="va-user-access-actions va-user-access-button">
                 <button aria-label={`${user.enabled ? '禁用' : '启用'}用户 ${user.username}`}
                   disabled={Boolean(userAccess.target || userReset.target || userAccess.verifyUsername) || users.loading || Boolean(users.error) || !user.user_version}
-                  onClick={() => store.beginUserAccess(user.username)}>{user.enabled ? '禁用' : '启用'}</button>
+                  onClick={(event) => { accessTriggerRef.current = event.currentTarget; store.beginUserAccess(user.username) }}>{user.enabled ? '禁用' : '启用'}</button>
                 <button aria-label={`${userReset.unknown ? '发起新的重置' : '重置密码'} ${user.username}`}
                   disabled={Boolean(userAccess.target || userReset.target || userReset.verifyUsername) || users.loading || Boolean(users.error) || !user.user_version}
                   onClick={() => store.beginUserReset(user.username)}>{userReset.unknown ? '发起新的重置' : '重置密码'}</button>
               </div>
-              {userAccess.target?.username === user.username && <AccessConfirmation access={userAccess} />}
               {userReset.target?.username === user.username && <ResetConfirmation reset={userReset} />}
             </>}
           </li>
@@ -100,26 +104,6 @@ function ResetConfirmation({ reset }) {
     <div className="va-user-access-actions">
       <button ref={cancelRef} type="button" disabled={reset.busy} onClick={() => store.cancelUserReset()}>取消</button>
       <button type="submit" disabled={reset.busy}>{reset.busy ? '提交中…' : '确认重置密码'}</button>
-    </div>
-  </form>
-}
-
-function AccessConfirmation({ access }) {
-  const cancelRef = useRef(null)
-  useEffect(() => { cancelRef.current?.focus() }, [])
-  const action = access.target.enabled ? '禁用' : '启用'
-  return <form className="va-user-access-confirm" aria-label={`确认${action}「${access.target.username}」`}
-    aria-busy={access.busy} onSubmit={(event) => { event.preventDefault(); store.submitUserAccess() }}>
-    <p className="va-users-name">确认{action}「{access.target.username}」</p>
-    <p>{access.target.enabled
-      ? '将撤销既有登录并停止后续访问。不停止回合、不结束会话、不撤销已提交的云操作。'
-      : '仅恢复原使用者的访问资格，请勿转交新人。原会话归属保留，须重新登录；旧登录仍无效，待改密要求保留。'}</p>
-    {access.error && <p className="va-login-error" role="alert">{access.error}</p>}
-    <div className="va-user-access-actions">
-      <button ref={cancelRef} type="button" disabled={access.busy} onClick={() => store.cancelUserAccess()}>取消</button>
-      <button className={access.target.enabled ? 'va-user-disable' : ''} type="submit" disabled={access.busy}>
-        {access.busy ? '提交中…' : `确认${action}`}
-      </button>
     </div>
   </form>
 }
