@@ -49,8 +49,6 @@ export default function UsersPanel() {
     <section className="va-users-panel" aria-label="用户清单" aria-busy={users.loading}>
       <div className="va-users-heading">
         <h1 tabIndex={-1}>用户管理</h1>
-        <button className="va-users-create" disabled={users.loading || busy || Boolean(userCreate.verifyUsername || userAccess.target || userReset.target)}
-          onClick={() => { store.clearUserCreateError(); setCreating(true) }}>创建用户</button>
       </div>
       <div className="va-users-workarea">
         <div className="va-users-toolbar">
@@ -63,6 +61,8 @@ export default function UsersPanel() {
               <span aria-hidden="true">⟳ </span>{users.loading ? '刷新中…' : userCreate.verifyUsername || userAccess.verifyUsername || userReset.verifyUsername ? '刷新清单核实' : '刷新'}
             </button>
           </div>
+          <button className="va-users-create" disabled={users.loading || busy || Boolean(userCreate.verifyUsername || userAccess.target || userReset.target)}
+            onClick={() => { store.clearUserCreateError(); setCreating(true) }}>创建用户</button>
           {!users.error && view.total > 0 && <div className="va-users-page-tools">
             <label>每页条数
               <select value={usersQuery.pageSize} onChange={event => store.setUsersPageSize(Number(event.target.value))}>
