@@ -14,6 +14,7 @@ import { useSyncExternalStore } from 'react'
 import { fmtSize } from './derive.js'
 import { mergeSessionEvents, mergeSessionSummary, SESSION_STATUS } from './eventMerge.js'
 import * as tabState from './tabState.js'
+import { emptyUsersQuery, USER_PAGE_SIZES, getUserListView, filterAndSortUsers } from './userList.js'
 
 // 与服务端内部事件协议一致的事件类型全集（四族：session.* / turn.* /
 // user.message / agent.* / stage.*）
@@ -112,6 +113,7 @@ let state = {
   authNotice: null,
   canManageUsers: false,
   users: { items: [], loading: false, error: null },
+  usersQuery: emptyUsersQuery(),
   userCreate: { busy: false, error: null, notice: null, verifyUsername: null },
   userAccess: emptyUserAccess(), userReset: emptyUserReset(),
   user: null,                   // 当前用户名（auth === 'user' 时非空）
@@ -455,6 +457,7 @@ function deauthed(reasonText) {
     auth: 'anonymous', user: null, canManageUsers: false, userVersion: null,
     passwordChange: { busy: false, error: null },
     users: { items: [], loading: false, error: null }, connection: 'connecting',
+    usersQuery: emptyUsersQuery(),
     userCreate: { busy: false, error: null, notice: null, verifyUsername: null },
     userAccess: emptyUserAccess(), userReset: emptyUserReset(),
     runs: {}, order: [], capacity: null,
@@ -535,11 +538,28 @@ function acceptIdentity(data) {
   const canManageUsers = data.can_manage_users === true
   const users = state.user === data.username && canManageUsers
     ? state.users : { items: [], loading: false, error: null }
+  const usersQuery = state.user === data.username && canManageUsers ? state.usersQuery : emptyUsersQuery()
   const userCreate = state.user === data.username && canManageUsers
     ? state.userCreate : { busy: false, error: null, notice: null, verifyUsername: null }
   const userAccess = state.user === data.username && canManageUsers ? state.userAccess : emptyUserAccess()
   const userReset = state.user === data.username && canManageUsers ? state.userReset : emptyUserReset()
-  set({ auth: 'user', user: data.username, canManageUsers, users, userCreate, userAccess, userReset, userVersion: null, authNotice: null })
+  set({ auth: 'user', user: data.username, canManageUsers, users, usersQuery, userCreate, userAccess, userReset, userVersion: null, authNotice: null })
+}
+
+export function setUsersKeyword(keyword) {
+  if (state.canManageUsers) set({ usersQuery: { ...state.usersQuery, keyword, page: 1 } })
+}
+
+export function setUsersPageSize(pageSize) {
+  if (state.canManageUsers && USER_PAGE_SIZES.includes(pageSize)) {
+    set({ usersQuery: { ...state.usersQuery, pageSize, page: 1 } })
+  }
+}
+
+export function setUsersPage(page) {
+  if (!state.canManageUsers || !Number.isInteger(page)) return
+  const query = { ...state.usersQuery, page }
+  set({ usersQuery: { ...query, page: getUserListView(state.users.items, query).page } })
 }
 
 export async function refreshUsers(force = false) {
@@ -562,7 +582,8 @@ export async function refreshUsers(force = false) {
     const data = await resp.json()
     if (!Array.isArray(data.users)) throw new Error('invalid users response')
     if (state.users === loading) {
-      set({ users: { items: data.users, loading: false, error: null } })
+      set({ users: { items: data.users, loading: false, error: null },
+        usersQuery: { ...state.usersQuery, page: getUserListView(data.users, state.usersQuery).page } })
       const verifyAccess = state.userAccess === accessToVerify && accessToVerify.verifyUsername
       if (verifyAccess) {
         const user = data.users.find(item => item.username === verifyAccess)
@@ -597,6 +618,7 @@ export async function refreshUsers(force = false) {
 
 function revokeUserManagement() {
   set({ canManageUsers: false, sidePanel: 'artifacts', users: { items: [], loading: false, error: null },
+    usersQuery: emptyUsersQuery(),
     userAccess: emptyUserAccess(), userReset: emptyUserReset(),
     userCreate: { busy: false, error: null, notice: null, verifyUsername: null } })
 }
@@ -758,6 +780,17 @@ export function clearUserCreateError() {
   }
 }
 
+export function showCreatedUser() {
+  const username = state.userCreate.createdUsername
+  if (!state.canManageUsers || !username || state.users.loading || state.users.error) return false
+  const matching = filterAndSortUsers(state.users.items, username)
+  const index = matching.findIndex(user => user.username === username)
+  if (index < 0) return false
+  set({ usersQuery: { ...state.usersQuery, keyword: username,
+    page: Math.floor(index / state.usersQuery.pageSize) + 1 } })
+  return true
+}
+
 export async function createUser(username, password) {
   if (!state.canManageUsers || state.userCreate.busy || state.userCreate.verifyUsername) return
   const attempt = { busy: true, error: null, notice: null, verifyUsername: null }
@@ -771,7 +804,7 @@ export async function createUser(username, password) {
     if (state.userCreate !== attempt) return
     if (data.outcome === 'committed') {
       const auditFailed = data.audit_status !== 'recorded'
-      set({ userCreate: { ...attempt, busy: false, notice: {
+      set({ userCreate: { ...attempt, busy: false, createdUsername: username, notice: {
         tone: auditFailed ? 'warning' : 'success',
         text: `用户「${username}」已创建。${auditFailed ? '变更已生效，审计记录异常；无需重复新增，请联系管理员检查审计。' : '请自行交付初始密码；用户首次登录须改密。'}`,
       } } })
