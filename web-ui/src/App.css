@@ -791,64 +791,135 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .va-account-menu :is(a, button):hover { background: var(--surface-dim); }
 .va-account :focus-visible, .va-back:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.va-management-head { flex-wrap: wrap; gap: 12px 20px; padding-block: 16px; }
-.va-management-head h1 { margin: 0; font-size: 20px; line-height: 1.4; }
+.va-management-head { gap: 16px; padding: 12px max(24px, calc((100% - 1120px) / 2)); }
+.va-management .va-account-button { border-color: transparent; background: transparent; }
+.va-management .va-account-button:hover { background: var(--surface-dim); }
 .va-back { color: var(--accent); text-underline-offset: 3px; }
-.va-management-body { overflow: auto; flex: 1; padding: 24px max(16px, calc((100% - 1080px) / 2)); }
-.va-management-body > .va-side-panel { padding-bottom: 24px; }
+.va-management-body { overflow: auto; flex: 1; padding: 0 max(24px, calc((100% - 1120px) / 2)) 28px; scrollbar-color: var(--line) var(--surface); }
 .va-access-denied { max-width: 60ch; padding: 24px 0; }
+.va-users-panel { padding: 28px 0 8px; }
+.va-users-heading, .va-users-heading-label, .va-users-toolbar { display: flex; align-items: center; gap: 16px; }
+.va-users-heading { justify-content: space-between; margin-bottom: 24px; }
+.va-users-heading h1 { margin: 0; font-size: 24px; font-weight: 600; line-height: 1.4; }
+.va-users-heading-label { flex-wrap: wrap; gap: 4px 12px; }
+.va-users-heading-label > span { color: var(--ink-2); font-size: 13px; }
+.va-users-panel button { min-height: 36px; }
+.va-users-create { flex-shrink: 0; color: var(--surface); background: var(--accent); border-color: var(--accent); }
+.va-users-create:hover:not(:disabled) { background: var(--accent); opacity: 0.88; }
+.va-users-toolbar { justify-content: space-between; }
+.va-users-search { display: flex; align-items: center; gap: 12px; flex: 1; max-width: 460px; min-width: 0; }
+.va-users-search input, .va-users-pagination select {
+  min-width: 0; color: var(--ink); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 6px; padding: 7px 10px; font: inherit; caret-color: var(--accent);
+}
+.va-users-search input { width: 0; flex: 1; }
+.va-users-search input::placeholder { color: var(--ink-3); }
+.va-users-help { color: var(--ink-2); font-size: 12px; margin: 8px 0 0; }
+.va-users-mobile-zone { display: none; }
+.va-users-loading { min-height: 28px; padding: 4px 0; font-size: 13px; color: var(--ink-2); }
+.va-users-feedback { display: flex; flex-direction: column; }
+.va-users-feedback > div:empty { display: none; }
+.va-users-feedback .va-users-zone {
+  margin: 12px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px;
+  font-size: 13px; line-height: 1.6; overflow-wrap: anywhere;
+}
+.va-users-feedback .success { background: #dafbe1; border-color: #abe4b8; }
+.va-users-feedback .warning { background: #fff8c5; border-color: #d4a72c66; }
+.va-users-feedback .va-login-error { background: #fff1f0; border-color: #ffd0cc; }
+.va-users-locate { margin-inline-start: 12px; background: transparent; }
+.va-users-empty { padding: 40px 16px; text-align: center; color: var(--ink-2); border-block: 1px solid var(--line); }
+.va-users-empty p { margin: 0 0 12px; }
+.va-users-empty[role="alert"] { color: var(--bad); }
+
+/* 桌面按列比较，窄屏将同一份语义表格排成紧凑信息行。 */
+.va-users-list { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; text-align: left; }
+.va-users-list th, .va-users-list td { padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; overflow-wrap: anywhere; }
+.va-users-list thead th { position: sticky; top: 0; z-index: 1; color: var(--ink-2); background: var(--surface-dim); font-size: 12px; font-weight: 600; }
+.va-users-list thead th:first-child { width: 26%; border-top-left-radius: 6px; }
+.va-users-list thead th:nth-child(2) { width: 16%; }
+.va-users-list thead th:nth-child(3) { width: 12%; }
+.va-users-list thead th:nth-child(4) { width: 24%; }
+.va-users-list thead th:last-child { border-top-right-radius: 6px; }
+.va-users-zone { display: block; color: var(--ink-2); font-size: 12px; font-weight: 400; overflow-wrap: anywhere; }
+.va-users-row { color: var(--ink-2); font-size: 14px; line-height: 1.5; scroll-margin-block: 64px; }
+.va-users-row:hover { background: var(--surface-dim); }
+.va-users-name { color: var(--ink); font-weight: 600; white-space: pre-wrap; }
+.va-users-field { display: none; }
+.va-users-status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 13px; }
+.va-users-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.va-users-status.enabled { color: var(--ok); }
+.va-users-status.disabled { color: var(--ink-2); }
+.va-users-status.disabled::before { background: transparent; border: 1px solid currentColor; }
+.va-user-access-actions { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+.va-user-access-actions button { border-color: transparent; background: transparent; padding: 4px 0; color: var(--accent); }
+.va-user-access-actions button:last-child { color: var(--ink-2); }
+.va-user-access-actions button:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }
+.va-users-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; padding: 16px 0 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+.va-users-pagination p { margin: 0; color: var(--ink-2); }
+.va-users-pagination label { display: flex; align-items: center; gap: 8px; margin-left: auto; color: var(--ink-2); }
+.va-users-pagination nav { display: flex; flex-wrap: wrap; gap: 8px; }
+.va-users-panel :focus-visible, .va-users-feedback > div:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.va-users-row:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.va-create-dialog, .va-access-dialog, .va-reset-dialog { padding: 24px; font-size: 14px; overflow-wrap: anywhere; }
+:is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) .va-modal-title { margin-bottom: 16px; }
+:is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) h2 { margin: 0; min-width: 0; font-size: 18px; line-height: 1.4; font-weight: 600; }
+:is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) .va-modal-close { flex-shrink: 0; min-width: 36px; min-height: 36px; }
+:is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) p { line-height: 1.6; }
+.va-create-dialog .va-password-field, .va-reset-dialog .va-password-field { margin-top: 20px; }
+.va-create-dialog .va-login-input, .va-reset-dialog .va-login-input { width: 100%; min-width: 0; min-height: 40px; font-size: 14px; color: var(--ink); background: var(--surface); }
+.va-create-dialog .va-login-input:disabled, .va-reset-dialog .va-login-input:disabled { background: var(--surface-dim); }
+.va-user-dialog-identity { display: flex; flex-direction: column; gap: 4px; padding: 12px; margin: 0 0 16px; background: var(--surface-dim); border-radius: 6px; }
+.va-user-dialog-identity span { color: var(--ink-2); font-size: 12px; }
+.va-user-dialog-identity strong { color: var(--ink); font-weight: 600; white-space: pre-wrap; }
+.va-user-delivery { color: var(--ink-2); margin: 20px 0 0; font-size: 13px; }
+:is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) .va-modal-actions { flex-wrap: wrap; padding-top: 20px; margin-top: 20px; border-top: 1px solid var(--line); }
+:is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) .va-modal-actions button { min-height: 36px; font-size: 14px; }
+:is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) .va-cfg-save:hover:not(:disabled) { background: var(--accent); opacity: 0.88; }
+.va-access-dialog .va-user-disable { color: var(--bad); }
+.va-access-dialog .va-user-disable:hover { border-color: var(--bad); }
+:is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.va-create-dialog:focus-visible, .va-access-dialog:focus-visible, .va-reset-dialog:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 760px) {
+  .va-management-head { padding: 8px 16px; }
+  .va-management .va-account-button { min-height: 44px; }
+  .va-management-body { padding: 0 16px 24px; }
+  .va-users-panel { padding-top: 24px; }
+  .va-users-heading { gap: 12px; margin-bottom: 20px; }
+  .va-users-heading h1 { font-size: 20px; }
+  .va-users-heading-label { gap: 2px 8px; }
+  .va-users-heading-label > span { font-size: 12px; }
+  .va-users-mobile-zone { display: block; margin-top: 4px; }
+  .va-users-toolbar { gap: 12px; }
+  .va-users-toolbar > button { flex-shrink: 0; }
+  .va-users-search { gap: 8px; }
+  .va-users-panel button, .va-users-search input, .va-users-pagination select { min-height: 44px; }
+  .va-users-search input { padding-inline: 8px; }
+  .va-users-list, .va-users-list tbody { display: block; }
+  .va-users-list thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .va-users-list thead th { position: static; }
+  .va-users-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; padding: 16px 0 12px; border-bottom: 1px solid var(--line); }
+  .va-users-list th, .va-users-list td { display: block; border: 0; padding: 0; }
+  .va-users-list .va-users-name { grid-column: 1; grid-row: 1; }
+  .va-users-list .va-users-status-cell { grid-column: 2; grid-row: 1; justify-self: end; }
+  .va-users-list .va-users-role { grid-column: 1; grid-row: 2; font-size: 12px; margin-top: 8px; }
+  .va-users-list .va-users-created { grid-column: 2; grid-row: 2; max-width: 180px; font-size: 12px; margin-top: 8px; text-align: right; }
+  .va-users-created .va-users-field { display: inline; margin-right: 6px; }
+  .va-users-list td:last-child { grid-column: 1 / -1; padding-top: 8px; }
+  .va-users-list td:last-child:empty { display: none; }
+  .va-user-access-actions { gap: 20px; }
+  .va-user-access-actions button { min-width: 44px; padding-inline: 4px; }
+  .va-users-pagination { gap: 12px; }
+  .va-users-pagination p { flex-basis: 100%; }
+  .va-users-pagination label { margin-left: 0; }
+  .va-users-pagination nav { gap: 4px; }
+  .va-users-pagination nav button { padding-inline: 8px; }
+  .va-create-dialog, .va-access-dialog, .va-reset-dialog { padding: 16px; max-height: calc(100dvh - 48px); }
+  :is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) .va-modal-actions button,
+  :is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) .va-modal-close { min-height: 44px; min-width: 44px; }
+  .va-create-dialog .va-login-input, .va-reset-dialog .va-login-input { min-height: 44px; }
+}
 @media (max-width: 640px) {
   .va-head { flex-wrap: wrap; gap: 8px; }
   .va-runid { overflow-wrap: anywhere; }
-  .va-management-head { gap: 12px; }
-  .va-management-head h1 { order: 1; flex-basis: 100%; }
-  .va-management-body { padding: 16px 8px; }
 }
-
-/* 同一份清单在桌面呈现表格，窄屏逐用户展开；旧用户名按原文换行。 */
-.va-users-zone { margin: 8px 12px; color: var(--ink-2); font-size: 12px; overflow-wrap: anywhere; }
-.va-users-list { width: 100%; table-layout: fixed; border-collapse: collapse; text-align: left; }
-.va-users-list th, .va-users-list td { padding: 12px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
-.va-users-list thead { color: var(--ink-2); background: var(--surface-dim); font-size: 12px; }
-.va-users-list thead th { font-weight: 600; }
-.va-users-list thead th:first-child { width: 27%; }
-.va-users-list thead th:nth-child(2) { width: 15%; }
-.va-users-list thead th:nth-child(3) { width: 12%; }
-.va-users-list thead th:nth-child(4) { width: 22%; }
-.va-users-row { color: var(--ink-2); font-size: 14px; line-height: 1.6; }
-.va-users-name { color: var(--ink); font-weight: 600; white-space: pre-wrap; }
-.va-users-field { display: none; }
-.va-users-query, .va-users-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin: 16px 12px; }
-.va-users-query label { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 13px; }
-.va-users-search { flex: 1; min-width: 220px; }
-.va-users-query input, .va-users-query select { min-width: 0; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; font: inherit; }
-.va-users-query input { flex: 1; }
-.va-users-pagination { justify-content: space-between; font-size: 13px; font-variant-numeric: tabular-nums; }
-.va-users-pagination p { margin: 0; color: var(--ink-2); }
-.va-users-pagination nav { display: flex; flex-wrap: wrap; gap: 8px; }
-.va-users-locate { margin: 8px; }
-.va-users-row:focus, .va-users-query :focus-visible, .va-users-pagination :focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-@media (max-width: 760px) {
-  .va-users-list, .va-users-list tbody { display: block; }
-  .va-users-list thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-  .va-users-row { display: block; padding: 16px 12px; border-bottom: 1px solid var(--line); }
-  .va-users-list th, .va-users-list td { display: block; border: 0; padding: 4px 0; }
-  .va-users-field { display: inline-block; min-width: 76px; font-size: 12px; }
-  .va-users-list td:last-child { padding-top: 12px; }
-  .va-users-query { align-items: stretch; }
-  .va-users-search { flex-basis: 100%; min-width: 0; }
-  .va-users-query input, .va-users-query select, .va-users-pagination button, .va-users-row button { min-height: 44px; }
-}
-.va-user-access-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.va-access-dialog .va-user-disable { color: var(--bad); }
-.va-access-dialog .va-user-disable:hover { border-color: var(--bad); }
-
-.va-create-dialog, .va-access-dialog, .va-reset-dialog { overflow-wrap: anywhere; }
-.va-create-dialog h2, .va-access-dialog h2, .va-reset-dialog h2 { margin: 0; font-size: inherit; font-weight: inherit; min-width: 0; }
-.va-access-dialog .va-modal-close, .va-reset-dialog .va-modal-close { flex-shrink: 0; }
-.va-access-dialog p, .va-reset-dialog p { line-height: 1.6; }
-.va-create-dialog .va-password-field, .va-reset-dialog .va-password-field { margin-top: 16px; }
-.va-create-dialog .va-modal-actions, .va-access-dialog .va-modal-actions, .va-reset-dialog .va-modal-actions { flex-wrap: wrap; }
-.va-create-dialog:focus-visible, .va-access-dialog:focus-visible, .va-reset-dialog:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.va-create-dialog .va-login-input, .va-reset-dialog .va-login-input { width: 100%; min-width: 0; color: var(--ink); background: var(--surface); }
-.va-create-dialog .va-login-input:disabled, .va-reset-dialog .va-login-input:disabled { background: var(--surface-dim); }

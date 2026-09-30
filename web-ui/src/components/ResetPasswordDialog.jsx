@@ -16,13 +16,14 @@ export default function ResetPasswordDialog({ reset, fallbackFocusRef, returnFoc
   const panelRef = useModal(() => !isBusy(), requestClose, passwordRef, fallbackFocusRef, returnFocusRef)
   return createPortal(<div className="va-modal-overlay">
     <section ref={panelRef} className="va-modal va-reset-dialog" role="dialog" aria-modal="true"
-      aria-labelledby="reset-password-title" aria-describedby="reset-password-impact" tabIndex={-1}>
+      aria-labelledby="reset-password-title" aria-describedby="reset-password-identity reset-password-impact" tabIndex={-1}>
       <div className="va-modal-title">
-        <h2 className="va-users-name" id="reset-password-title">确认重置「{reset.target.username}」的密码</h2>
+        <h2 className="va-users-name" id="reset-password-title">重置密码</h2>
         <button className="va-modal-close" type="button" aria-label="关闭密码重置" disabled={reset.busy} onClick={requestClose}>✕</button>
       </div>
       <form aria-label="重置普通用户密码" aria-busy={reset.busy}
         onSubmit={(event) => { event.preventDefault(); store.resetUserPassword(password) }}>
+        <p id="reset-password-identity" className="va-user-dialog-identity"><span>用户名</span><strong>{reset.target.username}</strong></p>
         <p id="reset-password-impact">将撤销全部既有登录，下次登录须再次改密。不停止执行中的回合，不改变会话归属。</p>
         {!reset.target.enabled && <p>该用户仍保持禁用，不能登录。</p>}
         <label className="va-password-field">新密码

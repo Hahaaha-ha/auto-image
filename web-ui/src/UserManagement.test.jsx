@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 const { state } = vi.hoisted(() => ({ state: {
   sidePanel: 'users', tabs: [], canManageUsers: true,
-  usersQuery: { keyword: '', page: 1, pageSize: 10 },
+  usersQuery: { keyword: '', page: 1, pageSize: 20 },
   users: { items: [
     { username: 'operator', role: 'admin', enabled: true, created_at: '2026-09-01T02:00:00Z' },
     { username: 'second', role: 'admin', enabled: true, created_at: null },
@@ -19,7 +19,7 @@ import SidePanel from './components/SidePanel.jsx'
 import UsersPanel from './components/UsersPanel.jsx'
 
 describe('用户管理内容', () => {
-  it('完整清单稳定排序后默认仅展示十人，跨页搜索保留旧用户名原文', () => {
+  it('完整清单稳定排序后默认仅展示二十人，跨页搜索保留旧用户名原文', () => {
     const original = state.users
     state.users = { items: Array.from({ length: 105 }, (_, i) => ({
       username: `member-${String(104 - i).padStart(3, '0')}`, role: 'user', enabled: true,
@@ -27,10 +27,10 @@ describe('用户管理内容', () => {
     try {
       let html = renderToStaticMarkup(<UsersPanel />)
       expect(html).toContain('共 105 名用户')
-      expect(html).toContain('member-009')
-      expect(html).not.toContain('member-010')
-      expect(html.indexOf('member-000')).toBeLessThan(html.indexOf('member-009'))
-      state.usersQuery = { keyword: 'member-104', page: 1, pageSize: 10 }
+      expect(html).toContain('member-019')
+      expect(html).not.toContain('member-020')
+      expect(html.indexOf('member-000')).toBeLessThan(html.indexOf('member-019'))
+      state.usersQuery = { keyword: 'member-104', page: 1, pageSize: 20 }
       html = renderToStaticMarkup(<UsersPanel />)
       expect(html).toContain('member-104')
       expect(html).not.toContain('member-000')
@@ -40,7 +40,7 @@ describe('用户管理内容', () => {
       expect(html).toContain('旧 身份@EXAMPLE.test')
     } finally {
       state.users = original
-      state.usersQuery = { keyword: '', page: 1, pageSize: 10 }
+      state.usersQuery = { keyword: '', page: 1, pageSize: 20 }
     }
   })
   it('重置仅面向普通用户，未知结果持续呈现并要求主动发起新重置', () => {
@@ -89,7 +89,7 @@ describe('用户管理内容', () => {
       expect(html).toContain('role="status"')
       expect(html).toContain(text)
       expect(html).toContain('刷新清单核实')
-      expect(html).toContain('<button disabled="">创建用户</button>')
+      expect(html).toMatch(/<button[^>]*disabled=""[^>]*>创建用户<\/button>/)
     }
     state.userCreate = { busy: false, error: null, notice: null, verifyUsername: null }
   })

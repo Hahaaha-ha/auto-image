@@ -17,12 +17,23 @@ export default function UsersPanel() {
   const { users, usersQuery, userCreate, userAccess, userReset } = store.useRunState()
   const view = useMemo(() => getUserListView(users.items, usersQuery), [users.items, usersQuery])
   const createdRowRef = useRef(null)
+  const listRef = useRef(null)
   const [creating, setCreating] = useState(false)
   const createFeedbackRef = useRef(null)
   const feedbackRef = useRef(null)
   const accessTriggerRef = useRef(null)
   const resetFeedbackRef = useRef(null)
   const resetTriggerRef = useRef(null)
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const focusFirstRow = () => requestAnimationFrame(() => {
+    const row = listRef.current?.querySelector('tbody tr')
+    row?.focus({ preventScroll: true })
+    row?.scrollIntoView({ block: 'start' })
+  })
+  const changePage = page => {
+    store.setUsersPage(page)
+    focusFirstRow()
+  }
   const busy = userCreate.busy
   useEffect(() => { store.refreshUsers() }, [])
   useEffect(() => {
@@ -36,86 +47,84 @@ export default function UsersPanel() {
     }
   }, [userReset.notice, userReset.error, userReset.target])
   return (
-    <section className="va-side-panel" aria-label="用户清单" aria-busy={users.loading}>
-      <div className="va-art-panel-head">用户管理</div>
-      <div className="va-art-tools">
-        <button disabled={busy || Boolean(userCreate.verifyUsername || userAccess.target || userReset.target)}
+    <section className="va-users-panel" aria-label="用户清单" aria-busy={users.loading}>
+      <div className="va-users-heading">
+        <div className="va-users-heading-label">
+          <h1 tabIndex={-1}>用户管理</h1>
+          {!users.error && users.items.length > 0 && <span>{users.items.length} 名用户</span>}
+        </div>
+        <button className="va-users-create" disabled={users.loading || busy || Boolean(userCreate.verifyUsername || userAccess.target || userReset.target)}
           onClick={() => { store.clearUserCreateError(); setCreating(true) }}>创建用户</button>
-        <button onClick={() => store.refreshUsers()} disabled={users.loading || busy || userAccess.busy || userReset.busy}>
-          {userCreate.verifyUsername || userAccess.verifyUsername || userReset.verifyUsername ? '刷新清单核实' : '刷新'}
-        </button>
       </div>
-      {userCreate.notice && <p ref={createFeedbackRef} tabIndex={-1} className={`va-users-zone va-auth-notice ${userCreate.notice.tone}`} role="status">
-        {userCreate.notice.text}
-        {userCreate.createdUsername && <button className="va-users-locate"
-          disabled={users.loading || Boolean(users.error) || !users.items.some(user => user.username === userCreate.createdUsername)}
-          onClick={() => {
-            if (store.showCreatedUser()) requestAnimationFrame(() => {
-              createdRowRef.current?.focus()
-              createdRowRef.current?.scrollIntoView({ block: 'nearest' })
-            })
-          }}>查看该用户</button>}
-      </p>}
-      {creating && <CreateUserDialog fallbackFocusRef={createFeedbackRef} onClose={() => setCreating(false)} />}
-      <div ref={feedbackRef} tabIndex={-1}>
-        {userAccess.notice && <p className={`va-users-zone va-auth-notice ${userAccess.notice.tone}`} role="status">
-          {userAccess.notice.text}
-        </p>}
-        {userAccess.error && !userAccess.target && <p className="va-users-zone va-login-error" role="alert">{userAccess.error}</p>}
-      </div>
-      {userAccess.target && <UserAccessDialog access={userAccess} fallbackFocusRef={feedbackRef} returnFocusRef={accessTriggerRef} />}
-      <div ref={resetFeedbackRef} tabIndex={-1}>
-        {userReset.notice && <p className={`va-users-zone va-auth-notice ${userReset.notice.tone}`} role="status">
-          {userReset.notice.text}
-        </p>}
-        {userReset.error && !userReset.target && <p className="va-users-zone va-login-error" role="alert">{userReset.error}</p>}
-      </div>
-      {userReset.target && <ResetPasswordDialog reset={userReset} fallbackFocusRef={resetFeedbackRef} returnFocusRef={resetTriggerRef} />}
-      <div className="va-users-query">
-        <label className="va-users-search">搜索用户名
-          <input type="search" value={usersQuery.keyword} placeholder="搜索全部用户"
+      <div className="va-users-toolbar">
+        <label className="va-users-search">搜索
+          <input type="search" value={usersQuery.keyword} placeholder="输入用户名"
+            aria-describedby="users-search-help"
             onChange={event => store.setUsersKeyword(event.target.value)} />
         </label>
-        <label>每页条数
-          <select value={usersQuery.pageSize} onChange={event => store.setUsersPageSize(Number(event.target.value))}>
-            {USER_PAGE_SIZES.map(size => <option key={size} value={size}>{size}</option>)}
-          </select>
-        </label>
+        <button onClick={() => store.refreshUsers()} disabled={users.loading || busy || userAccess.busy || userReset.busy}>
+          <span aria-hidden="true">⟳ </span>{userCreate.verifyUsername || userAccess.verifyUsername || userReset.verifyUsername ? '刷新清单核实' : '刷新'}
+        </button>
       </div>
-      <p className="va-users-zone">按用户名排序 · 搜索不区分大小写 · 创建时间时区：{Intl.DateTimeFormat().resolvedOptions().timeZone}</p>
-      {users.loading && <div className="va-side-empty" role="status">正在加载用户清单…</div>}
-      {users.error && <div className="va-side-empty" role="alert">{users.error}</div>}
-      {!users.loading && !users.error && <>
-        <div className="va-users-pagination">
-          <p role="status">共 {view.total} 名用户{view.total > 0 && ` · 显示 ${view.start + 1}–${view.start + view.items.length} 名 · 第 ${view.page} / ${view.pageCount} 页`}</p>
-          <nav aria-label="用户清单分页">
-            <button disabled={view.page === 1} onClick={() => store.setUsersPage(1)}>首页</button>
-            <button disabled={view.page === 1} onClick={() => store.setUsersPage(view.page - 1)}>上一页</button>
-            <button disabled={view.page === view.pageCount} onClick={() => store.setUsersPage(view.page + 1)}>下一页</button>
-            <button disabled={view.page === view.pageCount} onClick={() => store.setUsersPage(view.pageCount)}>末页</button>
-          </nav>
+      <p id="users-search-help" className="va-users-help">按用户名排序 · 搜索不区分大小写<span className="va-users-mobile-zone">创建时间时区：{timeZone}</span></p>
+      <div className="va-users-feedback">
+        {userCreate.notice && <p ref={createFeedbackRef} tabIndex={-1} className={`va-users-zone va-auth-notice ${userCreate.notice.tone}`} role="status">
+          {userCreate.notice.text}
+          {userCreate.createdUsername && <button className="va-users-locate"
+            disabled={users.loading || Boolean(users.error) || !users.items.some(user => user.username === userCreate.createdUsername)}
+            onClick={() => {
+              if (store.showCreatedUser()) requestAnimationFrame(() => {
+                createdRowRef.current?.focus()
+                createdRowRef.current?.scrollIntoView({ block: 'nearest' })
+              })
+            }}>查看该用户</button>}
+        </p>}
+        {creating && <CreateUserDialog fallbackFocusRef={createFeedbackRef} onClose={() => setCreating(false)} />}
+        <div ref={feedbackRef} tabIndex={-1}>
+          {userAccess.notice && <p className={`va-users-zone va-auth-notice ${userAccess.notice.tone}`} role="status">
+            {userAccess.notice.text}
+          </p>}
+          {userAccess.error && !userAccess.target && <p className="va-users-zone va-login-error" role="alert">{userAccess.error}</p>}
         </div>
-        {view.total === 0 && <div className="va-side-empty">{users.items.length === 0 ? '暂无用户' : '没有匹配的用户，请修改搜索关键词'}</div>}
-      </>}
-      {!users.error && view.items.length > 0 && <table className="va-users-list" role="table" aria-label="用户信息">
-        <thead><tr role="row"><th scope="col">用户名</th><th scope="col">角色</th><th scope="col">启用状态</th><th scope="col">创建时间</th><th scope="col">操作</th></tr></thead>
+        {userAccess.target && <UserAccessDialog access={userAccess} fallbackFocusRef={feedbackRef} returnFocusRef={accessTriggerRef} />}
+        <div ref={resetFeedbackRef} tabIndex={-1}>
+          {userReset.notice && <p className={`va-users-zone va-auth-notice ${userReset.notice.tone}`} role="status">
+            {userReset.notice.text}
+          </p>}
+          {userReset.error && !userReset.target && <p className="va-users-zone va-login-error" role="alert">{userReset.error}</p>}
+        </div>
+        {userReset.target && <ResetPasswordDialog reset={userReset} fallbackFocusRef={resetFeedbackRef} returnFocusRef={resetTriggerRef} />}
+      </div>
+      <div className="va-users-loading" role="status">
+        {users.loading && (users.items.length ? '正在更新用户清单…' : '正在加载用户清单…')}
+      </div>
+      {users.error && <div className="va-users-empty" role="alert">
+        <p>{users.error}</p>
+        <button onClick={() => store.refreshUsers()} disabled={users.loading}>重试加载</button>
+      </div>}
+      {!users.loading && !users.error && view.total === 0 && <div className="va-users-empty">
+        <p>{users.items.length === 0 ? '暂无用户' : '没有匹配的用户，请修改搜索关键词'}</p>
+        {usersQuery.keyword && <button onClick={() => store.setUsersKeyword('')}>清空搜索</button>}
+      </div>}
+      {!users.error && view.items.length > 0 && <table ref={listRef} className="va-users-list" role="table" aria-label="用户信息">
+        <thead><tr role="row"><th scope="col">用户名</th><th scope="col">角色</th><th scope="col">状态</th><th scope="col">创建时间<small className="va-users-zone">{timeZone}</small></th><th scope="col">操作</th></tr></thead>
         <tbody>
         {view.items.map((user) => (
           <tr key={user.username} className="va-users-row" role="row" tabIndex={-1}
             ref={user.username === userCreate.createdUsername ? createdRowRef : null}>
             <th scope="row" role="rowheader" className="va-users-name">{user.username}</th>
-            <td role="cell"><span className="va-users-field" aria-hidden="true">角色</span>{user.role === 'admin' ? '管理员 · 只读' : '普通用户'}</td>
-            <td role="cell"><span className="va-users-field" aria-hidden="true">启用状态</span>{user.enabled ? '已启用' : '已禁用'}</td>
-            <td role="cell"><span className="va-users-field" aria-hidden="true">创建时间</span><CreatedAt value={user.created_at} /></td>
+            <td role="cell" className="va-users-role"><span className="va-users-field" aria-hidden="true">角色</span>{user.role === 'admin' ? '管理员 · 只读' : '普通用户'}</td>
+            <td role="cell" className="va-users-status-cell"><span className={`va-users-status ${user.enabled ? 'enabled' : 'disabled'}`}>{user.enabled ? '已启用' : '已禁用'}</span></td>
+            <td role="cell" className="va-users-created"><span className="va-users-field" aria-hidden="true">创建时间</span><CreatedAt value={user.created_at} /></td>
             <td role="cell">
             {user.role === 'user' && <>
               <div className="va-user-access-actions va-user-access-button">
-                <button aria-label={`${user.enabled ? '禁用' : '启用'}用户 ${user.username}`}
-                  disabled={Boolean(userAccess.target || userReset.target || userAccess.verifyUsername) || users.loading || Boolean(users.error) || !user.user_version}
-                  onClick={(event) => { accessTriggerRef.current = event.currentTarget; store.beginUserAccess(user.username) }}>{user.enabled ? '禁用' : '启用'}</button>
                 <button aria-label={`${userReset.unknown ? '发起新的重置' : '重置密码'} ${user.username}`}
                   disabled={Boolean(userAccess.target || userReset.target || userReset.verifyUsername) || users.loading || Boolean(users.error) || !user.user_version}
                   onClick={(event) => { resetTriggerRef.current = event.currentTarget; store.beginUserReset(user.username) }}>{userReset.unknown ? '发起新的重置' : '重置密码'}</button>
+                <button aria-label={`${user.enabled ? '禁用' : '启用'}用户 ${user.username}`}
+                  disabled={Boolean(userAccess.target || userReset.target || userAccess.verifyUsername) || users.loading || Boolean(users.error) || !user.user_version}
+                  onClick={(event) => { accessTriggerRef.current = event.currentTarget; store.beginUserAccess(user.username) }}>{user.enabled ? '禁用' : '启用'}</button>
               </div>
             </>}
             </td>
@@ -123,6 +132,20 @@ export default function UsersPanel() {
         ))}
         </tbody>
       </table>}
+      {!users.error && view.total > 0 && <div className="va-users-pagination" aria-busy={users.loading}>
+        <p role="status">共 {view.total} 名用户 · 显示 {view.start + 1}–{view.start + view.items.length} 名 · 第 {view.page} / {view.pageCount} 页</p>
+        <label>每页条数
+          <select value={usersQuery.pageSize} onChange={event => store.setUsersPageSize(Number(event.target.value))}>
+            {USER_PAGE_SIZES.map(size => <option key={size} value={size}>{size}</option>)}
+          </select>
+        </label>
+        <nav aria-label="用户清单分页">
+          <button disabled={view.page === 1} onClick={() => changePage(1)}>首页</button>
+          <button disabled={view.page === 1} onClick={() => changePage(view.page - 1)}>上一页</button>
+          <button disabled={view.page === view.pageCount} onClick={() => changePage(view.page + 1)}>下一页</button>
+          <button disabled={view.page === view.pageCount} onClick={() => changePage(view.pageCount)}>末页</button>
+        </nav>
+      </div>}
     </section>
   )
 }
