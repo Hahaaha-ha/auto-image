@@ -12,7 +12,7 @@ export default function ManagementPage({ visible }) {
   }, [visible, canManageUsers])
   return <section className="va-management" hidden={!visible} aria-label="用户管理页面">
     <header className="va-head">
-      <a className="va-back" href={WORKBENCH_HREF}>返回工作台</a>
+      <a className="va-back" href={WORKBENCH_HREF}>返回</a>
       <span className="va-spacer" />
       <AccountMenu visible={visible} />
     </header>
@@ -20,7 +20,7 @@ export default function ManagementPage({ visible }) {
       {canManageUsers === true ? <UsersPanel /> : <div className="va-access-denied" role="status">
         <h2 tabIndex={-1}>无管理权限</h2>
         <p>当前账号无法管理用户。请返回工作台继续处理自己的会话。</p>
-        <a href={WORKBENCH_HREF}>返回工作台</a>
+        <a className="va-back" href={WORKBENCH_HREF}>返回</a>
       </div>}
     </main>
   </section>
