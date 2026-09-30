@@ -799,13 +799,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-access-denied { max-width: 60ch; padding: 24px 0; }
 .va-users-panel { padding: 28px 0 8px; }
 .va-users-heading, .va-users-toolbar { display: flex; align-items: center; gap: 16px; }
-.va-users-heading { justify-content: space-between; margin-bottom: 24px; padding-inline-end: max(16px, calc((100% - 1280px) / 2)); }
+.va-users-heading { justify-content: space-between; margin-bottom: 24px; padding-inline: max(16px, calc((100% - 1280px) / 2)); }
 .va-users-heading h1 { margin: 0; font-size: 24px; font-weight: 600; line-height: 1.4; }
 .va-users-panel button { min-height: 36px; }
 .va-users-create { flex-shrink: 0; color: var(--surface); background: var(--accent); border-color: var(--accent); }
 .va-users-create:hover:not(:disabled) { background: var(--accent); opacity: 0.88; }
 .va-users-workarea { max-width: 1280px; width: calc(100% - 32px); margin-inline: auto; }
-.va-users-toolbar { flex-wrap: wrap; margin-bottom: 24px; }
+.va-users-toolbar { flex-wrap: wrap; margin-bottom: 40px; }
 .va-users-search-actions { display: flex; flex: 1; align-items: center; gap: 16px; min-width: min(100%, 360px); }
 .va-users-refresh { flex-shrink: 0; min-width: 100px; }
 .va-users-page-tools, .va-users-page-tools nav { display: flex; align-items: center; gap: 12px; }
@@ -886,7 +886,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .va-account-button, .va-head-context, .va-back { min-height: 44px; }
   .va-management-body { padding: 0 16px 24px; }
   .va-users-panel { padding-top: 24px; }
-  .va-users-heading { gap: 12px; margin-bottom: 20px; padding-inline-end: 0; }
+  .va-users-heading { gap: 12px; margin-bottom: 20px; padding-inline: 0; }
   .va-users-heading h1 { font-size: 20px; }
   .va-users-workarea { width: 100%; }
   .va-users-toolbar, .va-users-search-actions { gap: 12px; }
