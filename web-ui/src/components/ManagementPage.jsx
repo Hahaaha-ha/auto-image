@@ -11,7 +11,7 @@ export default function ManagementPage({ visible }) {
     if (visible) headingRef.current?.querySelector('h1, h2')?.focus()
   }, [visible, canManageUsers])
   return <section className="va-management" hidden={!visible} aria-label="用户管理页面">
-    <header className="va-head va-management-head">
+    <header className="va-head">
       <a className="va-back" href={WORKBENCH_HREF}>返回工作台</a>
       <span className="va-spacer" />
       <AccountMenu visible={visible} />

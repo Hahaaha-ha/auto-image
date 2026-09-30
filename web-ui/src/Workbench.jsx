@@ -325,32 +325,34 @@ export default function Workbench({ visible }) {
   return (
     <section className="va-workbench" hidden={!visible} aria-label="部署工作台">
       <header className="va-head" ref={headerRef} tabIndex={-1} aria-label="工作台控制面">
-        {control ? (
-          <>
-            <span className="va-runid" title={control.title ?? undefined}>{control.runId}</span>
-            <span className={`dot tone-${STATUS_TONE[control.status] ?? 'ok'}`} />
-            <span>{RUN_STATUS_LABEL[control.status]}</span>
-            <span className="va-spacer" />
-            <span className="va-stage">{control.stage ? STAGE_LABEL[control.stage] ?? control.stage : null}</span>
-            <span className="va-elapsed" title="累计执行：各回合之和，扣除等待输入">
-              总计时间：{fmtActive(control, s.now)}
-            </span>
-            <span className="va-elapsed" title="最后一次用户发送指令的时刻">最近指令 {fmtLastActivity(control)}</span>
-            <button className="va-end" onClick={() => onEndRun(control)} disabled={!store.isOperable(control.status)}>
-              结束会话
-            </button>
-          </>
-        ) : (
-          // spacer 不随控制面会话存在——无会话（新用户）时也把用户名/登出
-          // 推到右侧，否则全部靠左堆在左上角
-          <>
-            <span className="va-runid">auto-image 部署会话</span>
-            <span className="va-spacer" />
-          </>
-        )}
-        {s.connection === 'reconnecting' && (
-          <span className="va-conn" role="status">事件流连接断开，重连中（恢复后自动追平）…</span>
-        )}
+        <div className="va-head-context">
+          {control ? (
+            <>
+              <span className="va-runid" title={control.title ?? undefined}>{control.runId}</span>
+              <span className={`dot tone-${STATUS_TONE[control.status] ?? 'ok'}`} />
+              <span>{RUN_STATUS_LABEL[control.status]}</span>
+              <span className="va-spacer" />
+              <span className="va-stage">{control.stage ? STAGE_LABEL[control.stage] ?? control.stage : null}</span>
+              <span className="va-elapsed" title="累计执行：各回合之和，扣除等待输入">
+                总计时间：{fmtActive(control, s.now)}
+              </span>
+              <span className="va-elapsed" title="最后一次用户发送指令的时刻">最近指令 {fmtLastActivity(control)}</span>
+              <button className="va-end" onClick={() => onEndRun(control)} disabled={!store.isOperable(control.status)}>
+                结束会话
+              </button>
+            </>
+          ) : (
+            // spacer 不随控制面会话存在——无会话（新用户）时也把用户名/登出
+            // 推到右侧，否则全部靠左堆在左上角
+            <>
+              <span className="va-runid">auto-image 部署会话</span>
+              <span className="va-spacer" />
+            </>
+          )}
+          {s.connection === 'reconnecting' && (
+            <span className="va-conn" role="status">事件流连接断开，重连中（恢复后自动追平）…</span>
+          )}
+        </div>
         <AccountMenu visible={visible} />
       </header>
 

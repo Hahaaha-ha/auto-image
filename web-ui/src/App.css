@@ -107,9 +107,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-root { height: 100%; display: flex; flex-direction: column; background: var(--surface); position: relative; }
 
 .va-head {
-  display: flex; gap: 12px; align-items: center;
+  display: flex; gap: 12px; align-items: flex-start;
   padding: 8px 16px; border-bottom: 1px solid var(--line); font-size: 13px;
 }
+.va-head-context { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: 12px; min-width: 0; min-height: 36px; }
 .va-runid { font-family: var(--mono); color: var(--ink-2); }
 .va-spacer { flex: 1; }
 .va-stage { font-weight: 600; }
@@ -777,7 +778,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-workbench, .va-management { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .va-workbench[hidden], .va-management[hidden] { display: none; }
 .va-account { position: relative; flex-shrink: 0; margin-inline-start: auto; max-width: min(240px, 45vw); }
-.va-account-button { display: flex; align-items: center; gap: 8px; max-width: 100%; min-height: 36px; }
+.va-account-button { display: flex; align-items: center; gap: 8px; max-width: 100%; min-height: 36px; border-color: transparent; background: transparent; }
+.va-account-button:hover { background: var(--surface-dim); }
 .va-account-button span { overflow: hidden; text-overflow: ellipsis; white-space: pre; }
 .va-account-button svg { flex-shrink: 0; }
 .va-account-menu {
@@ -791,10 +793,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .va-account-menu :is(a, button):hover { background: var(--surface-dim); }
 .va-account :focus-visible, .va-back:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.va-management-head { gap: 16px; padding: 12px max(24px, calc((100% - 1120px) / 2)); }
-.va-management .va-account-button { border-color: transparent; background: transparent; }
-.va-management .va-account-button:hover { background: var(--surface-dim); }
-.va-back { color: var(--accent); text-underline-offset: 3px; }
+.va-back { align-self: center; color: var(--accent); text-underline-offset: 3px; }
 .va-management-body { overflow: auto; flex: 1; padding: 0 max(24px, calc((100% - 1120px) / 2)) 28px; scrollbar-color: var(--line) var(--surface); }
 .va-access-denied { max-width: 60ch; padding: 24px 0; }
 .va-users-panel { padding: 28px 0 8px; }
@@ -881,8 +880,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 :is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .va-create-dialog:focus-visible, .va-access-dialog:focus-visible, .va-reset-dialog:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (max-width: 760px) {
-  .va-management-head { padding: 8px 16px; }
-  .va-management .va-account-button { min-height: 44px; }
+  .va-account-button, .va-head-context { min-height: 44px; }
   .va-management-body { padding: 0 16px 24px; }
   .va-users-panel { padding-top: 24px; }
   .va-users-heading { gap: 12px; margin-bottom: 20px; }
@@ -920,6 +918,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .va-create-dialog .va-login-input, .va-reset-dialog .va-login-input { min-height: 44px; }
 }
 @media (max-width: 640px) {
-  .va-head { flex-wrap: wrap; gap: 8px; }
+  .va-head, .va-head-context { gap: 8px; }
   .va-runid { overflow-wrap: anywhere; }
 }
