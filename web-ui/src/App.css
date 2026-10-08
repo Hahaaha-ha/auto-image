@@ -783,7 +783,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-account-button span { overflow: hidden; text-overflow: ellipsis; white-space: pre; }
 .va-account-button svg { flex-shrink: 0; }
 .va-account-menu {
-  position: absolute; z-index: 50; right: 0; top: calc(100% + 6px); min-width: 160px;
+  position: absolute; z-index: 50; right: 0; top: calc(100% + 6px); width: max-content; min-width: 112px; max-width: calc(100vw - 32px);
   padding: 4px; border-radius: 6px; background: var(--surface);
   box-shadow: 0 6px 24px #0003;
 }
@@ -795,25 +795,23 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-account :focus-visible, .va-back:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .va-back { display: inline-flex; align-items: center; justify-content: center; align-self: center; min-height: 36px; padding: 4px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; text-decoration: none; }
 .va-back:hover { background: var(--surface-dim); }
-.va-management-body { overflow: auto; flex: 1; padding: 0 16px 28px; scrollbar-color: var(--line) var(--surface); }
+.va-management-body { --management-bottom-space: 28px; overflow: auto; flex: 1; padding: 0 16px var(--management-bottom-space); scroll-padding-block: 48px 160px; scrollbar-color: var(--line) var(--surface); }
 .va-access-denied { max-width: 60ch; padding: 24px 0; }
 .va-users-panel { padding: 28px 0 8px; }
+.va-users-heading, .va-users-workarea { max-width: 1280px; width: calc(100% - 32px); margin-inline: auto; }
 .va-users-heading, .va-users-toolbar { display: flex; align-items: center; gap: 16px; }
-.va-users-heading { justify-content: space-between; min-height: 36px; margin-bottom: 48px; padding-inline: max(16px, calc((100% - 1280px) / 2)); }
+.va-users-heading { justify-content: space-between; min-height: 36px; margin-bottom: 24px; }
 .va-users-heading h1 { margin: 0; font-size: 24px; font-weight: 600; line-height: 1.4; }
 .va-users-panel button { min-height: 36px; }
 .va-users-create { flex-shrink: 0; margin-left: auto; color: var(--surface); background: var(--accent); border-color: var(--accent); }
 .va-users-create:hover:not(:disabled) { background: var(--accent); opacity: 0.88; }
-.va-users-workarea { max-width: 1280px; width: calc(100% - 32px); margin-inline: auto; }
 .va-users-toolbar { flex-wrap: wrap; margin-bottom: 24px; }
 .va-users-search-actions { display: flex; flex: 1; align-items: center; gap: 16px; min-width: min(100%, 360px); }
 .va-users-refresh { flex-shrink: 0; min-width: 100px; }
-.va-users-page-tools, .va-users-page-tools nav { display: flex; align-items: center; gap: 12px; }
-.va-users-page-tools { flex-basis: 100%; justify-content: flex-end; font-size: 13px; color: var(--ink-2); }
-.va-users-page-tools label { display: flex; align-items: center; gap: 8px; }
-.va-users-page-tools nav { font-variant-numeric: tabular-nums; }
+.va-users-results { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-block: 16px 12px; font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.va-users-results p { margin: 0; }
 .va-users-search { display: flex; align-items: center; gap: 12px; flex: 1; max-width: 460px; min-width: 0; }
-.va-users-search input, .va-users-page-tools select {
+.va-users-search input, .va-page-jump input, .va-page-size select {
   min-width: 0; color: var(--ink); background: var(--surface); border: 1px solid var(--line);
   border-radius: 6px; padding: 7px 10px; font: inherit; caret-color: var(--accent);
 }
@@ -823,12 +821,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-users-feedback { display: flex; flex-direction: column; }
 .va-users-feedback > div:empty { display: none; }
 .va-users-feedback .va-users-zone {
-  margin: 12px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px;
+  position: relative; margin: 0 0 12px; padding: 10px 48px 10px 12px; border: 1px solid var(--line); border-radius: 6px;
   font-size: 13px; line-height: 1.6; overflow-wrap: anywhere;
 }
 .va-users-feedback .success { background: #dafbe1; border-color: #abe4b8; }
 .va-users-feedback .warning { background: #fff8c5; border-color: #d4a72c66; }
 .va-users-feedback .va-login-error { background: #fff1f0; border-color: #ffd0cc; }
+.va-users-feedback .va-notice-dismiss { position: absolute; right: 4px; top: 4px; min-width: 36px; min-height: 36px; padding: 4px; border-color: transparent; background: transparent; color: var(--ink-2); }
 .va-users-locate { margin-inline-start: 12px; background: transparent; }
 .va-users-empty { padding: 40px 16px; text-align: center; color: var(--ink-2); border-block: 1px solid var(--line); }
 .va-users-empty p { margin: 0 0 12px; }
@@ -857,9 +856,17 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-user-access-actions button { border-color: transparent; background: transparent; padding: 4px 0; color: var(--accent); }
 .va-user-access-actions button:last-child { color: var(--ink-2); }
 .va-user-access-actions button:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }
-.va-users-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; padding: 16px 0 0; font-size: 13px; font-variant-numeric: tabular-nums; }
-.va-users-pagination p { margin: 0; color: var(--ink-2); }
-.va-users-pagination nav { display: flex; flex-wrap: wrap; gap: 8px; }
+.va-users-pagination { position: sticky; bottom: calc(-1 * var(--management-bottom-space)); z-index: 2; padding: 12px 0; border-top: 1px solid var(--line); background: var(--surface); font-size: 14px; font-variant-numeric: tabular-nums; }
+.va-users-pagination nav { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px; }
+.va-page-buttons { display: flex; align-items: center; justify-content: center; gap: 4px; }
+.va-page-buttons button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; padding-inline: 8px; border-radius: 999px; white-space: nowrap; }
+.va-page-buttons svg { flex-shrink: 0; }
+.va-page-position { margin: 0; white-space: nowrap; text-align: center; }
+.va-page-position strong { font-weight: 600; }
+.va-page-jump, .va-page-size { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 0; padding-inline-start: 12px; border-inline-start: 1px solid var(--line); white-space: nowrap; }
+.va-page-jump input, .va-page-size select { width: 72px; min-height: 36px; padding: 4px 8px; text-align: center; }
+.va-page-jump input { appearance: textfield; }
+.va-page-jump input::-webkit-inner-spin-button, .va-page-jump input::-webkit-outer-spin-button { appearance: none; margin: 0; }
 .va-users-panel :focus-visible, .va-users-feedback > div:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .va-users-row:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
 
@@ -870,6 +877,12 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 :is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) p { line-height: 1.6; }
 .va-create-dialog .va-password-field, .va-reset-dialog .va-password-field { margin-top: 20px; }
 .va-create-dialog .va-login-input, .va-reset-dialog .va-login-input { width: 100%; min-width: 0; min-height: 40px; font-size: 14px; color: var(--ink); background: var(--surface); }
+.va-password-input { position: relative; }
+.va-password-input .va-login-input { padding-right: 64px; }
+.va-password-toggle { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); min-width: 52px; min-height: 32px; padding: 4px 8px; background: transparent; border-color: transparent; color: var(--accent); }
+.va-create-dialog .va-auth-help, .va-reset-dialog .va-auth-help { margin-top: 6px; }
+.va-create-dialog .va-field-error, .va-reset-dialog .va-field-error { margin: 6px 0 0; color: var(--bad); }
+.va-login-input[aria-invalid="true"] { border-color: var(--bad); }
 .va-create-dialog .va-login-input:disabled, .va-reset-dialog .va-login-input:disabled { background: var(--surface-dim); }
 .va-user-dialog-identity { display: flex; flex-direction: column; gap: 4px; padding: 12px; margin: 0 0 16px; background: var(--surface-dim); border-radius: 6px; }
 .va-user-dialog-identity span { color: var(--ink-2); font-size: 12px; }
@@ -882,20 +895,23 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-access-dialog .va-user-disable:hover { border-color: var(--bad); }
 :is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .va-create-dialog:focus-visible, .va-access-dialog:focus-visible, .va-reset-dialog:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (min-width: 761px) and (max-width: 900px) {
+  .va-users-pagination nav { gap: 8px; }
+  .va-page-buttons button { padding-inline: 6px; }
+  .va-page-jump, .va-page-size { gap: 6px; padding-inline-start: 8px; }
+  .va-page-jump input, .va-page-size select { width: 64px; }
+}
 @media (max-width: 760px) {
   .va-account-button, .va-head-context, .va-back { min-height: 44px; }
-  .va-management-body { padding: 0 16px 24px; }
+  .va-management-body { --management-bottom-space: 24px; scroll-padding-bottom: 208px; }
   .va-users-panel { padding-top: 24px; }
-  .va-users-heading { gap: 12px; min-height: 44px; margin-bottom: 32px; padding-inline: 0; }
+  .va-users-heading, .va-users-workarea { width: 100%; }
+  .va-users-heading { gap: 12px; min-height: 44px; }
   .va-users-heading h1 { font-size: 20px; }
-  .va-users-workarea { width: 100%; }
   .va-users-toolbar, .va-users-search-actions { gap: 12px; }
   .va-users-search-actions { flex-basis: 100%; }
-  .va-users-page-tools { flex-wrap: wrap; justify-content: flex-end; gap: 8px; width: 100%; }
-  .va-users-page-tools nav { gap: 4px; }
-  .va-users-page-tools nav button { padding-inline: 8px; }
   .va-users-search { gap: 8px; }
-  .va-users-panel button, .va-users-search input, .va-users-page-tools select { min-height: 44px; }
+  .va-users-panel button, .va-users-search input, .va-page-jump input, .va-page-size select { min-height: 44px; }
   .va-users-search input { padding-inline: 8px; }
   .va-users-list, .va-users-list tbody { display: block; }
   .va-users-list thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
@@ -904,21 +920,29 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .va-users-list th, .va-users-list td { display: block; border: 0; padding: 0; }
   .va-users-list .va-users-name { grid-column: 1; grid-row: 1; }
   .va-users-list .va-users-status-cell { grid-column: 2; grid-row: 1; justify-self: end; }
-  .va-users-list .va-users-role { grid-column: 1; grid-row: 2; font-size: 12px; margin-top: 8px; }
-  .va-users-list .va-users-created { grid-column: 2; grid-row: 2; max-width: 180px; font-size: 12px; margin-top: 8px; text-align: right; }
+  .va-users-list .va-users-role { grid-column: 1 / -1; grid-row: 2; font-size: 12px; margin-top: 8px; }
+  .va-users-list .va-users-created { grid-column: 1 / -1; grid-row: 3; font-size: 12px; margin-top: 4px; }
   .va-users-created .va-users-field { display: inline; margin-right: 6px; }
   .va-users-list td:last-child { grid-column: 1 / -1; padding-top: 8px; }
   .va-users-list td:last-child:empty { display: none; }
   .va-user-access-actions { gap: 20px; }
   .va-user-access-actions button { min-width: 44px; padding-inline: 4px; }
-  .va-users-pagination { gap: 12px; }
-  .va-users-pagination p { flex-basis: 100%; }
-  .va-users-pagination nav { gap: 4px; }
-  .va-users-pagination nav button { padding-inline: 8px; }
+  .va-users-pagination { padding-block: 8px; font-size: 13px; }
+  .va-users-pagination nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; }
+  .va-page-buttons button { padding-inline: 6px; font-size: 13px; }
+  .va-page-jump, .va-page-size { padding-inline-start: 0; border-inline-start: 0; }
+  .va-page-jump { grid-column: 1 / -1; }
+  .va-page-jump input, .va-page-size select { font-size: 16px; }
   .va-create-dialog, .va-access-dialog, .va-reset-dialog { padding: 16px; max-height: calc(100dvh - 48px); }
   :is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) .va-modal-actions button,
   :is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) .va-modal-close { min-height: 44px; min-width: 44px; }
   .va-create-dialog .va-login-input, .va-reset-dialog .va-login-input { min-height: 44px; }
+  .va-password-toggle { right: 1px; min-height: 44px; }
+  .va-users-feedback .va-notice-dismiss { min-width: 44px; min-height: 44px; top: 0; right: 0; }
+}
+@media (max-height: 600px) {
+  .va-management-body { scroll-padding-bottom: 24px; }
+  .va-users-pagination { position: static; }
 }
 @media (max-width: 640px) {
   .va-head, .va-head-context { gap: 8px; }

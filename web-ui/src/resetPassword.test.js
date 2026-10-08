@@ -20,6 +20,21 @@ beforeEach(async () => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('管理员重置密码', () => {
+  it('修改密码清除字段错误，但保留服务端全局错误', async () => {
+    store.beginUserReset(alice.username)
+    fetch.mockResolvedValue(response({ outcome: 'not_committed', detail: 'invalid_new_password' }, 422))
+    await store.resetUserPassword('short')
+    expect(store.getState().userReset.errorField).toBe('password')
+    store.clearUserResetError('password')
+    expect(store.getState().userReset.error).toBeNull()
+    expect(store.getState().userReset.errorField).toBeNull()
+    fetch.mockResolvedValue(response({ outcome: 'not_committed', detail: 'audit_unavailable' }, 503))
+    await store.resetUserPassword('initial-password')
+    store.clearUserResetError('password')
+    expect(store.getState().userReset.errorField).toBeNull()
+    expect(store.getState().userReset.error).toContain('审计')
+  })
+
   it('确认目标时冻结版本，提交精确密码并明确已提交审计异常', async () => {
     store.beginUserReset(operator.username)
     expect(store.getState().userReset.target).toBeNull()

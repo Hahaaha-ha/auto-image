@@ -20,6 +20,39 @@ beforeEach(async () => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('用户访问资格', () => {
+  it('跨操作成功仅保留最新提示，成功提示可以关闭', async () => {
+    fetch.mockImplementation(async (_url, options) => options?.method === 'POST'
+      ? response({ outcome: 'committed', audit_status: 'recorded' })
+      : response({ users: [operator, alice] }))
+    await store.createUser('new-user', 'initial-password')
+    await vi.waitFor(() => expect(store.getState().users.loading).toBe(false))
+    expect(store.getState().userCreate.notice.tone).toBe('success')
+    store.beginUserAccess(alice.username)
+    expect(await store.submitUserAccess()).toBe('committed')
+    expect(store.getState().userCreate.notice).toBeNull()
+    expect(store.getState().userAccess.notice.tone).toBe('success')
+    store.dismissUserNotice('userAccess')
+    expect(store.getState().userAccess.notice).toBeNull()
+  })
+
+  it('审计异常提示不被另一操作成功或关闭提示动作抹掉', async () => {
+    fetch.mockImplementation(async (url, options) => options?.method === 'POST'
+      ? response({ outcome: 'committed', audit_status: url === '/api/admin/users' ? 'failed' : 'recorded' })
+      : response({ users: [operator, alice] }))
+    await store.createUser('new-user', 'initial-password')
+    await vi.waitFor(() => expect(store.getState().users.loading).toBe(false))
+    const warning = store.getState().userCreate.notice
+    expect(warning.tone).toBe('warning')
+    store.dismissUserNotice('userCreate')
+    expect(store.getState().userCreate.notice).toEqual(warning)
+    store.beginUserAccess(alice.username)
+    expect(await store.submitUserAccess()).toBe('committed')
+    expect(store.getState().userCreate.notice).toEqual(warning)
+    store.dismissUserNotice('userAccess')
+    expect(store.getState().userAccess.notice).toBeNull()
+    expect(store.getState().userCreate.notice).toEqual(warning)
+  })
+
   it('401 无 JSON 时仍立即清除身份与过期确认', async () => {
     store.beginUserAccess(alice.username)
     fetch.mockResolvedValue({ status: 401, json: async () => { throw new SyntaxError('invalid') } })

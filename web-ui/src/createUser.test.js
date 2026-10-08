@@ -16,6 +16,27 @@ beforeEach(async () => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('新增用户', () => {
+  it.each(['invalid_username', 'username_exists', 'invalid_new_password'])('字段错误 %s 仅在修改对应输入时清除', async detail => {
+    const field = detail === 'invalid_new_password' ? 'password' : 'username'
+    fetch.mockResolvedValue(response({ outcome: 'not_committed', detail }, 422))
+    await store.createUser('new-user', 'initial-password')
+    expect(store.getState().userCreate.errorField).toBe(field)
+    store.clearUserCreateError(field === 'username' ? 'password' : 'username')
+    expect(store.getState().userCreate.error).toBeTruthy()
+    store.clearUserCreateError(field)
+    expect(store.getState().userCreate.error).toBeNull()
+    expect(store.getState().userCreate.errorField).toBeNull()
+  })
+
+  it('修改输入不会抹掉服务端全局错误', async () => {
+    fetch.mockResolvedValue(response({ outcome: 'not_committed', detail: 'audit_unavailable' }, 503))
+    await store.createUser('new-user', 'initial-password')
+    store.clearUserCreateError('username')
+    store.clearUserCreateError('password')
+    expect(store.getState().userCreate.errorField).toBeNull()
+    expect(store.getState().userCreate.error).toContain('审计')
+  })
+
   it('关闭或重开表单清除输入错误，保留需要核实的结果', async () => {
     fetch.mockResolvedValue(response({ outcome: 'not_committed', detail: 'username_exists' }, 409))
     await store.createUser('existing', 'initial-password')

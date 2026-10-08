@@ -14,7 +14,7 @@ const { state } = vi.hoisted(() => ({ state: {
   userAccess: { target: null, busy: false, error: null, notice: null, verifyUsername: null },
   artifacts: { groups: [] }, artifactSel: {},
 } }))
-vi.mock('./store.js', () => ({ useRunState: () => state, refreshUsers: vi.fn(), createUser: vi.fn() }))
+vi.mock('./store.js', () => ({ useRunState: () => state, refreshUsers: vi.fn(), createUser: vi.fn(), setUsersPageSize: vi.fn() }))
 import SidePanel from './components/SidePanel.jsx'
 import UsersPanel from './components/UsersPanel.jsx'
 
@@ -27,7 +27,7 @@ describe('用户管理内容', () => {
     try {
       let html = renderToStaticMarkup(<UsersPanel />)
       expect(html).toContain('共 105 名用户')
-      expect(html).toContain('aria-label="用户清单顶部分页"')
+      expect(html).not.toContain('aria-label="用户清单顶部分页"')
       expect(html).toContain('aria-label="用户清单分页"')
       expect(html).toContain('member-019')
       expect(html).not.toContain('member-020')
@@ -37,7 +37,8 @@ describe('用户管理内容', () => {
       expect(html).toContain('member-104')
       expect(html).not.toContain('member-000')
       expect(html).not.toContain('aria-label="用户清单顶部分页"')
-      expect(html).not.toContain('aria-label="用户清单分页"')
+      expect(html).toContain('aria-label="用户清单分页"')
+      expect(html).toContain('aria-label="跳转页码"')
       expect(html).toContain('每页条数')
       state.users.items.push({ username: '旧 身份@EXAMPLE.test', role: 'user', enabled: false })
       state.usersQuery.keyword = '@example'

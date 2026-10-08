@@ -104,7 +104,7 @@ function readSidePanel() {
 // tabState 纯模块，这里只当状态容器。lastSessionKey 记住最后激活的会话
 // 标签页——激活文件标签页时控制面（header/输入条）仍绑定它。
 const restored = restoreTabs()
-const emptyUserReset = () => ({ target: null, busy: false, error: null, notice: null, verifyUsername: null, unknown: false })
+const emptyUserReset = () => ({ target: null, busy: false, error: null, errorField: null, notice: null, verifyUsername: null, unknown: false })
 const emptyUserAccess = () => ({ target: null, busy: false, error: null, notice: null, verifyUsername: null })
 let state = {
   auth: 'checking',             // checking → anonymous | password-change | user
@@ -635,6 +635,21 @@ function userManagementAccessLost(status, detail) {
   return false
 }
 
+const USER_NOTICE_KEYS = ['userCreate', 'userAccess', 'userReset']
+
+export function dismissUserNotice(key) {
+  if (!USER_NOTICE_KEYS.includes(key) || state[key].notice?.tone !== 'success') return
+  set({ [key]: { ...state[key], notice: null } })
+}
+
+function clearPreviousUserSuccess() {
+  const updates = {}
+  for (const key of USER_NOTICE_KEYS) {
+    if (state[key].notice?.tone === 'success') updates[key] = { ...state[key], notice: null }
+  }
+  return updates
+}
+
 const USER_RECONFIRM_ERRORS = ['user_version_conflict', 'admin_read_only', 'no_such_user']
 
 export function beginUserAccess(username) {
@@ -675,7 +690,7 @@ export async function submitUserAccess() {
     if (state.userAccess !== attempt) return
     if (data.outcome === 'committed') {
       const auditFailed = data.audit_status !== 'recorded'
-      set({ userAccess: { ...emptyUserAccess(), notice: {
+      set({ ...clearPreviousUserSuccess(), userAccess: { ...emptyUserAccess(), notice: {
         tone: auditFailed ? 'warning' : 'success',
         text: `用户「${target.username}」已${action}。${target.enabled ? '既有登录已撤销；执行中的回合继续。' : '请原使用者重新登录，旧登录仍无效。'}${auditFailed ? '变更已生效，审计记录异常；请联系管理员检查审计，无需重复提交。' : ''}`,
       } } })
@@ -710,7 +725,13 @@ export function beginUserReset(username) {
 }
 
 export function cancelUserReset() {
-  if (!state.userReset.busy) set({ userReset: { ...state.userReset, target: null, error: null } })
+  if (!state.userReset.busy) set({ userReset: { ...state.userReset, target: null, error: null, errorField: null } })
+}
+
+export function clearUserResetError(field) {
+  if (!state.userReset.busy && state.userReset.error && state.userReset.errorField === field) {
+    set({ userReset: { ...state.userReset, error: null, errorField: null } })
+  }
 }
 
 const RESET_PASSWORD_HINT = {
@@ -739,7 +760,7 @@ export async function resetUserPassword(password) {
     if (state.userReset !== attempt) return
     if (data.outcome === 'committed') {
       const auditFailed = data.audit_status !== 'recorded'
-      set({ userReset: { ...emptyUserReset(), notice: {
+      set({ ...clearPreviousUserSuccess(), userReset: { ...emptyUserReset(), notice: {
         tone: auditFailed ? 'warning' : 'success',
         text: `用户「${target.username}」的密码已重置，既有登录已撤销。请自行交付新密码，下次登录须再次改密。${target.enabled ? '' : '该用户仍已禁用，不能登录。'}${auditFailed ? '重置已生效，审计记录异常；请联系管理员检查审计，无需重复提交。' : ''}`,
       } } })
@@ -752,6 +773,7 @@ export async function resetUserPassword(password) {
       set({ userReset: { ...attempt, busy: false, target: recheck ? null : target,
         verifyUsername: recheck ? target.username : null,
         error: RESET_PASSWORD_HINT[data.detail] || '密码尚未修改，请刷新页面后重新确认操作。',
+        errorField: data.detail === 'invalid_new_password' ? 'password' : null,
       } })
       return 'not_committed'
     }
@@ -774,9 +796,9 @@ const CREATE_USER_HINT = {
   state_unavailable: '用户尚未创建：服务处于受限恢复状态，请联系管理员。',
 }
 
-export function clearUserCreateError() {
-  if (!state.userCreate.busy && state.userCreate.error) {
-    set({ userCreate: { ...state.userCreate, error: null } })
+export function clearUserCreateError(field) {
+  if (!state.userCreate.busy && state.userCreate.error && (!field || state.userCreate.errorField === field)) {
+    set({ userCreate: { ...state.userCreate, error: null, errorField: null } })
   }
 }
 
@@ -793,7 +815,7 @@ export function showCreatedUser() {
 
 export async function createUser(username, password) {
   if (!state.canManageUsers || state.userCreate.busy || state.userCreate.verifyUsername) return
-  const attempt = { busy: true, error: null, notice: null, verifyUsername: null }
+  const attempt = { busy: true, error: null, errorField: null, notice: null, verifyUsername: null }
   set({ userCreate: attempt })
   try {
     const resp = await fetch('/api/admin/users', {
@@ -804,7 +826,7 @@ export async function createUser(username, password) {
     if (state.userCreate !== attempt) return
     if (data.outcome === 'committed') {
       const auditFailed = data.audit_status !== 'recorded'
-      set({ userCreate: { ...attempt, busy: false, createdUsername: username, notice: {
+      set({ ...clearPreviousUserSuccess(), userCreate: { ...attempt, busy: false, createdUsername: username, notice: {
         tone: auditFailed ? 'warning' : 'success',
         text: `用户「${username}」已创建。${auditFailed ? '变更已生效，审计记录异常；无需重复新增，请联系管理员检查审计。' : '请自行交付初始密码；用户首次登录须改密。'}`,
       } } })
@@ -819,7 +841,9 @@ export async function createUser(username, password) {
     }
     if (data.outcome === 'not_committed') {
       set({ userCreate: { ...attempt, busy: false, error: CREATE_USER_HINT[data.detail]
-        || '用户尚未创建，请检查输入；仍失败请联系管理员。' } })
+        || '用户尚未创建，请检查输入；仍失败请联系管理员。',
+        errorField: ['invalid_username', 'username_exists'].includes(data.detail) ? 'username'
+          : data.detail === 'invalid_new_password' ? 'password' : null } })
       return 'not_committed'
     }
     throw new Error('unknown create outcome')

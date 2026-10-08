@@ -3,7 +3,8 @@ import * as store from '../store.js'
 import CreateUserDialog from './CreateUserDialog.jsx'
 import UserAccessDialog from './UserAccessDialog.jsx'
 import ResetPasswordDialog from './ResetPasswordDialog.jsx'
-import { getUserListView, USER_PAGE_SIZES } from '../userList.js'
+import UsersPagination from './UsersPagination.jsx'
+import { getUserListView } from '../userList.js'
 
 function CreatedAt({ value }) {
   const date = typeof value === 'string' && /(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? new Date(value) : null
@@ -18,6 +19,11 @@ export default function UsersPanel() {
   const view = useMemo(() => getUserListView(users.items, usersQuery), [users.items, usersQuery])
   const createdRowRef = useRef(null)
   const listRef = useRef(null)
+  const headingRef = useRef(null)
+  const dismissNotice = key => {
+    store.dismissUserNotice(key)
+    headingRef.current?.focus({ preventScroll: true })
+  }
   const [creating, setCreating] = useState(false)
   const createFeedbackRef = useRef(null)
   const feedbackRef = useRef(null)
@@ -48,7 +54,9 @@ export default function UsersPanel() {
   return (
     <section className="va-users-panel" aria-label="用户清单" aria-busy={users.loading}>
       <div className="va-users-heading">
-        <h1 tabIndex={-1}>用户管理</h1>
+        <h1 ref={headingRef} tabIndex={-1}>用户管理</h1>
+        <button className="va-users-create" disabled={users.loading || busy || Boolean(userCreate.verifyUsername || userAccess.target || userReset.target)}
+          onClick={() => { store.clearUserCreateError(); setCreating(true) }}>创建用户</button>
       </div>
       <div className="va-users-workarea">
         <div className="va-users-toolbar">
@@ -61,24 +69,11 @@ export default function UsersPanel() {
               <span aria-hidden="true">⟳ </span>{users.loading ? '刷新中…' : userCreate.verifyUsername || userAccess.verifyUsername || userReset.verifyUsername ? '刷新清单核实' : '刷新'}
             </button>
           </div>
-          <button className="va-users-create" disabled={users.loading || busy || Boolean(userCreate.verifyUsername || userAccess.target || userReset.target)}
-            onClick={() => { store.clearUserCreateError(); setCreating(true) }}>创建用户</button>
-          {!users.error && view.total > 0 && <div className="va-users-page-tools">
-            <label>每页条数
-              <select value={usersQuery.pageSize} onChange={event => store.setUsersPageSize(Number(event.target.value))}>
-                {USER_PAGE_SIZES.map(size => <option key={size} value={size}>{size}</option>)}
-              </select>
-            </label>
-            {view.pageCount > 1 && <nav aria-label="用户清单顶部分页">
-              <button disabled={view.page === 1} onClick={() => store.setUsersPage(view.page - 1)}>上一页</button>
-              <span aria-live="polite">{view.page} / {view.pageCount}</span>
-              <button disabled={view.page === view.pageCount} onClick={() => store.setUsersPage(view.page + 1)}>下一页</button>
-            </nav>}
-          </div>}
         </div>
         <div className="va-users-feedback">
           {userCreate.notice && <p ref={createFeedbackRef} tabIndex={-1} className={`va-users-zone va-auth-notice ${userCreate.notice.tone}`} role="status">
             {userCreate.notice.text}
+            {userCreate.notice.tone === 'success' && <button className="va-notice-dismiss" aria-label="关闭创建成功提示" onClick={() => dismissNotice('userCreate')}>✕</button>}
             {userCreate.createdUsername && <button className="va-users-locate"
               disabled={users.loading || Boolean(users.error) || !users.items.some(user => user.username === userCreate.createdUsername)}
               onClick={() => {
@@ -92,6 +87,7 @@ export default function UsersPanel() {
           <div ref={feedbackRef} tabIndex={-1}>
             {userAccess.notice && <p className={`va-users-zone va-auth-notice ${userAccess.notice.tone}`} role="status">
               {userAccess.notice.text}
+              {userAccess.notice.tone === 'success' && <button className="va-notice-dismiss" aria-label="关闭状态变更成功提示" onClick={() => dismissNotice('userAccess')}>✕</button>}
             </p>}
             {userAccess.error && !userAccess.target && <p className="va-users-zone va-login-error" role="alert">{userAccess.error}</p>}
           </div>
@@ -99,6 +95,7 @@ export default function UsersPanel() {
           <div ref={resetFeedbackRef} tabIndex={-1}>
             {userReset.notice && <p className={`va-users-zone va-auth-notice ${userReset.notice.tone}`} role="status">
               {userReset.notice.text}
+              {userReset.notice.tone === 'success' && <button className="va-notice-dismiss" aria-label="关闭密码重置成功提示" onClick={() => dismissNotice('userReset')}>✕</button>}
             </p>}
             {userReset.error && !userReset.target && <p className="va-users-zone va-login-error" role="alert">{userReset.error}</p>}
           </div>
@@ -141,15 +138,12 @@ export default function UsersPanel() {
           ))}
           </tbody>
         </table>}
-        {!users.error && view.total > 0 && <div className="va-users-pagination" aria-busy={users.loading}>
-          <p role="status">共 {view.total} 名用户 · 显示 {view.start + 1}–{view.start + view.items.length} 名 · 第 {view.page} / {view.pageCount} 页</p>
-          {view.pageCount > 1 && <nav aria-label="用户清单分页">
-            <button disabled={view.page === 1} onClick={() => changePage(1)}>首页</button>
-            <button disabled={view.page === 1} onClick={() => changePage(view.page - 1)}>上一页</button>
-            <button disabled={view.page === view.pageCount} onClick={() => changePage(view.page + 1)}>下一页</button>
-            <button disabled={view.page === view.pageCount} onClick={() => changePage(view.pageCount)}>末页</button>
-          </nav>}
+        {!users.error && view.total > 0 && <div className="va-users-results" aria-busy={users.loading}>
+          <p role="status">共 {view.total} 名用户 · 显示 {view.start + 1}–{view.start + view.items.length} 名</p>
         </div>}
+        {!users.error && view.total > 0 && <UsersPagination page={view.page} pageCount={view.pageCount}
+          pageSize={usersQuery.pageSize} loading={users.loading}
+          onPageChange={changePage} onPageSizeChange={store.setUsersPageSize} />}
       </div>
     </section>
   )
