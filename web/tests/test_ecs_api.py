@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """ECS 端点主缝测试 —— 清单 / 存活检查 / 建机 / 表单默认值 + 错误面映射。
 
-缝：同 test_obs_api 的 ASGI 测试客户端；ecs 函数注入假实现（不触网、
-不装 SDK）。默认（未注入）路径绑定测试用空 scope → EcsNotConfigured →
+缝：同 test_obs_api 的 ASGI 测试客户端；ecs 函数注入假实现，清单投影
+通过 SDK 请求模型与假云客户端验证（不触网）。默认路径绑定测试用空 scope → EcsNotConfigured →
 503，不阻断其余端点。纯函数（_read_scope / resolve_create_spec /
 generate_password）直测。纯 assert，无 pytest。
 
@@ -14,6 +14,8 @@ import re
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import yaml
 
@@ -156,6 +158,39 @@ async def test_check_shape():
         assert data["instances"][0]["alive"] is True
         assert data["instances"][0]["ssh_port_open"] is True
         assert data["instances"][1]["alive"] is False
+
+
+async def test_list_and_check_preserve_cloud_delete_times():
+    """清单和存活检查透传云端计划时间，空值和缺失不根据创建时间补造。"""
+    servers = [
+        SimpleNamespace(id="scheduled", auto_terminate_time="2026-10-09T08:00:00Z"),
+        SimpleNamespace(id="empty", auto_terminate_time=""),
+        SimpleNamespace(id="unset", auto_terminate_time=None),
+        SimpleNamespace(id="missing"),
+    ]
+    for server in servers:
+        server.status = "ACTIVE"
+        server.created = "2026-10-01T08:00:00Z"
+    cloud = SimpleNamespace(list_servers_details=lambda req: SimpleNamespace(
+        servers=servers, count=len(servers),
+    ))
+    with _Env():
+        td, path = _scope_file(FULL_SCOPE)
+        try:
+            # 只替换 SDK 的云客户端；保留真实列表、投影、存活检查及 HTTP 响应。
+            with patch("huaweicloudsdkcore.client.ClientBuilder.build", return_value=cloud):
+                async with async_client(make_test_app(scope_config=path)) as client:
+                    for method, endpoint in (("GET", "/api/ecs/instances"),
+                                             ("POST", "/api/ecs/check")):
+                        r = await client.request(method, endpoint)
+                        assert r.status_code == 200, r.text
+                        times = {i["id"]: i["auto_terminate_time"] for i in r.json()["instances"]}
+                        assert times == {
+                            "scheduled": "2026-10-09T08:00:00Z",
+                            "empty": "", "unset": None, "missing": None,
+                        }, r.text
+        finally:
+            td.cleanup()
 
 
 async def test_check_error_maps_502():

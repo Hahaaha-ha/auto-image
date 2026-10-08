@@ -617,6 +617,12 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .va-ecs-ip.none { font-style: italic; }
 .va-ecs-ago { margin-left: auto; flex-shrink: 0; }
+.va-ecs-delete-time {
+  margin-top: 1px; font-size: 11px; color: var(--ink-2, #57606a);
+  overflow-wrap: anywhere;
+}
+.va-ecs-delete-time time { font-family: var(--mono, ui-monospace, monospace); }
+.va-ecs-error { flex-shrink: 0; }
 
 /* 新建对话框：长请求提示条（黄底警示——已提交的创建不可撤销）+ 密码行 */
 .va-ecs-create-hint {

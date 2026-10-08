@@ -322,6 +322,7 @@ def _summarize(server):
         "image": _obj_id(getattr(server, "image", None)),
         "availability_zone": str(getattr(server, "os_ext_a_zavailability_zone", "") or ""),
         "created": str(getattr(server, "created", "") or ""),
+        "auto_terminate_time": getattr(server, "auto_terminate_time", None),
         "key_name": getattr(server, "key_name", None),
     }
 

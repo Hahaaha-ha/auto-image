@@ -3,7 +3,7 @@
 // 显示）+ 新建对话框（GET /api/ecs/defaults 预填 → POST /api/ecs/create
 // 同步等到就绪，分钟级长请求，完成后展示 IP 与登录密码——密码仅此一次
 // 返回，密钥对登录则提示 scope key_name）。清单不随流水线事件联动——
-// 云侧变化不经本服务事件面，刷新钮手动重拉 + 检查/建机完成后自动刷新。
+// 云侧变化不经本服务事件面，刷新钮手动重拉，建机完成后自动刷新。
 import { useEffect, useState } from 'react'
 import * as store from '../store.js'
 import { fmtAgo, STAGE_LABEL } from '../derive.js'
@@ -28,6 +28,25 @@ function statusClass(status) {
 
 function StatusDot({ status }) {
   return <span className={`va-ecs-status ${statusClass(status)}`} title={status} />
+}
+
+const DELETE_TIME_FORMAT = new Intl.DateTimeFormat('sv-SE', {
+  timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+})
+
+function DeletionTime({ value }) {
+  if (value == null || value === '') return null
+  // 云端值是 UTC 秒级时间；回读比较避免 Date 把 2 月 30 日等归一化。
+  const date = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)
+    ? new Date(value) : null
+  const valid = date && !Number.isNaN(date.getTime())
+    && date.toISOString().replace('.000Z', 'Z') === value
+  return (
+    <div className="va-ecs-delete-time">
+      计划删除：{valid ? <time dateTime={value}>{DELETE_TIME_FORMAT.format(date)}</time> : '时间未知'}
+    </div>
+  )
 }
 
 function EcsRow({ inst }) {
@@ -61,6 +80,7 @@ function EcsRow({ inst }) {
           )}
           {createdMs && <span className="va-ecs-ago">{fmtAgo(createdMs)}</span>}
         </div>
+        <DeletionTime value={inst.auto_terminate_time} />
         {task ? (
           <button
             className="va-ecs-task"
@@ -327,7 +347,7 @@ export default function EcsPanel() {
         </button>
       </div>
       {s.ecs.error && (
-        <div className="va-obs-error" title={typeof s.ecs.error === 'string' ? s.ecs.error : ''}>
+        <div className="va-obs-error va-ecs-error" title={typeof s.ecs.error === 'string' ? s.ecs.error : ''}>
           ECS 不可用：{s.ecs.error}
         </div>
       )}
