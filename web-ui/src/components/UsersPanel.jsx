@@ -40,6 +40,8 @@ export default function UsersPanel() {
     focusFirstRow()
   }
   const busy = userCreate.busy
+  const needsVerification = Boolean(userCreate.verifyUsername || userAccess.verifyUsername || userReset.verifyUsername)
+  const refreshLabel = users.loading ? '刷新中…' : needsVerification ? '刷新清单核实' : '刷新'
   useEffect(() => { store.refreshUsers() }, [])
   useEffect(() => {
     if (userAccess.notice || (userAccess.error && !userAccess.target)) {
@@ -61,12 +63,16 @@ export default function UsersPanel() {
       <div className="va-users-workarea">
         <div className="va-users-toolbar">
           <div className="va-users-search-actions">
-            <label className="va-users-search">搜索
+            <label className="va-users-search">
+              <span className="va-users-sr-only">搜索</span>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" aria-hidden="true" focusable="false"><circle cx="7" cy="7" r="4.75" /><path d="m10.5 10.5 3.25 3.25" /></svg>
               <input type="search" value={usersQuery.keyword} placeholder="输入用户名"
                 onChange={event => store.setUsersKeyword(event.target.value)} />
             </label>
-            <button className="va-users-refresh" onClick={() => store.refreshUsers()} disabled={users.loading || busy || userAccess.busy || userReset.busy}>
-              <span aria-hidden="true">⟳ </span>{users.loading ? '刷新中…' : userCreate.verifyUsername || userAccess.verifyUsername || userReset.verifyUsername ? '刷新清单核实' : '刷新'}
+            <button className="va-users-refresh" aria-label={refreshLabel} title={refreshLabel}
+              onClick={() => store.refreshUsers()} disabled={users.loading || busy || userAccess.busy || userReset.busy}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M13.25 6A5.5 5.5 0 1 0 13 11M13.25 2.75V6H10" /></svg>
+              <span className={needsVerification ? undefined : 'va-users-sr-only'}>{refreshLabel}</span>
             </button>
           </div>
         </div>
@@ -112,38 +118,45 @@ export default function UsersPanel() {
           <p>{users.items.length === 0 ? '暂无用户' : '没有匹配的用户，请修改搜索关键词'}</p>
           {usersQuery.keyword && <button onClick={() => store.setUsersKeyword('')}>清空搜索</button>}
         </div>}
-        {!users.error && view.items.length > 0 && <table ref={listRef} className="va-users-list" role="table" aria-label="用户信息">
-          <thead><tr role="row"><th scope="col">用户名</th><th scope="col">角色</th><th scope="col">状态</th><th scope="col">创建时间</th><th scope="col">操作</th></tr></thead>
-          <tbody>
-          {view.items.map((user) => (
-            <tr key={user.username} className="va-users-row" role="row" tabIndex={-1}
-              ref={user.username === userCreate.createdUsername ? createdRowRef : null}>
-              <th scope="row" role="rowheader" className="va-users-name">{user.username}</th>
-              <td role="cell" className="va-users-role"><span className="va-users-field" aria-hidden="true">角色</span>{user.role === 'admin' ? '管理员' : '普通用户'}</td>
-              <td role="cell" className="va-users-status-cell"><span className={`va-users-status ${user.enabled ? 'enabled' : 'disabled'}`}>{user.enabled ? '已启用' : '已禁用'}</span></td>
-              <td role="cell" className="va-users-created"><span className="va-users-field" aria-hidden="true">创建时间</span><CreatedAt value={user.created_at} /></td>
-              <td role="cell">
-              {user.role === 'user' && <>
-                <div className="va-user-access-actions va-user-access-button">
-                  <button aria-label={`${userReset.unknown ? '发起新的重置' : '重置密码'} ${user.username}`}
-                    disabled={Boolean(userAccess.target || userReset.target || userReset.verifyUsername) || users.loading || Boolean(users.error) || !user.user_version}
-                    onClick={(event) => { resetTriggerRef.current = event.currentTarget; store.beginUserReset(user.username) }}>{userReset.unknown ? '发起新的重置' : '重置密码'}</button>
-                  <button aria-label={`${user.enabled ? '禁用' : '启用'}用户 ${user.username}`}
-                    disabled={Boolean(userAccess.target || userReset.target || userAccess.verifyUsername) || users.loading || Boolean(users.error) || !user.user_version}
-                    onClick={(event) => { accessTriggerRef.current = event.currentTarget; store.beginUserAccess(user.username) }}>{user.enabled ? '禁用' : '启用'}</button>
-                </div>
-              </>}
-              </td>
-            </tr>
-          ))}
-          </tbody>
-        </table>}
-        {!users.error && view.total > 0 && <div className="va-users-results" aria-busy={users.loading}>
-          <p role="status">共 {view.total} 名用户 · 显示 {view.start + 1}–{view.start + view.items.length} 名</p>
+        {!users.error && view.items.length > 0 && <>
+          <p className="va-users-table-hint">左右滚动查看完整表格</p>
+          <div className="va-users-table-scroll" role="region" aria-label="用户信息表格" tabIndex={0}>
+            <table ref={listRef} className="va-users-list" role="table" aria-label="用户信息">
+              <thead><tr role="row"><th scope="col">用户名</th><th scope="col">角色</th><th scope="col">状态</th><th scope="col">创建时间</th><th scope="col">操作</th></tr></thead>
+              <tbody>
+                {view.items.map((user) => (
+                  <tr key={user.username} className="va-users-row" role="row" tabIndex={-1}
+                    ref={user.username === userCreate.createdUsername ? createdRowRef : null}>
+                    <th scope="row" role="rowheader" className="va-users-name"><span className="va-users-username" title={user.username}>{user.username}</span></th>
+                    <td role="cell" className="va-users-role">{user.role === 'admin' ? '管理员' : '普通用户'}</td>
+                    <td role="cell" className="va-users-status-cell"><span className={`va-users-status ${user.enabled ? 'enabled' : 'disabled'}`}>{user.enabled ? '已启用' : '已禁用'}</span></td>
+                    <td role="cell" className="va-users-created"><CreatedAt value={user.created_at} /></td>
+                    <td role="cell">
+                      {user.role === 'user' ?
+                        <div className="va-user-access-actions va-user-access-button">
+                          <button aria-label={`${userReset.unknown ? '发起新的重置' : '重置密码'} ${user.username}`}
+                            disabled={Boolean(userAccess.target || userReset.target || userReset.verifyUsername) || users.loading || Boolean(users.error) || !user.user_version}
+                            onClick={(event) => { resetTriggerRef.current = event.currentTarget; store.beginUserReset(user.username) }}>{userReset.unknown ? '发起新的重置' : '重置密码'}</button>
+                          <button aria-label={`${user.enabled ? '禁用' : '启用'}用户 ${user.username}`}
+                            disabled={Boolean(userAccess.target || userReset.target || userAccess.verifyUsername) || users.loading || Boolean(users.error) || !user.user_version}
+                            onClick={(event) => { accessTriggerRef.current = event.currentTarget; store.beginUserAccess(user.username) }}>{user.enabled ? '禁用' : '启用'}</button>
+                        </div>
+                        : <span className="va-users-no-actions" aria-label="无可用操作">—</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>}
+        {!users.error && view.total > 0 && <div className="va-users-footer" aria-busy={users.loading}>
+          <div className="va-users-results">
+            <p role="status">共 {view.total} 名用户<span className="va-users-range">显示 {view.start + 1}–{view.start + view.items.length} 名</span></p>
+          </div>
+          <UsersPagination page={view.page} pageCount={view.pageCount}
+            pageSize={usersQuery.pageSize} loading={users.loading}
+            onPageChange={changePage} onPageSizeChange={store.setUsersPageSize} />
         </div>}
-        {!users.error && view.total > 0 && <UsersPagination page={view.page} pageCount={view.pageCount}
-          pageSize={usersQuery.pageSize} loading={users.loading}
-          onPageChange={changePage} onPageSizeChange={store.setUsersPageSize} />}
       </div>
     </section>
   )
