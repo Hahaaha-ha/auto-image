@@ -44,7 +44,7 @@ function DeletionTime({ value }) {
     && date.toISOString().replace('.000Z', 'Z') === value
   return (
     <div className="va-ecs-delete-time">
-      计划删除：{valid ? <time dateTime={value}>{DELETE_TIME_FORMAT.format(date)}</time> : '时间未知'}
+      定时删除：{valid ? <time dateTime={value}>{DELETE_TIME_FORMAT.format(date)}</time> : '时间未知'}
     </div>
   )
 }

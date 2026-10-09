@@ -23,14 +23,14 @@ beforeEach(() => {
   fixture.task = null
 })
 
-describe('ECS 计划删除时间', () => {
+describe('ECS 定时删除时间', () => {
   it('在规格/IP和空闲信息之间显示北京时间，保留原始时间供机器读取', () => {
     const html = renderToStaticMarkup(<EcsPanel />)
 
-    expect(html).toContain('计划删除：')
+    expect(html).toContain('定时删除：')
     expect(html).toMatch(/<time\b[^>]*dateTime="2026-10-09T08:00:00Z"[^>]*>2026-10-09 16:00<\/time>/)
-    expect(html.indexOf('203.0.113.10')).toBeLessThan(html.indexOf('计划删除：'))
-    expect(html.indexOf('计划删除：')).toBeLessThan(html.indexOf('空闲中'))
+    expect(html.indexOf('203.0.113.10')).toBeLessThan(html.indexOf('定时删除：'))
+    expect(html.indexOf('定时删除：')).toBeLessThan(html.indexOf('空闲中'))
     expect(html).not.toContain('北京时间')
   })
 
@@ -49,7 +49,7 @@ describe('ECS 计划删除时间', () => {
     fixture.instances[0].auto_terminate_time = value
     const html = renderToStaticMarkup(<EcsPanel />)
 
-    expect(html).not.toContain('计划删除：')
+    expect(html).not.toContain('定时删除：')
     expect(html).not.toContain('<time')
     expect(html).toContain('空闲中')
   })
@@ -63,7 +63,7 @@ describe('ECS 计划删除时间', () => {
     fixture.instances[0].auto_terminate_time = value
     const html = renderToStaticMarkup(<EcsPanel />)
 
-    expect(html).toContain('计划删除：时间未知')
+    expect(html).toContain('定时删除：时间未知')
     expect(html).not.toContain('<time')
     expect(html).toContain('临时机')
   })
@@ -75,10 +75,10 @@ describe('ECS 计划删除时间', () => {
     try {
       const html = renderToStaticMarkup(<EcsPanel />)
 
-      expect(html).toContain('计划删除：')
+      expect(html).toContain('定时删除：')
       expect(html).toContain('>2026-10-09 16:00</time>')
       expect(html).toContain('运行任务中：nginx')
-      expect(html.indexOf('计划删除：')).toBeLessThan(html.indexOf('运行任务中：nginx'))
+      expect(html.indexOf('定时删除：')).toBeLessThan(html.indexOf('运行任务中：nginx'))
       expect(html).not.toContain('已删除')
       expect(html).not.toContain('倒计时')
     } finally {

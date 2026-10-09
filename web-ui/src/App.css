@@ -618,7 +618,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-ecs-ip.none { font-style: italic; }
 .va-ecs-ago { margin-left: auto; flex-shrink: 0; }
 .va-ecs-delete-time {
-  margin-top: 1px; font-size: 11px; color: var(--ink-2, #57606a);
+  margin-top: 1px; font-size: 11px; color: var(--bad, #cf222e);
   overflow-wrap: anywhere;
 }
 .va-ecs-delete-time time { font-family: var(--mono, ui-monospace, monospace); }
