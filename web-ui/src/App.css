@@ -7,7 +7,7 @@
   --surface-deep: #eef1f4;
   --ink: #1f2328;
   --ink-2: #57606a;
-  --ink-3: #8b949e;
+  --ink-3: #6e7781;
   --line: #d0d7de;
   --accent: #0969da;
   --ok: #1a7f37;
@@ -39,7 +39,9 @@ button:hover { background: var(--surface-dim); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ---- 空态 ---- */
+/* flex:1 横向撑满主区（父层 .va-tab-body 是行向 flex，缺它则按内容收缩靠左） */
 .empty-state {
+  flex: 1;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -66,11 +68,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   display: flex; gap: 8px; align-items: center;
   padding: 10px 14px; border-top: 1px solid var(--line); background: var(--surface);
 }
-.chat-bar input {
+.chat-bar textarea {
   flex: 1; font: inherit; border: 1px solid var(--line); border-radius: 6px;
   padding: 7px 10px; background: var(--surface);
+  resize: none; overflow-y: auto; min-height: 34px; max-height: 121px;
+  line-height: 1.5; font-family: inherit;
 }
-.chat-bar input:disabled { background: var(--surface-dim); color: var(--ink-3); }
+.chat-bar textarea:disabled { background: var(--surface-dim); color: var(--ink-3); }
 .chat-bar button { border-color: var(--line); }
 .chat-continue {
   flex-shrink: 0; background: var(--surface); border: 1px solid var(--line);
@@ -103,9 +107,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-root { height: 100%; display: flex; flex-direction: column; background: var(--surface); position: relative; }
 
 .va-head {
-  display: flex; gap: 12px; align-items: center;
+  display: flex; gap: 12px; align-items: flex-start;
   padding: 8px 16px; border-bottom: 1px solid var(--line); font-size: 13px;
 }
+.va-head-context { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: 12px; min-width: 0; min-height: 36px; }
 .va-runid { font-family: var(--mono); color: var(--ink-2); }
 .va-spacer { flex: 1; }
 .va-stage { font-weight: 600; }
@@ -144,7 +149,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .va-tab-name { overflow: hidden; text-overflow: ellipsis; }
 .va-tab-dot { flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; }
-/* 文件标签页标识：文件图标（与状态点区分两类标签页），二进制产物换箱形 */
+/* 文件标签页标识：文件图标（与状态点区分两类标签页），二进制产物换实心块 */
 .va-tab-ico { flex-shrink: 0; font-size: 12px; line-height: 1; }
 /* ● 执行中（呼吸）/ ○ 等待指令 / ◆ 最近回合失败 / ■ 已结束（title 另有状态词） */
 .va-tab-dot.running { background: var(--accent); animation: va-pulse 1.2s infinite; }
@@ -353,6 +358,23 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-art-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .va-art-tools button { padding: 2px 8px; font-size: 11.5px; }
 .va-art-zip { color: var(--accent); border-color: var(--accent); }
+/* 导出锚点：包住导出钮与浮层，浮层相对它定位（不落在整个工具行的坐标上） */
+.va-art-export-anchor { position: relative; display: inline-flex; }
+/* 导出方式菜单：导出按钮右侧外挂、顶部对齐（一次性浮层，点击选项即收起） */
+.va-art-export {
+  position: absolute; top: 0; left: calc(100% + 6px); z-index: 8;
+  display: flex; flex-direction: column; gap: 2px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 6px; padding: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  width: max-content; /* 随最长菜单项自适应（nowrap 项决定宽度），不设死 min-width */
+}
+.va-art-export button {
+  border: none; background: none; text-align: left; white-space: nowrap;
+  color: var(--ink); border-radius: 4px; font-size: 11.5px;
+}
+/* hover 反白高亮（信号蓝实心）：菜单项是瞬时选择动作，比灰底更强的指位 */
+.va-art-export button:hover:not(:disabled) { background: var(--accent); color: #fff; }
+.va-art-export button:disabled { color: var(--ink-3); cursor: default; background: none; }
 /* 组头：整组勾选框 + 目录名 + 文件数，点击展开/收起（div 承载：内部还嵌
    复选框，交互件不嵌套进 button） */
 .va-art-dir-head {
@@ -418,7 +440,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 8px; color: var(--ink-2);
 }
-.va-artifact-binary-icon { font-size: 34px; }
+/* 二进制占位大字形：mono 字符（非 emoji），与字形语言同源 */
+.va-artifact-binary-icon { font-family: var(--mono); font-size: 34px; line-height: 1; color: var(--ink-3); }
 .va-artifact-binary-name {
   font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--ink);
   max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -485,7 +508,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   background: var(--bg-0, #fff);
   border: 1px solid var(--line-1, #d0d7de);
   border-radius: 8px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   width: min(520px, 100%);
   max-height: 85vh; overflow-y: auto;
   padding: 14px 16px 12px;
@@ -500,8 +523,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   font-size: 14px; color: var(--ink-3, #6e7781); padding: 2px 4px;
 }
 .va-cfg-badge {
-  font-size: 11px; font-weight: 500; padding: 1px 8px; border-radius: 10px;
-  background: #fff1f0; color: #cf222e; border: 1px solid #ffcecb;
+  font-size: 11px; font-weight: 500; padding: 1px 8px; border-radius: 999px;
+  background: #fff1f0; color: #cf222e; border: 1px solid #ffd0cc;
 }
 .va-cfg-badge.on { background: #dafbe1; color: var(--ok, #1a7f37); border-color: #abe4b8; }
 .va-cfg-sec {
@@ -512,7 +535,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   display: flex; align-items: baseline; gap: 10px; padding: 2px 0;
 }
 .va-cfg-label {
-  flex: 0 0 64px; color: var(--ink-3, #6e7781); font-size: 12px;
+  flex: 0 0 80px; color: var(--ink-2, #57606a); font-size: 12px;
 }
 .va-cfg-value { min-width: 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .va-cfg-value code {
@@ -525,9 +548,14 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   background: var(--bg-2, #f6f8fa); border: 1px solid var(--line-1, #d0d7de);
   color: var(--ink-2, #57606a); overflow-wrap: anywhere;
 }
-.va-cfg-fields { display: flex; flex-direction: column; gap: 6px; }
+.va-cfg-fields { display: flex; flex-direction: column; gap: 10px; }
 .va-cfg-field { display: flex; align-items: center; gap: 10px; }
-.va-cfg-field > span { flex: 0 0 64px; font-size: 12px; color: var(--ink-3, #6e7781); }
+/* 标签列只认首个子元素：任务对话框的值侧（radio 组/清单消息）也是 span，
+   被通配子 span 规则钉定宽会压成竖条 */
+.va-cfg-field > span:first-child { flex: 0 0 80px; font-size: 12px; color: var(--ink-2, #57606a); }
+/* 两行式 field：标签独占一行 + 值行（实例下拉等超宽值侧用） */
+.va-cfg-field.stacked { display: block; }
+.va-cfg-field.stacked > span:first-child { display: block; flex: none; margin-bottom: 2px; }
 .va-cfg-input {
   flex: 1; min-width: 0; padding: 4px 8px; font-size: 13px;
   font-family: var(--mono, ui-monospace, monospace);
@@ -536,7 +564,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-cfg-msg { margin-top: 8px; padding: 6px 10px; border-radius: 6px; font-size: 12px; overflow-wrap: anywhere; }
 .va-cfg-msg.ok { background: #dafbe1; color: var(--ok, #1a7f37); border: 1px solid #abe4b8; }
 .va-cfg-msg.warn { background: #fff8c5; color: #9a6700; border: 1px solid #d4a72c66; }
-.va-cfg-msg.err { background: #fff1f0; color: #cf222e; border: 1px solid #ffcecb; }
+.va-cfg-msg.err { background: #fff1f0; color: #cf222e; border: 1px solid #ffd0cc; }
 .va-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .va-modal-actions button {
   padding: 4px 14px; border-radius: 6px; font-size: 13px; cursor: pointer;
@@ -546,3 +574,369 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   background: #0969da; border-color: #0969da; color: #fff;
 }
 .va-modal-actions button:disabled { opacity: 0.6; cursor: default; }
+
+/* ---------- ECS 实例面板（侧栏第四面板） ---------- */
+
+.va-ecs-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 5px 8px 5px 6px; margin: 0 2px;
+  border-radius: 6px;
+}
+.va-ecs-row:hover { background: var(--bg-2, #f6f8fa); }
+.va-ecs-status {
+  flex-shrink: 0; width: 8px; height: 8px; margin-top: 5px;
+  border-radius: 50%;
+}
+.va-ecs-status.s-active { background: var(--ok, #1a7f37); }
+.va-ecs-status.s-build { background: var(--accent, #0969da); animation: va-pulse 1.2s infinite; }
+.va-ecs-status.s-shutoff,
+.va-ecs-status.s-deleted { background: var(--ink-3, #6e7781); border-radius: 2px; }
+.va-ecs-status.s-error { background: var(--bad, #cf222e); }
+.va-ecs-status.s-other { background: transparent; border: 1.5px solid var(--ink-3, #6e7781); }
+.va-ecs-main { min-width: 0; flex: 1; }
+.va-ecs-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.va-ecs-name-text {
+  font-size: 12.5px; font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.va-ecs-status-text {
+  flex-shrink: 0; font-size: 10px; letter-spacing: 0.02em;
+  color: var(--ink-3, #6e7781);
+}
+.va-ecs-alive { flex-shrink: 0; font-size: 12px; font-weight: 600; }
+.va-ecs-alive.ok { color: var(--ok, #1a7f37); }
+.va-ecs-alive.bad { color: var(--bad, #cf222e); }
+.va-ecs-sub {
+  display: flex; align-items: baseline; gap: 8px; min-width: 0;
+  margin-top: 1px; font-size: 11px; color: var(--ink-3, #6e7781);
+}
+.va-ecs-flavor { flex-shrink: 0; }
+.va-ecs-ip {
+  font-family: var(--mono, ui-monospace, monospace);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.va-ecs-ip.none { font-style: italic; }
+.va-ecs-ago { margin-left: auto; flex-shrink: 0; }
+.va-ecs-delete-time {
+  margin-top: 1px; font-size: 11px; color: var(--bad, #cf222e);
+  overflow-wrap: anywhere;
+}
+.va-ecs-delete-time time { font-family: var(--mono, ui-monospace, monospace); }
+.va-ecs-error { flex-shrink: 0; }
+
+/* 新建对话框：长请求提示条（黄底警示——已提交的创建不可撤销）+ 密码行 */
+.va-ecs-create-hint {
+  margin: 8px 0; padding: 8px 10px; border-radius: 6px; font-size: 12px;
+  background: #fff8c5; color: #9a6700; border: 1px solid #d4a72c66;
+  overflow-wrap: anywhere;
+}
+.va-ecs-pwd {
+  flex: 1; min-width: 120px; padding: 3px 8px; font-size: 12px;
+  font-family: var(--mono, ui-monospace, monospace);
+  border: 1px solid var(--line-1, #d0d7de); border-radius: 6px;
+}
+.va-ecs-pwd-btn {
+  flex-shrink: 0; padding: 2px 8px; font-size: 12px; cursor: pointer;
+  border: 1px solid var(--line-1, #d0d7de); border-radius: 6px;
+  background: var(--bg-2, #f6f8fa);
+}
+
+/* ---------- 任务面板（侧栏第二面板）与会话标签任务 pill ---------- */
+
+/* 会话标签上的任务 pill：镜像/RPM + 软件 + 版本；点击跳任务面板 */
+.va-tab-task {
+  flex-shrink: 0; max-width: 130px;
+  font-size: 10px; line-height: 1; padding: 2px 7px;
+  border-radius: 999px; cursor: pointer;
+  color: var(--accent, #0969da); background: transparent;
+  border: 1px solid var(--accent, #0969da);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.va-tab-task:hover { background: #0969da1a; }
+
+/* 任务行：状态点 + 名称 + 阶段流转图 + 次行（类型/token/时间）+ 会话跳转 */
+.va-task-row {
+  display: flex; align-items: flex-start; gap: 6px;
+  padding: 6px 6px 6px 4px; margin: 0 2px;
+  border-radius: 6px; border-bottom: 1px solid var(--line-2, #eaeef2);
+}
+.va-task-row:hover { background: var(--bg-2, #f6f8fa); }
+.va-task-row.on { background: var(--surface-dim, #eef1f4); }
+.va-task-main { min-width: 0; flex: 1; }
+.va-task-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.va-task-name-text {
+  font-size: 12.5px; font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.va-task-outcome { flex-shrink: 0; font-size: 10px; color: var(--ink-3, #6e7781); }
+.va-task-outcome.o-success { color: var(--ok, #1a7f37); }
+.va-task-outcome.o-failed { color: var(--bad, #cf222e); }
+.va-task-sub {
+  display: flex; align-items: baseline; gap: 8px; min-width: 0;
+  margin-top: 2px; font-size: 11px; color: var(--ink-3, #6e7781);
+}
+.va-task-chip {
+  flex-shrink: 0; padding: 0 6px; border-radius: 8px;
+  background: var(--bg-2, #f6f8fa); border: 1px solid var(--line-1, #d0d7de);
+  color: var(--ink-2, #57606a);
+}
+.va-task-ago { margin-left: auto; flex-shrink: 0; }
+.va-task-jump {
+  flex-shrink: 0; padding: 1px 8px; margin-top: 2px;
+  font-size: 10.5px; cursor: pointer; border-radius: 4px;
+  border: 1px solid var(--line-1, #d0d7de); background: var(--bg-2, #f6f8fa);
+  color: var(--ink-2, #57606a);
+}
+.va-task-jump:hover { border-color: var(--accent, #0969da); color: var(--accent, #0969da); }
+
+/* 阶段流转图：pill 序列（done ✓ 绿 / current 蓝+呼吸 / upcoming 灰），箭头衔接 */
+.va-flow {
+  display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+  margin-top: 3px;
+}
+.va-flow-seg { display: inline-flex; align-items: center; gap: 2px; }
+.va-flow-arrow { color: var(--ink-3, #6e7781); font-size: 10px; }
+.va-flow-pill {
+  font-size: 10px; line-height: 1; padding: 2px 6px; border-radius: 999px;
+  white-space: nowrap;
+}
+.va-flow-pill.upcoming {
+  color: var(--ink-3, #6e7781);
+  background: var(--bg-2, #f6f8fa);
+  border: 1px dashed var(--line-1, #d0d7de);
+}
+.va-flow-pill.current {
+  color: #fff; background: var(--accent, #0969da);
+  border: 1px solid var(--accent, #0969da);
+  animation: va-pulse 1.2s infinite;
+}
+.va-flow-pill.done {
+  color: var(--ok, #1a7f37); background: #dafbe1;
+  border: 1px solid #abe4b8;
+}
+
+/* ECS 实例运行态：跑任务的机器给动作色（点击跳任务），空闲弱化 */
+.va-ecs-task {
+  margin-top: 2px; padding: 0; border: none; background: none;
+  font-size: 10.5px; text-align: left; cursor: pointer;
+  color: var(--accent, #0969da);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 100%;
+}
+.va-ecs-task:hover { text-decoration: underline; }
+.va-ecs-idle { margin-top: 2px; font-size: 10.5px; color: var(--ink-2, #57606a); }
+
+/* 手动任务：新建对话框（radio 组 + 实例下拉）与 INIT 态运行钮 */
+.va-task-radios { display: inline-flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+/* 纵排变体：两个选项各占一行（行内值侧回到 80px 标签列布局） */
+.va-task-radios-col { flex-direction: column; align-items: flex-start; gap: 6px; }
+.va-task-radio { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; cursor: pointer; }
+.va-task-radio input { margin: 0; }
+.va-ecs-select {
+  flex: 1; min-width: 0; padding: 4px 8px; font-size: 12.5px;
+  border: 1px solid var(--line-1, #d0d7de); border-radius: 6px;
+  background: var(--bg-0, #fff);
+}
+.va-task-run {
+  flex-shrink: 0; padding: 1px 10px; margin-top: 2px;
+  font-size: 11px; cursor: pointer; border-radius: 4px;
+  color: #fff; background: var(--accent, #0969da); border: 1px solid var(--accent, #0969da);
+}
+/* 实心钮 hover 只减淡不换底（全局 button:hover 会盖成浅灰底白字） */
+.va-task-run:hover:not(:disabled) {
+  opacity: 0.88; background: var(--accent, #0969da); border-color: var(--accent, #0969da);
+}
+.va-task-outcome.o-pending { color: var(--ink-3, #6e7781); }
+
+/* 登录壳（未认证时的唯一界面）与 header 用户标识 */
+.va-login {
+  height: 100%; display: flex; align-items: center; justify-content: center;
+  overflow-y: auto; padding: 20px;
+  background: var(--surface-dim);
+}
+.va-login-card {
+  display: flex; flex-direction: column; gap: 10px; width: 300px; max-width: 100%; margin-block: auto;
+  padding: 28px 26px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface);
+}
+.va-login-waiting { align-items: center; color: var(--ink-3); }
+.va-login-title { font-size: 15px; font-weight: 600; margin: 0 0 6px; text-align: center; }
+.va-login-input {
+  padding: 7px 10px; font: inherit; border: 1px solid var(--line); border-radius: 6px;
+}
+.va-login-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.va-login-submit {
+  padding: 7px 10px; margin-top: 6px; font: inherit; font-weight: 500; cursor: pointer;
+  color: #fff; background: var(--accent); border: 1px solid var(--accent); border-radius: 6px;
+}
+/* 实心 accent 钮须自带 hover：全局 button:hover 只换 --surface-dim 底，
+   单类选择器特异性压不过它，会翻成浅灰底白字 */
+.va-login-submit:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); opacity: 0.88; }
+.va-login-submit:disabled { opacity: 0.6; cursor: default; }
+.va-login-error { color: var(--bad); font-size: 12.5px; }
+.va-password-card { width: 420px; }
+.va-password-field { display: flex; flex-direction: column; gap: 6px; }
+.va-auth-help { margin: 0; color: var(--ink-2); font-size: 13px; overflow-wrap: anywhere; }
+.va-auth-help strong { color: var(--ink); font-weight: 600; white-space: pre-wrap; }
+.va-auth-notice { font-size: 13px; overflow-wrap: anywhere; }
+.va-auth-notice.success { color: var(--ok); }
+.va-auth-notice.warning { color: var(--warn); }
+.va-workbench, .va-management { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.va-workbench[hidden], .va-management[hidden] { display: none; }
+.va-account { position: relative; flex-shrink: 0; margin-inline-start: auto; max-width: min(240px, 45vw); }
+.va-account-button { display: flex; align-items: center; gap: 8px; max-width: 100%; min-height: 36px; border-color: transparent; background: transparent; }
+.va-account-button:hover { background: var(--surface-dim); }
+.va-account-button span { overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.va-account-button svg { flex-shrink: 0; }
+.va-account-menu {
+  position: absolute; z-index: 50; right: 0; top: calc(100% + 6px); width: max-content; min-width: 112px; max-width: calc(100vw - 32px);
+  padding: 4px; border-radius: 6px; background: var(--surface);
+  box-shadow: 0 6px 24px #0003;
+}
+.va-account-menu :is(a, button) {
+  display: block; width: 100%; padding: 10px 12px; border: 0; border-radius: 4px;
+  color: var(--ink); text-align: left; text-decoration: none; font: inherit;
+}
+.va-account-menu :is(a, button):hover { background: var(--surface-dim); }
+.va-account :focus-visible, .va-back:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.va-back { display: inline-flex; align-items: center; justify-content: center; align-self: center; min-height: 36px; padding: 4px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; text-decoration: none; }
+.va-back:hover { background: var(--surface-dim); }
+.va-management-body { --management-bottom-space: 16px; overflow: auto; flex: 1; min-width: 0; padding: 0 16px var(--management-bottom-space); scroll-padding-block: 48px 104px; scrollbar-color: var(--line) var(--surface); }
+.va-access-denied { max-width: 60ch; padding: 24px 0; }
+.va-users-panel { padding: 16px 0 0; }
+.va-users-heading, .va-users-workarea { max-width: 1280px; width: calc(100% - 32px); min-width: 0; margin-inline: auto; }
+.va-users-heading, .va-users-toolbar { display: flex; align-items: center; gap: 16px; }
+.va-users-heading { justify-content: space-between; min-height: 32px; margin-bottom: 16px; }
+.va-users-heading h1 { margin: 0; font-size: 20px; font-weight: 600; line-height: 1.4; }
+.va-users-panel button { min-height: 32px; }
+.va-users-create { flex-shrink: 0; margin-left: auto; color: var(--surface); background: var(--accent); border-color: var(--accent); }
+.va-users-create:hover:not(:disabled) { background: var(--accent); opacity: 0.88; }
+.va-users-toolbar { margin-bottom: 16px; }
+.va-users-search-actions { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; }
+.va-users-refresh { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 8px; min-width: 32px; padding: 4px 8px; color: var(--ink-2); font-size: 13px; }
+.va-users-results { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.va-users-results p { margin: 0; }
+.va-users-range { margin-inline-start: 12px; padding-inline-start: 12px; border-inline-start: 1px solid var(--line); }
+.va-users-search { position: relative; display: flex; align-items: center; flex: 1; min-width: 0; }
+.va-users-search svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--ink-3); pointer-events: none; }
+.va-users-search input, .va-page-size select {
+  min-width: 0; color: var(--ink); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 6px; padding: 4px 8px; font: inherit; caret-color: var(--accent);
+}
+.va-users-search input { width: 0; flex: 1; min-height: 32px; padding-inline: 36px 12px; font-size: 13px; }
+.va-users-search input::placeholder { color: var(--ink-3); }
+.va-users-sr-only, .va-users-loading { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.va-users-feedback { display: flex; flex-direction: column; }
+.va-users-feedback > div:empty { display: none; }
+.va-users-feedback .va-users-zone {
+  position: relative; margin: 0 0 12px; padding: 10px 48px 10px 12px; border: 1px solid var(--line); border-radius: 6px;
+  font-size: 13px; line-height: 1.6; overflow-wrap: anywhere;
+}
+.va-users-feedback .success { background: #dafbe1; border-color: #abe4b8; }
+.va-users-feedback .warning { background: #fff8c5; border-color: #d4a72c66; }
+.va-users-feedback .va-login-error { background: #fff1f0; border-color: #ffd0cc; }
+.va-users-feedback .va-notice-dismiss { position: absolute; right: 4px; top: 4px; min-width: 36px; min-height: 36px; padding: 4px; border-color: transparent; background: transparent; color: var(--ink-2); }
+.va-users-locate { margin-inline-start: 12px; background: transparent; }
+.va-users-empty { padding: 40px 16px; text-align: center; color: var(--ink-2); border-block: 1px solid var(--line); }
+.va-users-empty p { margin: 0 0 12px; }
+.va-users-empty[role="alert"] { color: var(--bad); }
+
+/* 各视口保留列结构；空间不足时只在表格内部横向滚动。 */
+.va-users-table-scroll { width: 100%; min-width: 0; scrollbar-color: var(--line) var(--surface); }
+.va-users-table-hint { display: none; }
+.va-users-list { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; text-align: left; }
+.va-users-list th, .va-users-list td { padding: 6px 16px; border-bottom: 1px solid var(--surface-deep); vertical-align: middle; }
+.va-users-list thead th { position: sticky; top: 0; z-index: 1; height: 40px; color: var(--ink); background: var(--surface-dim); font-size: 12px; font-weight: 400; }
+.va-users-list thead th:not(:last-child)::after { content: ''; position: absolute; right: 0; top: 50%; width: 1px; height: 16px; transform: translateY(-50%); background: var(--line); }
+.va-users-list thead th:first-child { width: 26%; }
+.va-users-list thead th:nth-child(2), .va-users-list thead th:nth-child(3) { width: 14%; }
+.va-users-list thead th:nth-child(4) { width: 24%; }
+.va-users-list thead th:last-child { width: 22%; }
+.va-users-zone { display: block; color: var(--ink-2); font-size: 12px; font-weight: 400; overflow-wrap: anywhere; }
+.va-users-row { height: 48px; color: var(--ink); font-size: 13px; line-height: 1.5; scroll-margin-block: 48px; font-variant-numeric: tabular-nums; }
+.va-users-row:hover { background: var(--surface-dim); }
+.va-users-name { font-weight: 400; }
+.va-users-username { display: block; overflow-wrap: anywhere; white-space: pre-wrap; }
+.va-users-created, .va-users-role { white-space: nowrap; }
+.va-users-no-actions { color: var(--ink-3); }
+.va-users-status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 13px; }
+.va-users-status::before { content: ''; width: 8px; height: 8px; border: 2px solid var(--ok); border-radius: 50%; }
+.va-users-status.disabled { color: var(--ink-2); }
+.va-users-status.disabled::before { border: 1px solid var(--ink-3); }
+.va-user-access-actions { display: flex; gap: 12px; white-space: nowrap; }
+.va-user-access-actions button { flex-shrink: 0; border-color: transparent; background: transparent; padding: 4px 0; color: var(--accent); }
+.va-user-access-actions button:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }
+.va-users-footer { position: sticky; bottom: calc(-1 * var(--management-bottom-space)); z-index: 2; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; min-height: 56px; padding: 12px 0; background: var(--surface); }
+.va-users-pagination { margin-inline-start: auto; font-size: 12px; font-variant-numeric: tabular-nums; }
+.va-users-pagination nav { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.va-page-buttons { display: flex; align-items: center; justify-content: center; gap: 4px; }
+.va-page-buttons button { display: inline-flex; align-items: center; justify-content: center; width: 32px; padding: 4px; border-color: transparent; border-radius: 4px; color: var(--ink-2); }
+.va-page-buttons svg { flex-shrink: 0; }
+.va-page-position { display: flex; align-items: center; gap: 4px; margin: 0; white-space: nowrap; }
+.va-page-position strong { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; height: 32px; padding: 4px; border-radius: 999px; background: var(--surface-dim); font-weight: 600; }
+.va-page-size { display: flex; align-items: center; margin: 0; }
+.va-page-size select { width: 64px; min-height: 32px; text-align: center; }
+.va-users-panel :focus-visible, .va-users-feedback > div:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.va-users-table-scroll:focus-visible { outline-offset: -2px; }
+.va-users-row:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.va-create-dialog, .va-access-dialog, .va-reset-dialog { padding: 24px; font-size: 14px; overflow-wrap: anywhere; }
+:is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) .va-modal-title { margin-bottom: 16px; }
+:is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) h2 { margin: 0; min-width: 0; font-size: 18px; line-height: 1.4; font-weight: 600; }
+:is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) .va-modal-close { flex-shrink: 0; min-width: 36px; min-height: 36px; }
+:is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) p { line-height: 1.6; }
+.va-create-dialog .va-password-field, .va-reset-dialog .va-password-field { margin-top: 20px; }
+.va-create-dialog .va-login-input, .va-reset-dialog .va-login-input { width: 100%; min-width: 0; min-height: 40px; font-size: 14px; color: var(--ink); background: var(--surface); }
+.va-password-input { position: relative; }
+.va-password-input .va-login-input { padding-right: 64px; }
+.va-password-toggle { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); min-width: 52px; min-height: 32px; padding: 4px 8px; background: transparent; border-color: transparent; color: var(--accent); }
+.va-create-dialog .va-auth-help, .va-reset-dialog .va-auth-help { margin-top: 6px; }
+.va-create-dialog .va-field-error, .va-reset-dialog .va-field-error { margin: 6px 0 0; color: var(--bad); }
+.va-login-input[aria-invalid="true"] { border-color: var(--bad); }
+.va-create-dialog .va-login-input:disabled, .va-reset-dialog .va-login-input:disabled { background: var(--surface-dim); }
+.va-user-dialog-identity { display: flex; flex-direction: column; gap: 4px; padding: 12px; margin: 0 0 16px; background: var(--surface-dim); border-radius: 6px; }
+.va-user-dialog-identity span { color: var(--ink-2); font-size: 12px; }
+.va-user-dialog-identity strong { color: var(--ink); font-weight: 600; white-space: pre-wrap; }
+.va-user-delivery { color: var(--ink-2); margin: 20px 0 0; font-size: 13px; }
+:is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) .va-modal-actions { flex-wrap: wrap; padding-top: 20px; margin-top: 20px; border-top: 1px solid var(--line); }
+:is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) .va-modal-actions button { min-height: 36px; font-size: 14px; }
+:is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) .va-cfg-save:hover:not(:disabled) { background: var(--accent); opacity: 0.88; }
+.va-access-dialog .va-user-disable { color: var(--bad); }
+.va-access-dialog .va-user-disable:hover { border-color: var(--bad); }
+:is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.va-create-dialog:focus-visible, .va-access-dialog:focus-visible, .va-reset-dialog:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 903px) {
+  .va-users-table-scroll { overflow-x: auto; }
+  .va-users-list { min-width: 840px; }
+  .va-users-list thead th { position: relative; }
+  .va-users-table-hint { display: block; margin: 0 0 8px; color: var(--ink-2); font-size: 12px; }
+}
+@media (max-width: 760px) {
+  .va-account-button, .va-head-context, .va-back { min-height: 44px; }
+  .va-management-body { scroll-padding-bottom: 128px; }
+  .va-users-heading, .va-users-workarea { width: 100%; }
+  .va-users-heading { gap: 12px; min-height: 44px; }
+  .va-users-panel button, .va-users-search input, .va-page-size select { min-height: 44px; }
+  .va-users-search input, .va-page-size select { font-size: 16px; }
+  .va-users-refresh, .va-page-buttons button { min-width: 44px; }
+  .va-users-row { height: 60px; }
+  .va-user-access-actions button { min-width: 44px; }
+  .va-users-footer { gap: 8px; padding-block: 12px; }
+  .va-users-results, .va-users-pagination { width: 100%; }
+  .va-page-size select { width: 72px; }
+  .va-page-position strong { min-width: 44px; height: 44px; }
+  .va-create-dialog, .va-access-dialog, .va-reset-dialog { padding: 16px; max-height: calc(100dvh - 48px); }
+  :is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) .va-modal-actions button,
+  :is(.va-create-dialog, .va-access-dialog, .va-reset-dialog) .va-modal-close { min-height: 44px; min-width: 44px; }
+  .va-create-dialog .va-login-input, .va-reset-dialog .va-login-input { min-height: 44px; }
+  .va-password-toggle { right: 1px; min-height: 44px; }
+  .va-users-feedback .va-notice-dismiss { min-width: 44px; min-height: 44px; top: 0; right: 0; }
+}
+@media (max-height: 600px) {
+  .va-management-body { scroll-padding-bottom: 24px; }
+  .va-users-footer { position: static; }
+}
+@media (max-width: 640px) {
+  .va-head, .va-head-context { gap: 8px; }
+  .va-runid { overflow-wrap: anywhere; }
+}

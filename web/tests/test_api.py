@@ -13,12 +13,11 @@ import sys
 import time
 from uuid import UUID
 
-import httpx
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 from web.fake import DEFAULT_SCRIPT, FakeSessionFactory  # noqa: E402
 from web.state import load_state  # noqa: E402
-from web.tests.support import StreamingASGITransport, make_test_app  # noqa: E402
+from web.tests.support import async_client, make_test_app  # noqa: E402
 
 DELAY = 0.02
 
@@ -212,8 +211,7 @@ async def open_global_stream(client):
 
 async def test_create_run_returns_ready_immediately():
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         r = await client.post("/api/runs", json={})
         assert r.status_code == 200, r.text
         body = r.json()
@@ -228,8 +226,7 @@ async def test_create_run_returns_ready_immediately():
 
 async def test_first_message_drives_scripted_turn():
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         resp = await open_stream(client, run_id)
         events, _ = await collect_sse(resp, deadline_s=1.0)
@@ -265,8 +262,11 @@ async def test_first_message_drives_scripted_turn():
         tss = [e["data"]["ts"] for e in events]
         assert all(isinstance(t, (int, float)) for t in tss), tss
         assert tss == sorted(tss), tss
-        # 阶段由 Task + subagent_type 推导
-        assert events[5]["data"] == {"stage": "GUIDE", "status": "running", "ts": events[5]["data"]["ts"]}
+        # 阶段由 Task + subagent_type 推导（subagent 随行供任务跟踪分流类型）
+        assert events[5]["data"] == {
+            "stage": "GUIDE", "status": "running", "subagent": "deploy-guide",
+            "ts": events[5]["data"]["ts"],
+        }
         # 工具事件带工具名 + 脱敏摘要（折叠行）+ 脱敏全文（展开查看）
         assert events[6]["data"]["tool"] == "Task"
         assert "detail" in events[6]["data"] and "summary" in events[6]["data"]
@@ -280,8 +280,7 @@ async def test_ready_run_snapshot_completes_without_heartbeat():
     """快照语义：挂起会话的历史一次给完即结束响应，无心跳（实时事件
     由全局流续接，per-run 通道不再常驻）。"""
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
         await wait_status(client, run_id, "READY")
@@ -297,8 +296,7 @@ async def test_ended_run_snapshot_contains_session_ended():
     """ENDED 会话的快照含 session.ended 末条，重放完结束响应（服务端不替
     前端关流——终态语义由事件本身承载）。"""
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
         await wait_status(client, run_id, "READY")
@@ -315,8 +313,7 @@ async def test_ended_run_snapshot_contains_session_ended():
 
 async def test_last_event_id_replays_from_next_seq_without_duplicates():
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
         await wait_status(client, run_id, "READY")
@@ -340,8 +337,7 @@ async def test_parallel_runs_execute_independently():
     """并行核心：A 执行中新建 B 成功、向 B 发送成功，两回合同时 RUNNING，
     事件不串线。"""
     app = make_app(delay=0.1)
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_a = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_a}/messages", json={"text": "部署 nginx"})
         # A 执行中：新建不被拒（无全局门禁）
@@ -371,8 +367,7 @@ async def test_parallel_runs_execute_independently():
 async def test_stop_a_does_not_affect_b():
     factory = ProbeSessionFactory(["block", "block"])
     app = make_test_app(session_factory=factory)
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_a = (await client.post("/api/runs", json={})).json()["run_id"]
         run_b = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_a}/messages", json={"text": "部署 nginx"})
@@ -403,8 +398,7 @@ async def test_failed_turn_returns_to_ready_and_continues():
     """回合失败（连接异常）是回合结果：会话回 READY，同会话可立即续发。"""
     fail_script = [RuntimeError("sdk crashed: password=leaked-secret")]
     app = make_app(script=fail_script, delay=0.1)
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
         await wait_status(client, run_id, "READY")
@@ -434,7 +428,7 @@ async def test_max_turns_result_fails_turn_not_session():
         {"type": "result", "subtype": "error_max_turns", "is_error": True, "result": "已达到回合上限，回合被截断 password: leak-me"},
     ]
     app = make_app(script)
-    async with httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
         await wait_status(client, run_id, "READY")
@@ -448,8 +442,7 @@ async def test_max_turns_result_fails_turn_not_session():
 
 async def test_send_while_running_409_turn_in_progress():
     app = make_app(delay=0.2)
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
         # 执行中发送：409 turn_in_progress，不打断在飞回合
@@ -468,8 +461,7 @@ async def test_parallel_limit_reached_409():
     """WEB_MAX_PARALLEL_RUNS 数执行中回合：超限的发送 409，新建与克隆
     不受限。"""
     app = make_app(delay=0.2, max_parallel_runs=2)
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_a = (await client.post("/api/runs", json={})).json()["run_id"]
         run_b = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_a}/messages", json={"text": "部署 nginx"})
@@ -496,8 +488,7 @@ async def test_parallel_limit_reached_409():
 async def test_stop_returns_to_ready_and_session_continues():
     # 慢剧本保证 stop 必落在回合执行中（快剧本下时序不稳）
     app = make_app(delay=0.2)
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
         r = await client.post(f"/api/runs/{run_id}/stop", json={})
@@ -522,8 +513,7 @@ async def test_stop_returns_to_ready_and_session_continues():
 async def test_stop_during_sdk_startup_skips_query_and_cloud_actions():
     factory = ProbeSessionFactory(["slow_enter"])
     app = make_test_app(session_factory=factory)
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         sent = await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署生产环境"})
         assert sent.status_code == 200, sent.text
@@ -556,8 +546,7 @@ async def test_closed_adapters_are_not_interrupted_by_later_turns():
     for behavior in ("success", "failure", "exception", "block"):
         factory = ProbeSessionFactory([behavior, "slow_enter"])
         app = make_test_app(session_factory=factory)
-        transport = StreamingASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async with async_client(app) as client:
             run_id = (await client.post("/api/runs", json={})).json()["run_id"]
             await client.post(f"/api/runs/{run_id}/messages", json={"text": f"首回合 {behavior}"})
             await wait_until(lambda: len(factory.sessions) == 1)
@@ -595,8 +584,7 @@ async def test_closed_adapters_are_not_interrupted_by_later_turns():
 async def test_end_cancellation_closes_live_adapter():
     factory = ProbeSessionFactory(["block"])
     app = make_test_app(session_factory=factory)
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "长回合"})
         await wait_until(lambda: len(factory.sessions) == 1)
@@ -612,8 +600,7 @@ async def test_end_cancellation_closes_live_adapter():
 
 async def test_stop_on_ready_run_is_noop():
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         # 挂起中无回合可停：幂等无操作
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
@@ -629,8 +616,7 @@ async def test_end_semantics():
     """end：显式结束会话——RUNNING 中 end 取消在飞回合、session.ended 是
     流的最后一条事件、ENDED 后一切干预 409 session_not_active（克隆除外）。"""
     app = make_app(delay=0.2)
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
         r = await client.post(f"/api/runs/{run_id}/end")
@@ -664,8 +650,7 @@ async def test_clone_from_ready_source():
     """克隆 READY 源：新 run_id、事件流转录、标题/首条指令继承、
     首条指令不再生成标题、源会话不变、克隆回合以源 session_id resume。"""
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_a = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_a}/messages", json={"text": "部署 nginx"})
         await wait_status(client, run_a, "READY")
@@ -709,8 +694,7 @@ async def test_clone_from_ready_source():
 
 async def test_clone_from_ended_source():
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_a = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_a}/messages", json={"text": "部署 nginx"})
         await wait_status(client, run_a, "READY")
@@ -729,8 +713,7 @@ async def test_clone_from_ended_source():
 
 async def test_clone_running_source_409():
     app = make_app(delay=0.2)
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_a = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_a}/messages", json={"text": "部署 nginx"})
         r = await client.post(f"/api/runs/{run_a}/clone")
@@ -744,8 +727,7 @@ async def test_clone_running_source_409():
 async def test_second_turn_resumes_own_session_id():
     """首回合接受时预分配合法身份并落盘；第二回合续接同一身份。"""
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
         await wait_status(client, run_id, "READY")
@@ -778,8 +760,7 @@ async def test_sdk_cannot_replace_preallocated_session_identity():
         {"type": "result", "subtype": "success", "result": "不应完成"},
     ]
     app = make_app(script=script)
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
         await wait_status(client, run_id, "READY")
@@ -798,8 +779,7 @@ async def test_clone_second_turn_resumes_clone_own_session_id():
     """克隆会话分叉后：第二回合续自己的 session_id（克隆首回合建立），
     不再重复 resume 源会话（否则克隆首回合上下文丢失）。"""
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_a = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_a}/messages", json={"text": "部署 nginx"})
         await wait_status(client, run_a, "READY")
@@ -828,9 +808,7 @@ async def test_fork_transcripts_share_prefix_then_diverge_during_parallel_turns(
     ]
     factory = FakeSessionFactory(script=script, delay=0.05)
     app = make_test_app(session_factory=factory)
-    async with httpx.AsyncClient(
-        transport=StreamingASGITransport(app=app), base_url="http://testserver"
-    ) as client:
+    async with async_client(app) as client:
         source = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(
             f"/api/runs/{source}/messages", json={"text": "共享的分叉前指令"}
@@ -911,8 +889,7 @@ async def test_fork_transcripts_share_prefix_then_diverge_during_parallel_turns(
 
 async def test_second_turn_after_completed_turn_replays_new_events_only():
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
         await wait_status(client, run_id, "READY")
@@ -934,8 +911,7 @@ async def test_second_turn_after_completed_turn_replays_new_events_only():
 
 async def test_messages_conflicts_and_unknown_404():
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         # 不存在的 run
         r = await client.post("/api/runs/run_missing/messages", json={"text": "x"})
         assert r.status_code == 404
@@ -951,8 +927,7 @@ async def test_messages_conflicts_and_unknown_404():
 
 async def test_redaction_masks_credentials_everywhere():
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
         await wait_status(client, run_id, "READY")
@@ -969,8 +944,7 @@ async def test_redaction_masks_credentials_everywhere():
 async def test_multiple_subscribers_same_session():
     """多客户端拉同一会话的快照收到相同事件（全局流的多客户端等价另测）。"""
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
         await wait_status(client, run_id, "READY")
@@ -988,8 +962,7 @@ async def test_global_stream_frames_match_per_run_seq():
     """帧形状 {run_id, seq, ts, type, payload}：seq 即 per-run 流的 SSE id
     （客户端去重锚点，保持原值）；id 行不承载断点语义（无全局 seq）。"""
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         resp = await open_global_stream(client)
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
@@ -1018,8 +991,7 @@ async def test_global_stream_mixes_multiple_runs_in_occurrence_order():
     """两个并行会话的事件混在同一条流里：按发生序广播、各自 per-run seq
     不重排。"""
     app = make_app(delay=0.05)
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         resp = await open_global_stream(client)
         run_a = (await client.post("/api/runs", json={})).json()["run_id"]
         run_b = (await client.post("/api/runs", json={})).json()["run_id"]
@@ -1050,8 +1022,7 @@ async def test_global_stream_mixes_multiple_runs_in_occurrence_order():
 
 async def test_global_stream_multiple_clients_receive_equivalent_events():
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         resp1 = await open_global_stream(client)
         resp2 = await open_global_stream(client)
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
@@ -1068,8 +1039,7 @@ async def test_global_stream_multiple_clients_receive_equivalent_events():
 async def test_global_stream_silent_on_ready_runs():
     """READY 会话不产事件：全局流上静默，只有心跳保活。"""
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
         await wait_status(client, run_id, "READY")
@@ -1083,8 +1053,7 @@ async def test_global_stream_silent_on_ready_runs():
 async def test_global_stream_does_not_replay_prior_events():
     """连接前发生的事件不重放（历史靠快照补）；连接后的新回合实时到达。"""
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
         await wait_status(client, run_id, "READY")
@@ -1112,8 +1081,7 @@ async def test_snapshot_and_global_stream_union_without_duplicates():
     拉快照——并集恰好是全量事件，重叠由 per-run seq 去重吸收、无重复
     无空洞。"""
     app = make_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         # 连流前先产生第一回合：快照负责补这段历史
         await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
@@ -1143,7 +1111,7 @@ async def test_summary_tracks_last_event_at():
     """摘要的 last_event_at 随事件推进：创建即 session.started 的 ts，回合
     推进后等于最近一条事件 ts（前端时长的冻结点，页面刷新后从摘要恢复）。"""
     app = make_app()
-    async with httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.post("/api/runs", json={})).json()["run_id"]
         events, _ = await collect_sse(await open_stream(client, run_id))
         summary = (await client.get(f"/api/runs/{run_id}")).json()
@@ -1154,6 +1122,137 @@ async def test_summary_tracks_last_event_at():
         events, _ = await collect_sse(await open_stream(client, run_id))
         summary = (await client.get(f"/api/runs/{run_id}")).json()
         assert summary["last_event_at"] == events[-1]["data"]["ts"], summary
+
+
+async def test_pipeline_turn_creates_image_task():
+    """流水线回合 → /api/tasks：deploy-guide 派发建镜像任务，回合 success
+    收尾（DEFAULT_SCRIPT；软件/版本来自指令文本启发式）。"""
+    app = make_app()
+    async with async_client(app) as client:
+        run_id = (await client.post("/api/runs", json={})).json()["run_id"]
+        await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx 1.25 到 server-a"})
+        await wait_status(client, run_id, "READY")
+        r = await client.get("/api/tasks")
+        assert r.status_code == 200, r.text
+        tasks = r.json()["tasks"]
+        assert len(tasks) == 1, tasks
+        t = tasks[0]
+        assert t["run_id"] == run_id
+        assert t["type"] == "image"
+        assert t["status"] == "DONE" and t["outcome"] == "success"
+        assert t["task_id"].startswith("task-"), t
+        assert t["software"] == "nginx" and t["version"] == "1.25", t
+        assert "镜像 nginx 1.25 (" in t["name"], t["name"]
+        assert [s["stage"] for s in t["stages"]] == ["GUIDE"], t["stages"]
+        assert t["stages"][0]["started_at"] is not None
+        assert t["stages"][0]["ended_at"] is not None  # 回合收尾关上末阶段
+        assert t["current_stage"] is None
+        assert t["ended_at"] is not None
+
+
+async def test_rpm_pipeline_task_with_usage():
+    """rpm 流水线：rpm-guide→rpm-build 两阶段派发建 RPM 任务（BUILD 阶段），
+    回合收尾的 usage 累计进任务（缓存/输入/输出）。"""
+    script = [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_01", "name": "Agent",
+             "input": {"subagent_type": "rpm-guide", "prompt": "出指南"}},
+        ]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_02", "name": "Agent",
+             "input": {"subagent_type": "rpm-build", "prompt": "构建"}},
+        ]}},
+        {"type": "result", "subtype": "success", "result": "rpm 流水线完成",
+         "usage": {"input_tokens": 1000, "output_tokens": 200,
+                   "cache_read_input_tokens": 50000, "cache_creation_input_tokens": 300}},
+    ]
+    app = make_app(script=script)
+    async with async_client(app) as client:
+        run_id = (await client.post("/api/runs", json={})).json()["run_id"]
+        await client.post(f"/api/runs/{run_id}/messages", json={"text": "制作 redis 7.2 的 RPM"})
+        await wait_status(client, run_id, "READY")
+        tasks = (await client.get("/api/tasks")).json()["tasks"]
+        assert len(tasks) == 1, tasks
+        t = tasks[0]
+        assert t["type"] == "rpm"
+        assert [s["stage"] for s in t["stages"]] == ["GUIDE", "BUILD"], t["stages"]
+        assert t["stages"][0]["ended_at"] is not None  # 阶段推进关上 GUIDE
+        assert t["usage"] == {"input_tokens": 1000, "output_tokens": 200,
+                              "cache_read_tokens": 50000, "cache_creation_tokens": 300}, t["usage"]
+
+
+async def test_plain_turn_creates_no_task():
+    """无流水线子 agent 的普通回合不建任务。"""
+    script = [{"type": "result", "subtype": "success", "result": "只是聊聊"}]
+    app = make_app(script=script)
+    async with async_client(app) as client:
+        run_id = (await client.post("/api/runs", json={})).json()["run_id"]
+        await client.post(f"/api/runs/{run_id}/messages", json={"text": "你好"})
+        await wait_status(client, run_id, "READY")
+        tasks = (await client.get("/api/tasks")).json()["tasks"]
+        assert tasks == [], tasks
+
+
+async def test_manual_task_create_validation():
+    """POST /api/tasks 入口校验：缺软件名/坏枚举/超界参数一律 422。"""
+    app = make_app()
+    async with async_client(app) as client:
+        bad_bodies = [
+            {},
+            {"software": "  "},
+            {"software": "x" * 65},
+            {"software": "nginx", "task_type": "docker"},
+            {"software": "nginx", "ecs_mode": "both"},
+            {"software": "nginx", "ecs_mode": "existing"},  # 缺 ecs_instance
+            {"software": "nginx", "ecs_mode": "existing", "ecs_instance": {"name": "n"}},  # 缺 ip
+            {"software": "nginx", "ecs_params": {"disk_size": 5}},
+            {"software": "nginx", "ecs_params": {"bandwidth": 0}},
+            {"software": "nginx", "ecs_params": {"flavor": 42}},
+        ]
+        for b in bad_bodies:
+            r = await client.post("/api/tasks", json=b)
+            assert r.status_code == 422, (b, r.text)
+
+
+async def test_manual_task_run_lifecycle():
+    """手动任务全生命周期：POST 建任务（INIT）→ run 起会话发指令 → 假剧本
+    流水线推进 → 任务 DONE/success 且绑定新会话；重复 run 409、未知 404。"""
+    app = make_app()
+    async with async_client(app) as client:
+        r = await client.post("/api/tasks", json={
+            "software": "nginx", "version": "1.25.3", "task_type": "image",
+            "ecs_mode": "existing",
+            "ecs_instance": {"id": "i-9", "name": "ecs-nginx-20260914", "ip": "1.2.3.4"},
+            "install_doc": "https://nginx.org/en/docs.html",
+        })
+        assert r.status_code == 200, r.text
+        task = r.json()
+        assert task["status"] == "INIT" and task["origin"] == "manual"
+
+        r = await client.post(f"/api/tasks/{task['task_id']}/run")
+        assert r.status_code == 200, r.text
+        started = r.json()
+        run_id = started["run_id"]
+        # 新会话收到按表单构造的部署指令（别名推导 + 文档链接）
+        events, _ = await collect_sse(await open_stream(client, run_id))
+        texts = [e["data"]["text"] for e in events if e["event"] == "user.message"]
+        assert any("一键部署 nginx 1.25.3" in t and "目标服务器别名：nginx-20260914"
+                   in t and "https://nginx.org/en/docs.html" in t for t in texts), texts
+
+        await wait_status(client, run_id, "READY")
+        tasks = (await client.get("/api/tasks")).json()["tasks"]
+        mine = [t for t in tasks if t["task_id"] == task["task_id"]]
+        assert len(mine) == 1, tasks  # 认领本任务，未新建 auto 任务
+        t = mine[0]
+        assert t["status"] == "DONE" and t["outcome"] == "success"
+        assert t["run_id"] == run_id
+        assert [s["stage"] for s in t["stages"]] == ["GUIDE"]
+
+        # 重复运行与未知任务
+        r = await client.post(f"/api/tasks/{task['task_id']}/run")
+        assert r.status_code == 409, r.text
+        r = await client.post("/api/tasks/task-nope/run")
+        assert r.status_code == 404, r.text
 
 
 async def main():

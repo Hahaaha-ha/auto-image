@@ -12,15 +12,20 @@ import json
 
 from .redact import redact_text
 
-# 流水线四阶段的唯一字面值来源（阶段名枚举只写一处）：事件推导与产物
+# 流水线阶段的唯一字面值来源（阶段名枚举只写一处）：事件推导与产物
 # 徽标（artifacts.CONFIG_KEY_STAGES）都取这些值，加阶段改这里 + config 键
-GUIDE, INSTALL, VERIFY, ARCHIVE = "GUIDE", "INSTALL", "VERIFY", "ARCHIVE"
+# BUILD 为 RPM 流水线独有（制作 RPM 包），镜像流水线无此阶段
+GUIDE, INSTALL, BUILD, VERIFY, ARCHIVE = "GUIDE", "INSTALL", "BUILD", "VERIFY", "ARCHIVE"
 
 STAGE_BY_SUBAGENT = {
     "deploy-guide": GUIDE,
     "deploy-install": INSTALL,
     "deploy-verify": VERIFY,
     "deploy-archive": ARCHIVE,
+    "rpm-guide": GUIDE,
+    "rpm-build": BUILD,
+    "rpm-verify": VERIFY,
+    "rpm-archive": ARCHIVE,
 }
 
 # 子 agent 工具的 CLI 名：新名 Agent，Task 为旧名/事件重放剧本兼容
@@ -160,14 +165,6 @@ def tool_todos(value):
     return items or None
 
 
-def stage_from_tool_use(block):
-    """子 agent 工具调用带流水线 subagent_type 时返回对应阶段名，否则 None。"""
-    if block.get("name") not in SUBAGENT_TOOL_NAMES:
-        return None
-    subagent = (block.get("input") or {}).get("subagent_type")
-    return STAGE_BY_SUBAGENT.get(subagent)
-
-
 def is_final_result(message):
     return message.get("type") == "result"
 
@@ -198,9 +195,17 @@ def normalize_message(message, tool_names):
             elif btype == "tool_use":
                 if block.get("id"):
                     tool_names[block["id"]] = block.get("name", "")
-                stage = stage_from_tool_use(block)
+                # 只有子 agent 工具（Agent/Task）才看 subagent_type——其他
+                # 工具入参里撞名同字段也不推阶段
+                subagent = ((block.get("input") or {}).get("subagent_type")
+                            if block.get("name") in SUBAGENT_TOOL_NAMES else None)
+                stage = STAGE_BY_SUBAGENT.get(subagent)
                 if stage:
-                    events.append(("stage.changed", {"stage": stage, "status": "running"}))
+                    # subagent 随行：任务跟踪按它分流镜像/RPM 流水线
+                    events.append((
+                        "stage.changed",
+                        {"stage": stage, "status": "running", "subagent": subagent},
+                    ))
                 events.append((
                     "agent.tool_started",
                     {

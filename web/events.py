@@ -9,6 +9,7 @@
 """
 import asyncio
 import contextlib
+import logging
 import time
 from collections import defaultdict
 
@@ -18,6 +19,7 @@ class EventStore:
         self._events = defaultdict(list)
         self._broadcast = []
         self._global_subscribers = set()
+        self._observers = []
         self._runs = None
 
     def bind_runs(self, runs):
@@ -25,15 +27,23 @@ class EventStore:
         时长冻结点只此一处更新，摘要与簿记落盘都读它。"""
         self._runs = runs
 
+    def add_observer(self, fn):
+        """注册进程内同步观察者（收完整事件 dict，异常吞掉只记日志）。
+
+        app 装配时在恢复重放完成后调用——重放事件不进观察者（历史不是
+        新事实）；旁路消费者（任务跟踪等）绝不影响事件流本体。"""
+        self._observers.append(fn)
+
     def create(self, run_id):
         self._events[run_id] = []
 
-    def append(self, run_id, etype, payload, ts=None):
+    def append(self, run_id, etype, payload, ts=None, notify=True):
         """追加一条内部事件，返回带递增 seq 与 ts 的完整事件。
 
         ts 缺省是 append 当下（实时路径）；重放/转录路径传入源时刻
         （transcript 行的 timestamp）——ts 语义是「事件时刻」而非
         「落流时刻」，同一条消息派生的多条事件共享同一值。
+        notify=False 供转录路径抑制观察者（SSE 广播照常）。
         """
         event = {
             "seq": len(self._events[run_id]) + 1,
@@ -50,6 +60,13 @@ class EventStore:
                 run.last_event_at = event["ts"]
         for flag in self._global_subscribers:
             flag.set()
+        if notify:
+            for fn in list(self._observers):
+                try:
+                    fn(event)
+                except Exception:  # noqa: BLE001 —— 旁路消费者绝不影响事件流
+                    logging.getLogger("web").warning(
+                        "事件观察者异常（忽略）", exc_info=True)
         return event
 
     def replay_from(self, run_id, after_seq):
@@ -60,10 +77,13 @@ class EventStore:
         """把源 run 的全部事件转录进目标 run（seq 重新递增、唤醒订阅者）——
         克隆创建的新会话由此自带源会话历史（CLI resume 的浏览体验）。
         skip_types 排除源流的生命周期事件（session.started / session.ended：
-        起点会与新流重复，终态收尾会被前端当成本流终态关流判死）。"""
+        起点会与新流重复，终态收尾会被前端当成本流终态关流判死）。
+        观察者收 notify=False：转录历史里的 stage 派生的任务事件会造成
+        每次克隆一个幻影任务——克隆的历史不是新事实。"""
         for ev in self._events[src_run_id]:
             if ev["type"] not in skip_types:
-                self.append(dst_run_id, ev["type"], ev["payload"], ts=ev["ts"])
+                self.append(dst_run_id, ev["type"], ev["payload"], ts=ev["ts"],
+                            notify=False)
 
     def broadcast_from(self, after):
         """返回广播日志中位置严格大于 after 的全部事件（全局流增量拉取）。"""

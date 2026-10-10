@@ -6,7 +6,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // store 模块级副作用重：SSE EventSource、轮询 setInterval、loadRuns——
-// 全部 stub 掉，模块隔离成纯状态容器
+// 全部 stub 掉，模块隔离成纯状态容器。initAuth 也 stub：认证流在
+// 「认证」describe 里单独驱动。
 vi.mock('./store.js', async () => {
   const actual = await vi.importActual('./store.js')
   return actual
@@ -14,12 +15,15 @@ vi.mock('./store.js', async () => {
 
 const sseListeners = {}
 let globalSource = null
+let eventSourceCount = 0
 global.EventSource = class {
   constructor() {
     this.readyState = 0
     globalSource = this
+    eventSourceCount += 1
   }
   addEventListener(type, fn) { (sseListeners[type] ??= []).push(fn) }
+  close() { this.readyState = 2 }
   onopen() {}
   onerror() {}
 }
@@ -31,6 +35,181 @@ const store = await import('./store.js')
 
 afterEach(() => {
   store.clearDraft('r1')
+})
+
+describe('认证态', () => {
+  const mockFetch = (impl) => { fetch.mockImplementation(impl) }
+
+  const okLogin = (url) => url === '/api/auth/login'
+
+  it('未认证启动不建 EventSource、不拉业务清单；登录成功后建流 + 拉清单', async () => {
+    // 启动身份确认：401 → 登录壳（零数据面动作）
+    let meCalls = 0
+    mockFetch(async (url) => {
+      if (url === '/api/auth/me') { meCalls += 1; return { ok: false, status: 401 } }
+      throw new Error(`unexpected fetch ${url}`)
+    })
+    await store.initAuth()
+    expect(store.getState().auth).toBe('anonymous')
+    expect(eventSourceCount).toBe(0)
+
+    // 登录成功：身份就位、建流、初始清单拉取（runs/tasks/artifacts/obs/ecs）
+    const fetched = []
+    mockFetch(async (url) => {
+      if (okLogin(url)) return { ok: true, json: async () => ({ username: 'alice' }) }
+      if (url === '/api/stream') return { ok: true }
+      fetched.push(url)
+      if (url === '/api/runs') return { ok: true, json: async () => ({ runs: [] }) }
+      if (url === '/api/tasks') return { ok: true, json: async () => ({ tasks: [] }) }
+      return { ok: true, json: async () => ({}) }
+    })
+    await store.login('alice', 'pw')
+    expect(store.getState().auth).toBe('user')
+    expect(store.getState().user).toBe('alice')
+    expect(eventSourceCount).toBe(1)
+    await vi.waitFor(() => expect(fetched).toEqual(
+      expect.arrayContaining(['/api/runs', '/api/tasks'])))
+  })
+
+  it('启动已登录：initAuth 直接进入数据面', async () => {
+    mockFetch(async (url) => {
+      if (url === '/api/auth/me') return { ok: true, json: async () => ({ username: 'bob' }) }
+      if (url === '/api/runs') return { ok: true, json: async () => ({ runs: [] }) }
+      if (url === '/api/tasks') return { ok: true, json: async () => ({ tasks: [] }) }
+      return { ok: true, json: async () => ({}) }
+    })
+    await store.initAuth()
+    expect(store.getState().auth).toBe('user')
+    expect(store.getState().user).toBe('bob')
+    expect(eventSourceCount).toBeGreaterThanOrEqual(1)
+  })
+
+  it('SSE 被服务端关闭且身份已失效：回登录壳，流关闭不再重连', async () => {
+    mockFetch(async (url) => {
+      if (url === '/api/auth/me') return { ok: true, json: async () => ({ username: 'bob' }) }
+      if (url === '/api/runs') return { ok: true, json: async () => ({ runs: [] }) }
+      if (url === '/api/tasks') return { ok: true, json: async () => ({ tasks: [] }) }
+      return { ok: true, json: async () => ({}) }
+    })
+    await store.initAuth()
+    const sourceAtLogin = globalSource
+    expect(sourceAtLogin).toBeTruthy()
+
+    // 身份失效（401）后流被服务端关闭：回登录壳且 EventSource.close 被调
+    mockFetch(async () => ({ ok: false, status: 401 }))
+    let closed = false
+    sourceAtLogin.close = () => { closed = true; sourceAtLogin.readyState = 2 }
+    // 测试桩的 EventSource 没有类常量：onerror 分支按数字 2（CLOSED）判定
+    sourceAtLogin.readyState = 2
+    const EventSourceCtor = sourceAtLogin.constructor
+    Object.defineProperty(EventSourceCtor, 'CLOSED', { value: 2, configurable: true })
+    await sourceAtLogin.onerror()
+    await vi.waitFor(() => expect(store.getState().auth).toBe('anonymous'))
+    expect(closed).toBe(true)
+  })
+
+  it('登出：清身份回登录壳，流关闭', async () => {
+    mockFetch(async (url) => {
+      if (url === '/api/auth/me') return { ok: true, json: async () => ({ username: 'bob' }) }
+      if (url === '/api/runs') return { ok: true, json: async () => ({ runs: [] }) }
+      if (url === '/api/tasks') return { ok: true, json: async () => ({ tasks: [] }) }
+      return { ok: true, json: async () => ({}) }
+    })
+    await store.initAuth()
+    const sourceAtLogin = globalSource
+    let closed = false
+    sourceAtLogin.close = () => { closed = true }
+    mockFetch(async () => ({ ok: true, json: async () => ({}) }))
+    await store.logout()
+    expect(store.getState().auth).toBe('anonymous')
+    expect(closed).toBe(true)
+    expect(store.getState().user).toBeNull()
+  })
+
+  it('登出清空会话视图：同浏览器换账号不残留上一个用户的会话', async () => {
+    // bob 登录并「看到」自己的会话（列表 + 标签页 + 草稿）
+    const bobSession = {
+      run_id: 'run_bob', status: 'READY', stage: null, first_prompt: 'bob 的部署',
+      title: null, started_at: 1, ended_at: null, last_event_at: 2, resumed_from: null,
+    }
+    mockFetch(async (url) => {
+      if (url === '/api/auth/me') return { ok: true, json: async () => ({ username: 'bob' }) }
+      if (url === '/api/runs') return { ok: true, json: async () => ({ runs: [bobSession] }) }
+      if (url === '/api/tasks') return { ok: true, json: async () => ({ tasks: [] }) }
+      return { ok: true, json: async () => ({}) }
+    })
+    await store.initAuth()
+    await vi.waitFor(() => expect(store.getState().order).toContain('run_bob'))
+    store.setDraft('run_bob', 'bob 未发出的草稿')
+
+    mockFetch(async () => ({ ok: true, json: async () => ({}) }))
+    await store.logout()
+    // 会话列表、序、草稿全清——登录壳不持有任何会话数据
+    expect(store.getState().runs).toEqual({})
+    expect(store.getState().order).toEqual([])
+    expect(store.draftOf('run_bob')).toBe('')
+  })
+
+  it('登出→再登录：轮询计时器重建（同页不掉轮询）', async () => {
+    const loggedIn = async (url) => {
+      if (url === '/api/auth/me') return { ok: true, json: async () => ({ username: 'bob' }) }
+      if (url === '/api/runs') return { ok: true, json: async () => ({ runs: [] }) }
+      if (url === '/api/tasks') return { ok: true, json: async () => ({ tasks: [] }) }
+      return { ok: true, json: async () => ({}) }
+    }
+    mockFetch(loggedIn)
+    await store.initAuth()
+    // 模块加载时只登记过两组计时器（时长针 + 摘要轮询，均随数据面启动）
+    const timersAfterLogin = timers.length
+    mockFetch(async () => ({ ok: true, json: async () => ({}) }))
+    await store.logout()
+    expect(timers.length).toBe(timersAfterLogin) // 登出只 clearInterval，数组不缩
+    mockFetch(loggedIn)
+    await store.login('bob', 'pw')
+    // 再登录重建一组（时长针 + 轮询），轮询恢复
+    expect(timers.length).toBeGreaterThan(timersAfterLogin)
+  })
+})
+
+describe('全局容量', () => {
+  const mockFetch = (impl) => { fetch.mockImplementation(impl) }
+
+  it('容量随摘要落位（匿名全局口径），登出后清空', async () => {
+    const bobSession = {
+      run_id: 'run_bob', status: 'RUNNING', stage: null, first_prompt: null,
+      title: null, started_at: 1, ended_at: null, last_event_at: 2, resumed_from: null,
+    }
+    // bob 自己的会话在场（running 既有本地视角也有服务端容量字段）；
+    // 容量落位的是匿名全局口径（他人回合只计入数，不带细节——
+    // 匿名性断言在服务端测试侧）
+    mockFetch(async (url) => {
+      if (url === '/api/auth/login') return { ok: true, json: async () => ({ username: 'bob' }) }
+      if (url === '/api/runs') {
+        return { ok: true, json: async () => ({ runs: [bobSession], running_count: 3, max_parallel: 10 }) }
+      }
+      if (url === '/api/tasks') return { ok: true, json: async () => ({ tasks: [] }) }
+      return { ok: true, json: async () => ({}) }
+    })
+    await store.logout() // 清前面测试遗留的全局流（startDataPlane 幂等守卫）
+    await store.login('bob', 'pw')
+    await vi.waitFor(() => expect(store.getState().capacity).toEqual({ runningCount: 3, maxParallel: 10 }))
+
+    mockFetch(async () => ({ ok: true, json: async () => ({}) }))
+    await store.logout()
+    expect(store.getState().capacity).toBeNull()
+  })
+
+  it('容量字段缺席时保持 null（不误置其他状态）', async () => {
+    mockFetch(async (url) => {
+      if (url === '/api/auth/login') return { ok: true, json: async () => ({ username: 'bob' }) }
+      if (url === '/api/runs') return { ok: true, json: async () => ({ runs: [] }) }
+      if (url === '/api/tasks') return { ok: true, json: async () => ({ tasks: [] }) }
+      return { ok: true, json: async () => ({}) }
+    })
+    await store.login('bob', 'pw')
+    await vi.waitFor(() => expect(store.getState().order).toEqual([]))
+    expect(store.getState().capacity).toBeNull()
+  })
 })
 
 describe('输入草稿', () => {
@@ -140,5 +319,158 @@ describe('快照与全局流归并', () => {
     queuedReplays.push(Promise.resolve(response('')))
     globalSource.onopen()
     expect(snapshotRequests.at(-1).headers['Last-Event-ID']).toBe('10')
+  })
+})
+
+describe('任务面板联动', () => {
+  const mockTasks = (tasks) => {
+    fetch.mockImplementation(async (url) => {
+      if (url === '/api/tasks') {
+        return { ok: true, json: async () => ({ tasks }) }
+      }
+      return { ok: false }
+    })
+  }
+
+  it('refreshTasks 映射服务端任务（snake→camel + usage 四键）', async () => {
+    mockTasks([{
+      task_id: 'task-20260914073000-ab12', run_id: 'r1', type: 'rpm',
+      status: 'DONE', outcome: 'success', name: 'RPM redis 7.2 (202609140730)',
+      software: 'redis', version: '7.2', confirmed: true,
+      stages: [{ stage: 'GUIDE', started_at: 1, ended_at: 2 }, { stage: 'BUILD', started_at: 2, ended_at: 3 }],
+      current_stage: null,
+      usage: { input_tokens: 10, output_tokens: 5, cache_read_tokens: 100, cache_creation_input_tokens_unused: 0 },
+      server_alias: 'redis-2026091407', instance_id: 'i-1',
+      created_at: 1, ended_at: 3, turn_text: '制作 redis 7.2',
+    }])
+    await store.refreshTasks()
+    const t = store.getState().tasks[0]
+    expect(t.taskId).toBe('task-20260914073000-ab12')
+    expect(t.runId).toBe('r1')
+    expect(t.currentStage).toBeNull()
+    expect(t.stages[1]).toEqual({ stage: 'BUILD', startedAt: 2, endedAt: 3 })
+    expect(t.usage.inputTokens).toBe(10)
+    expect(t.usage.outputTokens).toBe(5)
+    expect(t.usage.cacheReadTokens).toBe(100)
+  })
+
+  it('openTask 切任务面板并高亮；选择器按 run/instance 联查（instance_id 精确 + ecs-别名兜底）', async () => {
+    mockTasks([
+      { task_id: 'task-run', run_id: 'r1', type: 'image', status: 'RUNNING', outcome: null,
+        name: '镜像 nginx (…)', software: 'nginx', version: null, confirmed: false,
+        stages: [], current_stage: 'INSTALL', usage: null,
+        server_alias: 'nginx-2026091407', instance_id: 'i-1',
+        created_at: 1, ended_at: null, turn_text: '' },
+      { task_id: 'task-done', run_id: 'r2', type: 'rpm', status: 'DONE', outcome: 'success',
+        name: 'RPM redis (…)', software: 'redis', version: '7.2', confirmed: true,
+        stages: [], current_stage: null, usage: null,
+        server_alias: 'redis-x', instance_id: 'i-2',
+        created_at: 2, ended_at: 3, turn_text: '' },
+    ])
+    await store.refreshTasks()
+    store.openTask('task-run')
+    expect(store.getState().sidePanel).toBe('tasks')
+    expect(store.getState().activeTaskId).toBe('task-run')
+    expect(store.runningTaskByRun('r1')?.taskId).toBe('task-run')
+    expect(store.runningTaskByRun('r2')).toBeNull() // 已完成不占运行态
+    expect(store.runningTaskByInstance({ id: 'i-1', name: '随便' })?.taskId).toBe('task-run')
+    expect(store.runningTaskByInstance({ id: 'zzz', name: 'ecs-nginx-2026091407' })?.taskId).toBe('task-run')
+    expect(store.runningTaskByInstance({ id: 'zzz', name: '别的机器' })).toBeNull()
+    store.setSidePanel('sessions')
+    expect(store.getState().sidePanel).toBe('sessions')
+  })
+
+  it('runTask 起新会话并自动跳过去（tabs 含该会话标签页）', async () => {
+    fetch.mockImplementation(async (url, options = {}) => {
+      if (url === '/api/tasks' && options.method === 'POST') {
+        return { ok: true, json: async () => ({ task_id: 'task-1', status: 'INIT' }) }
+      }
+      if (url.startsWith('/api/tasks/') && url.endsWith('/run')) {
+        return { ok: true, json: async () => ({ task_id: 'task-1', run_id: 'run_manual', status: 'RUNNING' }) }
+      }
+      if (url === '/api/runs/run_manual/events') {
+        return { ok: true, text: async () => '' }
+      }
+      return { ok: false }
+    })
+    const created = await store.createTask({ software: 'nginx', version: '1.25.3' })
+    expect(created.taskId ?? created.task_id).toBeTruthy()
+    await store.runTask('task-1')
+    expect(store.getState().tabs.some((t) => t.kind === 'session' && t.runId === 'run_manual')).toBe(true)
+  })
+})
+
+describe('管理能力与清单', () => {
+  it('身份能力严格判定，原样提交旧用户名，登出清空用户清单并忽略迟到响应', async () => {
+    await store.logout()
+    let finish
+    fetch.mockImplementation(async (url, options) => {
+      if (url === '/api/auth/login') {
+        expect(JSON.parse(options.body).username).toBe(' Legacy 用户 ')
+        return { ok: true, json: async () => ({ username: ' Legacy 用户 ', can_manage_users: true }) }
+      }
+      if (url === '/api/admin/users') return new Promise((resolve) => { finish = resolve })
+      return { ok: true, json: async () => ({ runs: [], tasks: [] }) }
+    })
+    await store.login(' Legacy 用户 ', 'pw')
+    expect(store.getState().canManageUsers).toBe(true)
+    store.setSidePanel('artifacts')
+    expect(store.getState().sidePanel).toBe('artifacts')
+    const pending = store.refreshUsers()
+    await store.logout()
+    finish({ ok: true, json: async () => ({ users: [{ username: 'private' }] }) })
+    await pending
+    expect(store.getState().users.items).toEqual([])
+    expect(store.getState().canManageUsers).toBe(false)
+    for (const capability of [undefined, false, 'true', 1]) {
+      fetch.mockImplementation(async () => ({ ok: true, json: async () => ({ username: 'admin', can_manage_users: capability, runs: [], tasks: [] }) }))
+      await store.login('admin', 'pw')
+      store.setSidePanel('users')
+      expect(store.getState().canManageUsers).toBe(false)
+      expect(store.getState().sidePanel).toBe('artifacts')
+      await store.logout()
+    }
+  })
+  it('清单可刷新，明确撤权清空缓存，401 回到登录壳', async () => {
+    for (const status of [403, 401]) {
+      fetch.mockImplementation(async () => ({ ok: true, json: async () => ({ username: 'operator', can_manage_users: true, runs: [], tasks: [] }) }))
+      await store.login('operator', 'pw')
+      fetch.mockResolvedValue({ ok: true, json: async () => ({ users: [{ username: 'alice' }] }) })
+      await store.refreshUsers()
+      expect(store.getState().users.items).toEqual([{ username: 'alice' }])
+      fetch.mockResolvedValue({ ok: false, status, json: async () => ({ detail: 'not_admin' }) })
+      await store.refreshUsers()
+      expect(store.getState().users.items).toEqual([])
+      expect(store.getState().canManageUsers).toBe(false)
+      if (status === 401) expect(store.getState().auth).toBe('anonymous')
+      await store.logout()
+    }
+  })
+  it('清单读取的其他 403 保留管理能力并允许重试', async () => {
+    fetch.mockResolvedValue({ ok: true, json: async () => ({ username: 'operator', can_manage_users: true, runs: [], tasks: [] }) })
+    await store.login('operator', 'pw')
+    fetch.mockResolvedValue({ ok: false, status: 403, json: async () => ({ detail: 'request_rejected' }) })
+    await store.refreshUsers()
+    expect(store.getState().canManageUsers).toBe(true)
+    expect(store.getState().users.error).toContain('刷新重试')
+    await store.logout()
+  })
+})
+
+describe('管理清单在登录复核后保持可见', () => {
+  it('SSE 断开后确认仍是同一管理员，不将已加载的清单误报为空', async () => {
+    await store.logout()
+    fetch.mockImplementation(async (url) => ({ ok: true, json: async () => (
+      url === '/api/admin/users' ? { users: [{ username: 'alice' }] }
+        : { username: 'operator', can_manage_users: true, runs: [], tasks: [] }
+    ) }))
+    await store.login('operator', 'pw')
+    store.setSidePanel('artifacts')
+    await store.refreshUsers()
+    globalSource.readyState = EventSource.CLOSED
+    await globalSource.onerror()
+    expect(store.getState().sidePanel).toBe('artifacts')
+    expect(store.getState().users.items).toEqual([{ username: 'alice' }])
+    await store.logout()
   })
 })

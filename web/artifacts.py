@@ -21,7 +21,7 @@ from pathlib import Path, PurePosixPath
 
 import yaml
 
-from .normalize import ARCHIVE, GUIDE, INSTALL, VERIFY
+from .normalize import ARCHIVE, BUILD, GUIDE, INSTALL, VERIFY
 
 # deploy.config.yaml 的产物文件键 → 所属阶段（config 是文件名的唯一权威源，
 # 改名 / 加键只动 config：改名自动跟随，新键不在此映射即无徽标）
@@ -45,20 +45,19 @@ CONFIG_KEY_STAGES = {
 # -rpm-archive-* 被 deploy 通用后缀先命中且阶段一致，-rpm-result /
 # -rpm-issues / -rpm-deliver-list / -rpm.sh / -rpm-check-* 仅此处能匹配。.rpm 同时覆盖 .src.rpm 与依赖包（rpms/{binary,source,deps}/ 归档
 # 收集的包，归档阶段落盘、本质是构建产物 → BUILD）。
-# 阶段值取 normalize 常量（单来源）；BUILD 为 rpm 流水线独有阶段、不在
-# deploy 四阶段之列，仅此处使用故保留本地字面量。
-RPM_BUILD = "BUILD"
+# 阶段值取 normalize 常量（单来源）；BUILD 为 rpm 流水线独有阶段
+# （rpm-build 子 agent 派发时事件面也用同一常量）。
 RPM_FILE_STAGES = (
     ("-rpm-verify-result.md", VERIFY),
     ("-rpm-verify-issues.md", VERIFY),
     ("-rpm-check-result.md", VERIFY),
     ("-rpm-check-issues.md", VERIFY),
-    ("-rpm-result.md", RPM_BUILD),
-    ("-rpm-issues.md", RPM_BUILD),
+    ("-rpm-result.md", BUILD),
+    ("-rpm-issues.md", BUILD),
     ("-rpm-archive-result.md", ARCHIVE),
     ("-rpm-deliver-list.md", ARCHIVE),
     ("-rpm.sh", ARCHIVE),
-    (".rpm", RPM_BUILD),
+    (".rpm", BUILD),
 )
 
 # 二进制产物后缀：内容端点（文本浏览）不适用，清单带 binary 标记、前端

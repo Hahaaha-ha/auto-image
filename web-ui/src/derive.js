@@ -5,6 +5,23 @@
 export const RUN_STATUS_LABEL = { RUNNING: '执行中', READY: '等待指令', ENDED: '已结束' }
 export const STAGE_LABEL = { GUIDE: '生成指南', INSTALL: '远程安装', VERIFY: '只读验证', ARCHIVE: '打包归档', BUILD: 'RPM 构建' }
 
+// 任务（流水线跟踪）：类型/收尾中文与阶段顺序（阶段流转图按它排 pill）
+export const TASK_TYPE_LABEL = { image: '镜像', rpm: 'RPM' }
+export const TASK_OUTCOME_LABEL = { success: '成功', failed: '失败', stopped: '已停止', interrupted: '已中断' }
+export function stageOrder(type) {
+  return type === 'rpm'
+    ? ['GUIDE', 'BUILD', 'VERIFY', 'ARCHIVE']
+    : ['GUIDE', 'INSTALL', 'VERIFY', 'ARCHIVE']
+}
+
+// token 数格式：null/undefined（进行中未采到）显 —；万级以上缩写
+export function fmtTokens(n) {
+  if (n == null) return '—'
+  if (n >= 1e8) return (n / 1e8).toFixed(1) + '亿'
+  if (n >= 1e4) return (n / 1e4).toFixed(1) + '万'
+  return String(n)
+}
+
 // 标签页状态词（tab 的 title 与控制面胶囊共用）：状态点形状之外再给文字，
 // 状态不只靠形状/颜色传达。判定值与 tabDot 同源。
 export const TAB_DOT_LABEL = { running: '执行中', ready: '等待指令', failed: '最近回合失败', ended: '已结束' }

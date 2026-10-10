@@ -8,14 +8,13 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from web.fake import DEFAULT_SCRIPT, FakeSessionFactory  # noqa: E402
 from web.runs import READY, RunManager  # noqa: E402
 from web.state import load_state, save_state  # noqa: E402
-from web.tests.support import StreamingASGITransport, make_test_app  # noqa: E402
+from web.tests.support import async_client, make_test_app  # noqa: E402
 from web.tests.test_api import (  # noqa: E402
     collect_sse,
     open_stream,
@@ -49,12 +48,19 @@ def open_turn_transcript():
     ]
 
 
-def write_state(path, ended_sessions=(), sessions=None, clone_sources=None):
-    path.write_text(json.dumps({
+def write_state(path, ended_sessions=(), sessions=None, clone_sources=None, owners=None,
+                legacy=False):
+    """写一份簿记；legacy=True 时省 version（旧字符串映射形态），owners
+    缺省给空映射——现代格式 owners 段必在，旧格式可缺。"""
+    payload = {
         "ended_sessions": list(ended_sessions),
         "sessions": sessions or {},
         "clone_sources": clone_sources or {},
-    }, ensure_ascii=False), encoding="utf-8")
+        "owners": owners or {},
+    }
+    if not legacy:
+        payload["version"] = 2
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 def restore_app(state_path, infos, transcripts, factory=None):
@@ -90,25 +96,46 @@ async def test_save_load_roundtrip_tombstones_and_id_map():
         }, state
         assert empty.run_id not in state["sessions"], state
 
-        # 损坏/形状不对：空册降级，不阻断
+        # 损坏/形状不对：空册 + corrupt 分类（受限恢复判定依据），不阻断
         (Path(d) / "corrupt.json").write_text("not json{", encoding="utf-8")
         assert load_state(Path(d) / "corrupt.json") == {
-            "ended_sessions": set(), "sessions": {}, "clone_sources": {}}
+            "ended_sessions": set(), "sessions": {}, "clone_sources": {}, "owners": {},
+            "status": "corrupt"}
         (Path(d) / "badshape.json").write_text(
             json.dumps({"ended_sessions": "x", "sessions": [1]}), encoding="utf-8")
         assert load_state(Path(d) / "badshape.json") == {
-            "ended_sessions": set(), "sessions": {}, "clone_sources": {}}
+            "ended_sessions": set(), "sessions": {}, "clone_sources": {}, "owners": {},
+            "status": "corrupt"}
         # 部分损坏整体弃册（半份无从判真）：墓碑损坏时不挑拣保留映射
         (Path(d) / "partial.json").write_text(json.dumps(
             {"ended_sessions": "x", "sessions": {"run_1": "sess_live"},
              "clone_sources": {}}), encoding="utf-8")
         assert load_state(Path(d) / "partial.json") == {
-            "ended_sessions": set(), "sessions": {}, "clone_sources": {}}
+            "ended_sessions": set(), "sessions": {}, "clone_sources": {}, "owners": {},
+            "status": "corrupt"}
+        # v2 缺 owners 段：corrupt（现代记录的 owner 归属不可信即整册不可信）
+        (Path(d) / "noowners.json").write_text(json.dumps(
+            {"version": 2, "ended_sessions": [], "sessions": {"run_1": "s"},
+             "clone_sources": {}}), encoding="utf-8")
+        assert load_state(Path(d) / "noowners.json")["status"] == "corrupt"
+        # 未知版本：corrupt（未来格式不猜）
+        (Path(d) / "future.json").write_text(json.dumps(
+            {"version": 3, "ended_sessions": [], "sessions": {}, "clone_sources": {},
+             "owners": {}}), encoding="utf-8")
+        assert load_state(Path(d) / "future.json")["status"] == "corrupt"
+        # 无 version 的旧字符串映射：legacy（首次启动允许迁移）
+        (Path(d) / "legacy.json").write_text(json.dumps(
+            {"ended_sessions": [], "sessions": {"run_1": "s"}, "clone_sources": {}}),
+            encoding="utf-8")
+        assert load_state(Path(d) / "legacy.json")["status"] == "legacy"
+        # 文件缺失：missing
+        assert load_state(Path(d) / "absent.json")["status"] == "missing"
 
 
 async def test_old_state_format_discarded_not_parsed():
     """旧簿记（runs 记录数组）弃用重建：不读旧字段、不沿用旧 run_id——
-    重放按 transcript 会话粒度走 run_hist_ 派生。"""
+    重放按 transcript 会话粒度走 run_hist_ 派生；缺四段形状落 corrupt，
+    首次启动（无初始化标记）仍走受限恢复（损坏形状不因首次启动放宽）。"""
     with tempfile.TemporaryDirectory() as d:
         state_path = Path(d) / "state.json"
         state_path.write_text(json.dumps({"runs": [{
@@ -117,21 +144,24 @@ async def test_old_state_format_discarded_not_parsed():
             "session_id": "sess_z", "resumed_from": None,
         }]}, ensure_ascii=False), encoding="utf-8")
         app = restore_app(str(state_path), [session_info("sess_z", "部署 nginx", 500)], {"sess_z": two_turn_transcript()})
-        async with httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver") as client:
+        async with async_client(app) as client:
             runs = (await client.get("/api/runs")).json()["runs"]
-            # 旧 run_id 不沿用：派生 id 重建，且依旧可续聊（单路径语义）
-            assert [r["run_id"] for r in runs] == ["run_hist_sess_z"], runs
-            assert runs[0]["status"] == "READY", runs
+            # 受限恢复：未知归属会话对一切用户隐藏（含默认 owner）
+            assert runs == [], runs
+            r = await client.post("/api/runs/run_hist_sess_z/messages", json={"text": "继续"})
+            assert r.status_code == 503, r.text
+            # 控制动作被阻断，但服务活着（读取不受影响）
+            assert (await client.get("/api/runs")).status_code == 200
 
 
 async def test_restart_all_sessions_chattable():
     """合流核心：所有 transcript 会话（含原只读历史）重启后直接可续聊。"""
     with tempfile.TemporaryDirectory() as d:
         state_path = Path(d) / "state.json"
-        write_state(state_path)
+        write_state(state_path, legacy=True)
         infos = [session_info("sess_z", "老任务", 500), session_info("sess_y", "更老任务", 300)]
         app = restore_app(str(state_path), infos, {"sess_z": two_turn_transcript(), "sess_y": two_turn_transcript()})
-        async with httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver") as client:
+        async with async_client(app) as client:
             for run in (await client.get("/api/runs")).json()["runs"]:
                 assert run["status"] == "READY", run
                 r = await client.post(f"/api/runs/{run['run_id']}/messages", json={"text": "继续"})
@@ -149,9 +179,9 @@ async def test_tombstone_sessions_stay_ended_after_restart():
     with tempfile.TemporaryDirectory() as d:
         state_path = Path(d) / "state.json"
         write_state(state_path, ended_sessions=["sess_dead"],
-                    sessions={"run_7": "sess_dead"})
+                    sessions={"run_7": "sess_dead"}, owners={"run_7": "tester"})
         app = restore_app(str(state_path), [session_info("sess_dead", "已结束任务", 900)], {"sess_dead": two_turn_transcript()})
-        async with httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver") as client:
+        async with async_client(app) as client:
             runs = (await client.get("/api/runs")).json()["runs"]
             assert runs[0]["run_id"] == "run_7"  # 身份映射命中沿用原 id
             assert runs[0]["status"] == "ENDED", runs
@@ -218,9 +248,7 @@ async def test_first_turn_ended_before_result_keeps_identity_after_restart():
         state_path = str(Path(d) / "state.json")
         factory = PendingResultFactory()
         app_a = make_test_app(session_factory=factory, state_path=state_path)
-        async with httpx.AsyncClient(
-            transport=StreamingASGITransport(app=app_a), base_url="http://testserver"
-        ) as client:
+        async with async_client(app_a) as client:
             run_id = (await client.post("/api/runs", json={})).json()["run_id"]
             response = await client.post(
                 f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"}
@@ -243,9 +271,7 @@ async def test_first_turn_ended_before_result_keeps_identity_after_restart():
             [session_info(target, "部署 nginx", 1_700_000_000_000)],
             factory.transcripts,
         )
-        async with httpx.AsyncClient(
-            transport=StreamingASGITransport(app=app_b), base_url="http://testserver"
-        ) as client:
+        async with async_client(app_b) as client:
             runs = (await client.get("/api/runs")).json()["runs"]
             assert [(run["run_id"], run["status"]) for run in runs] == [(run_id, "ENDED")], runs
             assert all(not run["run_id"].startswith("run_hist_") for run in runs), runs
@@ -267,9 +293,9 @@ async def test_open_turn_interrupted_and_back_to_ready():
     不伪造 turn.completed，会话回 READY。"""
     with tempfile.TemporaryDirectory() as d:
         state_path = Path(d) / "state.json"
-        write_state(state_path)
+        write_state(state_path, legacy=True)
         app = restore_app(str(state_path), [session_info("sess_x", "部署 nginx", 1000)], {"sess_x": open_turn_transcript()})
-        async with httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver") as client:
+        async with async_client(app) as client:
             runs = (await client.get("/api/runs")).json()["runs"]
             assert runs[0]["status"] == "READY", runs  # 不自动重跑
             events, _ = await collect_sse(await open_stream(client, "run_hist_sess_x"))
@@ -284,27 +310,32 @@ async def test_run_id_stable_across_restart():
     with tempfile.TemporaryDirectory() as d:
         state_path = Path(d) / "state.json"
         # 会话曾被克隆：run_1 为源、run_2 为克隆，映射与血缘镜像各两条
+        # （现代格式：owners 段齐全）
         write_state(state_path, sessions={"run_1": "sess_x", "run_2": "sess_c"},
-                    clone_sources={"sess_c": "run_1"})
+                    clone_sources={"sess_c": "run_1"},
+                    owners={"run_1": "tester", "run_2": "tester"})
         infos = [session_info("sess_x", "部署 nginx", 1000), session_info("sess_c", "部署变体", 800)]
         app = restore_app(str(state_path), infos, {"sess_x": two_turn_transcript(), "sess_c": two_turn_transcript()})
-        async with httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver") as client:
+        async with async_client(app) as client:
             runs = {r["run_id"]: r for r in (await client.get("/api/runs")).json()["runs"]}
             assert set(runs) == {"run_1", "run_2"}, runs
             assert runs["run_2"]["resumed_from"] == "run_1", runs  # 克隆链保留
         # 两次重启：簿记继续写（恢复本身不触发 persist，显式 save 一次模拟）
         # ——直接再起一个实例读同一簿记，run_id 依旧
         app2 = restore_app(str(state_path), infos, {"sess_x": two_turn_transcript(), "sess_c": two_turn_transcript()})
-        async with httpx.AsyncClient(transport=StreamingASGITransport(app=app2), base_url="http://testserver") as client:
+        async with async_client(app2) as client:
             runs = {r["run_id"] for r in (await client.get("/api/runs")).json()["runs"]}
             assert runs == {"run_1", "run_2"}, runs
 
-        # 簿记损坏（映射丢失）：run_id 换派生规则但两次派生稳定
+        # 簿记损坏（映射丢失）：受限恢复——未知归属会话隐藏（含默认
+        # owner），控制动作 503；服务不炸（读取照常）
         state_path.write_text("garbage{", encoding="utf-8")
         app3 = restore_app(str(state_path), infos, {"sess_x": two_turn_transcript(), "sess_c": two_turn_transcript()})
-        async with httpx.AsyncClient(transport=StreamingASGITransport(app=app3), base_url="http://testserver") as client:
+        async with async_client(app3) as client:
             runs = {r["run_id"] for r in (await client.get("/api/runs")).json()["runs"]}
-            assert runs == {"run_hist_sess_x", "run_hist_sess_c"}, runs  # 启动不炸
+            assert runs == set(), runs  # 启动不炸、未知归属隐藏
+            r = await client.post("/api/runs", json={})
+            assert r.status_code == 503, r.text
 
 
 async def test_single_failure_skipped_and_service_starts():
@@ -322,7 +353,7 @@ async def test_single_failure_skipped_and_service_starts():
     try:
         with tempfile.TemporaryDirectory() as d:
             state_path = Path(d) / "state.json"
-            write_state(state_path)
+            write_state(state_path, legacy=True)
             ok_sid, broken_sid, empty_sid = "sess_ok", "sess_broken", "sess_empty"
             infos = [
                 session_info(ok_sid, "部署 nginx", 1_700_000_000_000),
@@ -335,7 +366,7 @@ async def test_single_failure_skipped_and_service_starts():
                 ok_sid: two_turn_transcript(),
                 empty_sid: [],
             })
-            async with httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver") as client:
+            async with async_client(app) as client:
                 runs = (await client.get("/api/runs")).json()["runs"]
                 assert [r["first_prompt"] for r in runs] == ["部署 nginx"], runs
             assert any(broken_sid in m for m in logs), logs
@@ -347,9 +378,9 @@ async def test_single_failure_skipped_and_service_starts():
 async def test_id_counter_advances_past_restored_ids():
     with tempfile.TemporaryDirectory() as d:
         state_path = Path(d) / "state.json"
-        write_state(state_path, sessions={"run_2": "sess_x"})
+        write_state(state_path, sessions={"run_2": "sess_x"}, owners={"run_2": "tester"})
         app = restore_app(str(state_path), [session_info("sess_x", "部署 nginx", 1000)], {"sess_x": two_turn_transcript()})
-        async with httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver") as client:
+        async with async_client(app) as client:
             new_id = (await client.post("/api/runs", json={})).json()["run_id"]
             assert new_id == "run_3", new_id  # 计数器前拨过已恢复的 run_2
 
@@ -364,7 +395,7 @@ async def test_end_to_end_restart_with_real_state_file():
             session_factory=FakeSessionFactory(script=DEFAULT_SCRIPT, delay=0.02),
             state_path=state_path,
         )
-        async with httpx.AsyncClient(transport=StreamingASGITransport(app=app_a), base_url="http://testserver") as client:
+        async with async_client(app_a) as client:
             src = (await client.post("/api/runs", json={})).json()["run_id"]
             await client.post(f"/api/runs/{src}/messages", json={"text": "部署 nginx"})
             await wait_status(client, src, "READY")
@@ -384,7 +415,7 @@ async def test_end_to_end_restart_with_real_state_file():
         app_b = restore_app(state_path, infos, {
             src_sid: two_turn_transcript(), clone_sid: two_turn_transcript(),
         }, factory=factory_b)
-        async with httpx.AsyncClient(transport=StreamingASGITransport(app=app_b), base_url="http://testserver") as client:
+        async with async_client(app_b) as client:
             runs = {r["run_id"]: r for r in (await client.get("/api/runs")).json()["runs"]}
             assert set(runs) == {src, clone}, runs
             assert runs[src]["status"] == "ENDED", runs  # 墓碑不复活
@@ -406,9 +437,7 @@ async def test_fork_transcripts_restore_stable_runs_and_scoped_tombstone():
         state_path = str(Path(d) / "state.json")
         factory = FakeSessionFactory(script=DEFAULT_SCRIPT, delay=0.02)
         app_a = make_test_app(session_factory=factory, state_path=state_path)
-        async with httpx.AsyncClient(
-            transport=StreamingASGITransport(app=app_a), base_url="http://testserver"
-        ) as client:
+        async with async_client(app_a) as client:
             source = (await client.post("/api/runs", json={})).json()["run_id"]
             await client.post(
                 f"/api/runs/{source}/messages", json={"text": "共享的部署起点"}
@@ -436,9 +465,7 @@ async def test_fork_transcripts_restore_stable_runs_and_scoped_tombstone():
             list_sessions_fn=factory.list_sessions,
             get_session_messages_fn=factory.get_session_messages,
         )
-        async with httpx.AsyncClient(
-            transport=StreamingASGITransport(app=app_b), base_url="http://testserver"
-        ) as client:
+        async with async_client(app_b) as client:
             runs = {
                 run["run_id"]: run
                 for run in (await client.get("/api/runs")).json()["runs"]
@@ -484,9 +511,7 @@ async def test_fork_transcripts_restore_stable_runs_and_scoped_tombstone():
             list_sessions_fn=factory.list_sessions,
             get_session_messages_fn=factory.get_session_messages,
         )
-        async with httpx.AsyncClient(
-            transport=StreamingASGITransport(app=app_c), base_url="http://testserver"
-        ) as client:
+        async with async_client(app_c) as client:
             runs = {
                 run["run_id"]: run
                 for run in (await client.get("/api/runs")).json()["runs"]
@@ -505,7 +530,7 @@ async def test_empty_clone_identity_lost_accepted():
             session_factory=FakeSessionFactory(script=DEFAULT_SCRIPT, delay=0.02),
             state_path=state_path,
         )
-        async with httpx.AsyncClient(transport=StreamingASGITransport(app=app_a), base_url="http://testserver") as client:
+        async with async_client(app_a) as client:
             src = (await client.post("/api/runs", json={})).json()["run_id"]
             await client.post(f"/api/runs/{src}/messages", json={"text": "部署 nginx"})
             await wait_status(client, src, "READY")
@@ -517,7 +542,7 @@ async def test_empty_clone_identity_lost_accepted():
         # 重启后：transcript 里只有源会话，空克隆不可找回
         src_sid = state["sessions"][src]
         app_b = restore_app(state_path, [session_info(src_sid, "部署 nginx", 1000)], {src_sid: two_turn_transcript()})
-        async with httpx.AsyncClient(transport=StreamingASGITransport(app=app_b), base_url="http://testserver") as client:
+        async with async_client(app_b) as client:
             runs = {r["run_id"] for r in (await client.get("/api/runs")).json()["runs"]}
             assert runs == {"run_1"}, runs  # run_2（空克隆）不在
 

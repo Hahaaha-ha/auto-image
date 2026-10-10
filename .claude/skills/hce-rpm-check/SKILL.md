@@ -63,7 +63,7 @@ hce_rpm_check:
    - 报告/问题清单落 `rpmcheck/{{target_image}}/` 树（target_image 按实际所用镜像取 slug：HCE 3.0 → `hce_3p0`，HCE 2.0 → `hce_2p0`），标题与「环境信息」写明实际 HCE 版本与**目标机器的基础镜像**：镜像 ID + 镜像名称（如 `04f8c759-…`（HCE 2.0 Standard 64bit ARM aarch64））；自动选镜像时写明选择依据（包 release tag `oe2203*` → 对标 HCE 2.0 ARM；镜像一律 ARM、不按包架构分支），显式指定或区域适配等偏离默认的情况一并如实记录。
 4. **生成归档安装脚本 `install-rpm.sh`**（验证结论达成后，见「归档安装脚本生成」）：Read rpm-archive 模板 → 注入变量 → 落 `install_script_file` → 本机 `bash -n` 语法自检（仅查语法，不执行）→ 报告写「归档产物」节。验证未通过且未修复时**不生成**，在报告注明缺此产物的原因。
 5. **初始镜像实测 `install-rpm.sh`**（交付门禁，见「归档脚本初始镜像实测」）：全新拉起初始 HCE ARM 验证机（**不复用主验证机**）→ 门禁与初始性取证 → 执行前快照 → ssh-skill 上传并忠实执行脚本 → 安装冒烟 + 环境无污染检查 → 失败归因与限次修复（仅变量）→ 报告写「归档脚本初始镜像实测」节与三态结论。
-6. 对话回复：整体结论（含修复后状态）+ 报告路径 +（若有）问题文件路径 + **归档脚本路径与初始镜像实测结论（✅/🔧/❌）** + 两台验证机处置（保留时给出 alias/instance_id/ip 与清理命令）。
+6. 对话回复：整体结论（含修复后状态）+ 报告路径 +（若有）问题文件路径 + **归档脚本路径与初始镜像实测结论（✅/🔧/❌）** + 两台验证机处置（保留时给出 alias/instance_id/ip 与清理命令；机器默认 24h 后自动删除——ecs-skill 临时机默认，见 rpm-check 输入 6）。
 
 ## 归档安装脚本生成（新增环节）
 
@@ -96,7 +96,7 @@ hce_rpm_check:
 1. **验证机必须是初始状态**：
    - 默认全新拉起：ecs-skill 用 `default_image_id_arm`（与主验证机同一 ARM 镜像）+ `default_flavor_arm` 创建，机器名 `hcerpm-script-<software>-<rand>`、ssh 别名 `hcerpm-script-<software>`；创建后跑门禁（HCE 宽松匹配 + aarch64）与**初始性取证**（`rpm -q <PKG_NAME>` 未安装、`/etc/yum.repos.d` 为镜像出厂内容）并记录；
    - **禁止复用主验证机**（rpm 实测流程已装包/改源，非初始状态，测不出「初始镜像能否直接用」这一命题）；用户显式给别名 → 先做初始性取证，不满足则停止并说明；
-   - 测后处置同 rpm-check 输入 6：默认保留，报告注明 alias / instance_id / ip 与清理命令。
+   - 测后处置同 rpm-check 输入 6：默认保留至 24h 自动删除，报告注明 alias / instance_id / ip 与清理命令。
 2. **执行前快照（无污染基线）**：`ls -la /etc/yum.repos.d/` 与 `md5sum /etc/yum.repos.d/* /etc/yum.conf` 采集落日志，作为事后比对基线。
 3. **忠实执行脚本**：ssh-skill 上传 `install-rpm.sh` → `bash install-rpm.sh` 标准模式完整执行（全量输出采集；下载/装依赖/安装全链路超时预算 ≥ 900s）；**脚本外不做任何预配置**——不预装依赖、不预改源，脚本自身的「鲲鹏源探测 → 下载 → 依赖 → 安装」链路就是被测对象。用户要求提取模式时另测 `bash install-rpm.sh -p /opt/<software>`。
 4. **安装后冒烟**（rpm-check 步骤 3 同构，逐项记录命令/期望/实际/判定）：`rpm -q` / `rpm -qi` / 关键文件（`rpm -ql` 抽查）/ `ldd` 无 `not found` / 服务状态 / 端口监听 / 主命令或 curl 冒烟 / `journalctl` 日志。

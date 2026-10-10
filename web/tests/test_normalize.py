@@ -156,6 +156,8 @@ def test_stage_derivation_from_task_subagent_type():
         for subagent, stage in [
             ("deploy-guide", "GUIDE"), ("deploy-install", "INSTALL"),
             ("deploy-verify", "VERIFY"), ("deploy-archive", "ARCHIVE"),
+            ("rpm-guide", "GUIDE"), ("rpm-build", "BUILD"),
+            ("rpm-verify", "VERIFY"), ("rpm-archive", "ARCHIVE"),
         ]:
             msg = {
                 "type": "assistant",
@@ -165,7 +167,10 @@ def test_stage_derivation_from_task_subagent_type():
                 ]},
             }
             events = normalize_message(msg, {})
-            assert events[0] == ("stage.changed", {"stage": stage, "status": "running"}), (tool, subagent)
+            # subagent 随行：任务跟踪按它分流镜像/RPM 流水线
+            assert events[0] == ("stage.changed", {
+                "stage": stage, "status": "running", "subagent": subagent,
+            }), (tool, subagent)
             assert events[1][0] == "agent.tool_started"
     # 子 agent 工具但 subagent_type 不在四类：无 stage，只发工具事件
     events = normalize_message({
@@ -229,7 +234,7 @@ def test_to_dict_assistant_message():
     assert [e[0] for e in events] == [
         "agent.thinking", "agent.message", "stage.changed", "agent.tool_started",
     ]
-    assert events[2][1] == {"stage": "GUIDE", "status": "running"}
+    assert events[2][1] == {"stage": "GUIDE", "status": "running", "subagent": "deploy-guide"}
     # signature 签名字段不进事件
     assert "signature" not in str(events[0][1])
 
@@ -256,8 +261,21 @@ def test_to_dict_result_message():
         num_turns=2, session_id="s1", result="回合汇总文本",
     )
     d = to_dict(msg)
-    assert d == {"type": "result", "subtype": "success", "result": "回合汇总文本", "session_id": "s1"}
+    # usage 透传（None 如实保留——任务跟踪在回合收尾累计 token）
+    assert d == {"type": "result", "subtype": "success", "result": "回合汇总文本",
+                 "session_id": "s1", "usage": None}
     assert is_final_result(d)
+    # CLI 形状的 usage dict 原样带出
+    msg_usage = ResultMessage(
+        subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
+        num_turns=1, session_id="s2", result="带用量",
+        usage={"input_tokens": 10, "output_tokens": 5,
+               "cache_read_input_tokens": 7, "cache_creation_input_tokens": 3},
+    )
+    assert to_dict(msg_usage)["usage"] == {
+        "input_tokens": 10, "output_tokens": 5,
+        "cache_read_input_tokens": 7, "cache_creation_input_tokens": 3,
+    }
 
 
 def test_to_dict_partial_and_unknown_messages_are_inert():

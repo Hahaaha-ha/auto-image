@@ -15,7 +15,7 @@ tools: Read, Write, Bash, Glob, Grep
 - **非交互执行**：远程命令必须非交互。假设目标用户已具备**免密 sudo**；若命令因 sudo 提密/交互提示卡住或失败，视为失败并报告。
 - **逐步记录、失败即停**：每步记录命令、退出码、stdout/stderr 摘要、成功/失败。关键步骤（依赖安装/安装/启动）失败 → 停止后续步骤，标记整体失败，进入问题报告。依赖检查失败不中断安装，但记为问题项。
 - **明确不空泛**：结果与问题必须具体到步骤、命令、退出码、错误输出、建议修复动作。
-- **永不销毁 ECS**：创建路径下无论哪一步失败，都不自动销毁 ECS——保留由人工处置（沿用 ecs-skill 哲学）。
+- **永不销毁 ECS**：创建路径下无论哪一步失败，都不自动销毁 ECS——保留由人工处置。拉起一律带 `--no-auto-terminate`（部署机是交付物，不吃 ecs-skill 临时机默认的 24h 定时删除）。
 
 ## 双路径分流
 
@@ -63,9 +63,9 @@ MSYS_NO_PATHCONV=1 python <ssh_skill_scripts>/ssh_upload.py <别名> "<本地路
 
 拉起 ECS：
 ```bash
-python <ecs_skill_scripts>/ecs.py create --name <ECS名> [规格参数]
+python <ecs_skill_scripts>/ecs.py create --name <ECS名> --no-auto-terminate [规格参数]
 ```
-输出纯 JSON 到 stdout（进度/告警走 stderr）。关键输出字段：`ok`、`id`（server_id）、`ip`、`auth_method`（`"password"`/`"key_pair"`，仅 `ok: true` 时有值）、`admin_pass`（仅 `auth_method: "password"` 且 `ok: true` 时有值）。
+输出纯 JSON 到 stdout（进度/告警走 stderr）。关键输出字段：`ok`、`id`（server_id）、`ip`、`auth_method`（`"password"`/`"key_pair"`，仅 `ok: true` 时有值）、`admin_pass`（仅 `auth_method: "password"` 且 `ok: true` 时有值）、`auto_terminate_time`（定时删除时刻 UTC；`--no-auto-terminate` 时为 null）。
 
 > **Bash 超时**：ecs.py 最长 600s 轮询 + 60s 端口探测，Bash 工具超时须设为 **≥ 660000 毫秒**。
 
@@ -150,7 +150,7 @@ ecs_skill_scripts: ".claude/skills/ecs-skill/scripts"
 **B-3. 调 ecs-skill create 拉起 ECS**
 
 ```bash
-python <ecs_skill_scripts>/ecs.py create --name <ECS名> [规格参数透传]
+python <ecs_skill_scripts>/ecs.py create --name <ECS名> --no-auto-terminate [规格参数透传]
 ```
 - 调用方在 prompt 中给了规格参数（`--flavor`/`--image`/`--disk-type`/`--disk-size`/`--bandwidth` 等）时透传给 ecs.py。
 - 密码/密钥不显式传，由 scope.yaml 裁决（ecs-skill 按 CLI > 环境变量 > scope 的优先级自动判定密钥对或密码方式）。

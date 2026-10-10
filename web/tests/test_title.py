@@ -14,7 +14,6 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -22,7 +21,7 @@ from web import sdk as sdk_mod  # noqa: E402
 from web import title as title_mod  # noqa: E402
 from web.fake import DEFAULT_SCRIPT, FakeSession, FakeSessionFactory  # noqa: E402
 from web.runs import RunManager  # noqa: E402
-from web.tests.support import StreamingASGITransport, make_test_app  # noqa: E402
+from web.tests.support import async_client, make_test_app  # noqa: E402
 from web.tests.test_api import collect_sse, open_stream, wait_status  # noqa: E402
 
 
@@ -118,7 +117,7 @@ async def test_first_message_assigns_title_and_emits_event():
 
     sdk_mod.rename_session = fake_rename
     try:
-        async with httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver") as client:
+        async with async_client(app) as client:
             run_id = (await client.post("/api/runs", json={})).json()["run_id"]
             await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx 1.25 到 server-a"})
             await wait_status(client, run_id, "READY")
@@ -187,7 +186,7 @@ async def test_second_message_does_not_retitle():
         title_factory=TitleFactory(),
     )
     with patch.object(sdk_mod, "rename_session", lambda *_args, **_kwargs: None):
-        async with httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver") as client:
+        async with async_client(app) as client:
             run_id = (await client.post("/api/runs", json={})).json()["run_id"]
             await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx"})
             await wait_status(client, run_id, "READY")
@@ -231,7 +230,7 @@ async def test_continued_session_does_not_retitle():
         get_session_messages_fn=lambda sid: two_turn_transcript(),
         state_path=str(state_path),
     )
-    async with httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver") as client:
+    async with async_client(app) as client:
         assert (await client.get("/api/runs")).json()["runs"][0]["title"] is None
         await client.post("/api/runs/run_1/messages", json={"text": "继续之前的部署"})
         await wait_status(client, "run_1", "READY")

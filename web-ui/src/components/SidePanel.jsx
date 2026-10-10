@@ -1,16 +1,19 @@
-// 左侧侧栏：顶部小 tab「会话 | 产物 | OBS产物」切三块面板（默认产物，切过
-// 之后 localStorage 记住选择）。会话面板 = 全部会话仪表盘（含 ENDED 与重启
-// 恢复的历史，服务端最后活跃降序平铺），点行开成（或激活既有）会话
-// 标签页——历史会话由此第一次可达。产物面板 = 原产物卡内容原样迁入
+// 左侧侧栏：顶部小 tab「会话 | 任务 | 产物 | OBS产物 | ECS实例」切五块面板（默认
+// 产物，切过之后 localStorage 记住选择）。会话面板 = 全部会话仪表盘（含
+// ENDED 与重启恢复的历史，服务端最后活跃降序平铺），点行开成（或激活既有）
+// 会话标签页——历史会话由此第一次可达。产物面板 = 原产物卡内容原样迁入
 // （工具行/复选框/zip/单文件下载/默认展开最新组），点文件开成（或激活
 // 既有）文件标签页——多槽内容缓存，消息流不再被顶走。OBS产物面板 = 桶内
 // 对象在线清单（/api/obs/objects），树形同构，点对象开 OBS 标签页预览。
-// 数据请求：会话列表即摘要轮询已拉的全量，本地产物即清单刷新，OBS 启动
-// 拉一次 + 刷新钮（不随流水线事件联动）。
-import { useState } from 'react'
+// ECS实例面板 = 华为云实例清单/状态 + 一键存活检查 + 新建（无标签页，
+// 面板内完成）。数据请求：会话列表即摘要轮询已拉的全量，本地产物即清单
+// 刷新，OBS 与 ECS 启动拉一次 + 刷新钮（不随流水线事件联动）。
+import { useEffect, useRef, useState } from 'react'
 import * as store from '../store.js'
 import { tabKey } from '../tabState.js'
+import EcsPanel from './EcsPanel.jsx'
 import ObsPanel from './ObsPanel.jsx'
+import TasksPanel from './TasksPanel.jsx'
 import StageBadge from './StageBadge.jsx'
 import {
   RUN_STATUS_LABEL, STAGE_LABEL, firstPromptPreview, lastActivityAt, tabDot, fmtAgo,
@@ -42,7 +45,7 @@ function SessionRow({ run, on, open }) {
       }}
       title={title}
     >
-      <span className={`va-tab-dot ${tabDot(run)}`} />
+      <span className={`va-tab-dot ${tabDot(run)}`} aria-hidden="true" />
       <div className="va-sess-main">
         <div className="va-sess-title">
           {open && <span className="va-sess-open" title="已开为标签页" />}
@@ -155,6 +158,7 @@ function ArtDir({ node, toggles, setToggles, defaultOpen, openFiles, activeRel }
                 <button
                   className="va-art-dl"
                   title="下载此文件"
+                  aria-label={`下载 ${f.name}`}
                   onClick={(e) => {
                     e.stopPropagation()
                     store.downloadArtifact(rel)
@@ -183,6 +187,22 @@ function ArtifactPanel({ openFiles, activeRel }) {
   const s = store.useRunState()
   const groups = s.artifacts.groups
   const [toggles, setToggles] = useState({})
+  const [exportOpen, setExportOpen] = useState(false)
+  const anchorRef = useRef(null)
+  const closeExport = (run) => {
+    setExportOpen(false)
+    run()
+  }
+  // 展开期间点外部收起（mousedown 而非 click：事件先于按钮 onClick 落定，
+  // 点菜单项时仍属锚点内部不误收；点空白/其他面板元素即关）
+  useEffect(() => {
+    if (!exportOpen) return
+    const onDown = (e) => {
+      if (anchorRef.current && !anchorRef.current.contains(e.target)) setExportOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [exportOpen])
   const roots = artifactTree(groups)
   const fileCount = artifactFileCount(groups)
   const selCount = Object.keys(s.artifactSel).length
@@ -197,30 +217,48 @@ function ArtifactPanel({ openFiles, activeRel }) {
           <button onClick={() => store.clearArtifactSel()} disabled={selCount === 0}>
             清空
           </button>
-          <button
-            className="va-art-zip"
-            onClick={() => store.downloadArtifactZip()}
-            disabled={selCount === 0 || s.artifactZipping}
-            title="勾选的产物打包成一个 zip 下载"
-          >
-            {s.artifactZipping ? '打包中…' : `下载 zip${selCount ? ` (${selCount})` : ''}`}
-          </button>
-          <button
-            className="va-art-zip"
-            onClick={() => store.archiveToObs()}
-            disabled={selCount === 0 || s.obsArchiving}
-            title="勾选的产物上传到 OBS 桶（对象名 = 产物路径，同名覆盖）"
-          >
-            {s.obsArchiving ? '归档中…' : `归档到 OBS${selCount ? ` (${selCount})` : ''}`}
-          </button>
-          <button
-            className="va-art-zip"
-            onClick={() => store.archiveZipToObs()}
-            disabled={selCount === 0 || s.obsZipArchiving}
-            title="勾选的产物打成一个 zip（自定义包名）上传到 OBS 的 zip/ 目录"
-          >
-            {s.obsZipArchiving ? '打包中…' : `打包归档${selCount ? ` (${selCount})` : ''}`}
-          </button>
+          {/* 三条导出路径收拢为一个主按钮 + 单选小弹层（差异曾只活在
+              tooltip 里——三个同权重蓝钮是全 UI 最差的决策点）。锚定 span
+              挂在导出钮外——浮层相对它定位到按钮右侧，而非整个工具行 */}
+          <span className="va-art-export-anchor" ref={anchorRef}>
+            <button
+              className="va-art-zip"
+              onClick={() => setExportOpen((v) => !v)}
+              disabled={selCount === 0 || s.artifactZipping || s.obsArchiving || s.obsZipArchiving}
+              aria-expanded={exportOpen}
+              title="勾选产物的导出方式（下载 zip / 上传 OBS 散件 / 上传 OBS 单包）"
+            >
+              导出{selCount ? ` (${selCount})` : ''}
+            </button>
+            {exportOpen && (
+              <div className="va-art-export" role="menu" aria-label="导出方式">
+                <button
+                  role="menuitem"
+                  onClick={() => closeExport(() => store.downloadArtifactZip())}
+                  disabled={s.artifactZipping}
+                  title="勾选的产物打包成一个 zip 下载到本机（文件名自动带时间戳）"
+                >
+                  {s.artifactZipping ? '打包中…' : '下载 zip'}
+                </button>
+                <button
+                  role="menuitem"
+                  onClick={() => closeExport(() => store.archiveToObs())}
+                  disabled={s.obsArchiving}
+                  title="勾选的产物逐个上传到 OBS 桶（对象名 = 产物路径，同名覆盖）"
+                >
+                  {s.obsArchiving ? '归档中…' : '上传 OBS · 散件'}
+                </button>
+                <button
+                  role="menuitem"
+                  onClick={() => closeExport(() => store.archiveZipToObs())}
+                  disabled={s.obsZipArchiving}
+                  title="勾选的产物打成一个 zip（自定义包名）上传到 OBS 的 zip/ 目录"
+                >
+                  {s.obsZipArchiving ? '打包中…' : '上传 OBS · 单包'}
+                </button>
+              </div>
+            )}
+          </span>
         </div>
       )}
       {roots.length === 0 && <div className="va-side-empty">deploy/ · rpm/ 下暂无产物</div>}
@@ -231,73 +269,52 @@ function ArtifactPanel({ openFiles, activeRel }) {
   )
 }
 
-// 侧栏本体：pin 开合钮在 App 内（骑缝移动），本组件只承载两面板与切换。
-// 面板选择持久化 localStorage——刷新后仍是切过的面板（首次默认产物）。
-// 两面板的「当前对象」标记都从 tabs 派生：会话面板高亮控制面会话，
-// 产物面板高亮激活的文件标签页（弱标记则覆盖全部已开文件）。
-const SIDE_PANEL_KEY = 'va-side-panel'
-const PANELS = ['sessions', 'artifacts', 'obs']
-function readPanel() {
-  try {
-    const v = localStorage.getItem(SIDE_PANEL_KEY)
-    if (PANELS.includes(v)) return v
-  } catch {
-    // 存储不可用（隐私模式等）：回落默认面板
-  }
-  return 'artifacts'
-}
-
+// 侧栏本体：pin 开合钮在 Workbench 内（骑缝移动）。
+// 面板选择在 store（localStorage 持久化——刷新后仍是切过的面板，首次默认
+// 产物）：会话标签的任务 pill 要跨面板跳到任务面板，本地 state 不够用。
+// 各面板的「当前对象」标记从 tabs 派生：会话面板高亮控制面会话，产物面板
+// 高亮激活的文件标签页（弱标记则覆盖全部已开文件）。
 export default function SidePanel() {
   const s = store.useRunState()
-  const [panel, setPanel] = useState(readPanel)
+  const panel = s.sidePanel === 'users' ? 'artifacts' : s.sidePanel
   const openIds = new Set(s.tabs.filter((t) => t.kind === 'session').map((t) => t.runId))
   const openFiles = new Set(s.tabs.filter((t) => t.kind === 'file').map((t) => t.relPath))
   const openObsKeys = new Set(s.tabs.filter((t) => t.kind === 'obs').map((t) => t.key))
   const activeTab = s.tabs.find((t) => tabKey(t) === s.activeKey)
-  const switchPanel = (p) => {
-    setPanel(p)
-    try {
-      localStorage.setItem(SIDE_PANEL_KEY, p)
-    } catch {
-      // 存储不可用（隐私模式等）：只丢面板选择存活，不影响使用
-    }
-  }
+  const switchPanel = (p) => store.setSidePanel(p)
   return (
     <aside className="va-side" id="task-side">
       <div className="va-side-tabs" role="tablist" aria-label="侧栏面板">
-        <button
-          role="tab"
-          aria-selected={panel === 'sessions'}
-          aria-controls="va-side-panel"
-          className={panel === 'sessions' ? 'on' : ''}
-          onClick={() => switchPanel('sessions')}
-        >
-          会话
-        </button>
-        <button
-          role="tab"
-          aria-selected={panel === 'artifacts'}
-          aria-controls="va-side-panel"
-          className={panel === 'artifacts' ? 'on' : ''}
-          onClick={() => switchPanel('artifacts')}
-        >
-          产物
-        </button>
-        <button
-          role="tab"
-          aria-selected={panel === 'obs'}
-          aria-controls="va-side-panel"
-          className={panel === 'obs' ? 'on' : ''}
-          onClick={() => switchPanel('obs')}
-        >
-          OBS产物
-        </button>
+        {[
+          ['sessions', '会话'], ['tasks', '任务'], ['artifacts', '产物'],
+          ['obs', 'OBS产物'], ['ecs', 'ECS实例'],
+        ].map(([key, label]) => (
+          <button key={key} role="tab" aria-label={label} aria-selected={panel === key}
+            aria-controls="va-side-panel" tabIndex={panel === key ? 0 : -1}
+            className={panel === key ? 'on' : ''} onClick={() => switchPanel(key)}
+            onKeyDown={(event) => {
+              const buttons = Array.from(event.currentTarget.parentElement.querySelectorAll('[role="tab"]'))
+              const index = buttons.indexOf(event.currentTarget)
+              const next = { ArrowRight: (index + 1) % buttons.length,
+                ArrowLeft: (index - 1 + buttons.length) % buttons.length,
+                Home: 0, End: buttons.length - 1 }[event.key]
+              if (next === undefined) return
+              event.preventDefault()
+              buttons[next].focus()
+              buttons[next].click()
+            }}
+          >{label}</button>
+        ))}
       </div>
       <div className="va-side-panel-wrap" id="va-side-panel" role="tabpanel">
         {panel === 'sessions' ? (
           <SessionPanel order={s.order} runs={s.runs} controlId={store.controlRunId()} openIds={openIds} />
+        ) : panel === 'tasks' ? (
+          <TasksPanel />
         ) : panel === 'obs' ? (
           <ObsPanel openKeys={openObsKeys} activeKey={activeTab?.kind === 'obs' ? activeTab.key : null} />
+        ) : panel === 'ecs' ? (
+          <EcsPanel />
         ) : (
           <ArtifactPanel openFiles={openFiles} activeRel={activeTab?.kind === 'file' ? activeTab.relPath : null} />
         )}

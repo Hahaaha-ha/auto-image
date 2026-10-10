@@ -5,7 +5,7 @@
 （生产包装 ClaudeSDKClient，测试注入脚本化假实现），工厂收到明确的目标
 身份、上下文来源和 Fork 意图，返回支持 async with 的对象。
 
-停止的服务端语义：request_stop 置 stop_requested 后，已有 live adapter
+停止的服务端语义：stop_requested 置位后，已有 live adapter
 由 HTTP 层调 interrupt；尚在连接窗口的意图由 run_turn 在 query 前消费。
 回合收尾按该标记区分 turn.stopped 与 turn.completed（真 SDK 被打断的
 回合以 result=None 的 error Result 收尾，但判定以本端标记为权威）。
@@ -31,6 +31,10 @@ from .sdk import SessionStart
 
 class TurnFailure(Exception):
     """回合终局失败（Result 错误 subtype）：run_turn 的异常收尾转 turn.failed。"""
+
+    def __init__(self, message, usage=None):
+        super().__init__(message)
+        self.usage = usage if isinstance(usage, dict) else None
 
 
 async def run_turn(run, text, session_factory, store, on_change=None):
@@ -76,7 +80,11 @@ async def run_turn(run, text, session_factory, store, on_change=None):
             # 收尾；_finish 同时消费标记，保证只产生一条 turn.stopped。
             _finish(run, store, None)
         else:
-            store.append(run.run_id, "turn.failed", {"message": redact_text(str(exc))})
+            payload = {"message": redact_text(str(exc))}
+            usage = getattr(exc, "usage", None)
+            if isinstance(usage, dict):
+                payload["usage"] = usage
+            store.append(run.run_id, "turn.failed", payload)
         changed()
     finally:
         # 引用只在本 async context 内有效。身份判断避免未来代码在旧任务
@@ -129,17 +137,35 @@ def _finish(run, store, message):
     """回合收尾：停止请求优先（turn.stopped）；Result 的错误 subtype 以
     TurnFailure 抛给 run_turn 的异常收尾（turn.failed）。
 
-    与 request_stop 的标记置位同为同步块，在单线程事件循环上互斥执行，
+    与停止标记置位同为同步块，在单线程事件循环上互斥执行，
     不存在「半停半完成」的交错。subtype 判定取兜底：只有 success 是正常
     完成，其余（error_max_turns、执行错误等文案不可穷尽）一律失败。
     """
     if run.stop_requested:
         run.stop_requested = False
-        store.append(run.run_id, "turn.stopped", {})
+        usage = _usage_of(message)
+        store.append(run.run_id, "turn.stopped",
+                     {"usage": usage} if usage else {})
     elif message is None or message.get("subtype") == "success":
         result = message.get("result", "") if message else ""
-        store.append(run.run_id, "turn.completed", {"result": redact_text(result)})
+        payload = {"result": redact_text(result)}
+        usage = _usage_of(message)
+        if usage:
+            payload["usage"] = usage
+        store.append(run.run_id, "turn.completed", payload)
     else:
         subtype = message.get("subtype") or "unknown"
         detail = redact_text(str(message.get("result") or "")).strip()
-        raise TurnFailure(f"回合以 {subtype} 终止" + (f"：{detail}" if detail else ""))
+        raise TurnFailure(f"回合以 {subtype} 终止" + (f"：{detail}" if detail else ""),
+                          usage=_usage_of(message))
+
+
+def _usage_of(message):
+    """Result 适配 dict → usage dict（缺省/形状不合为 None）。
+
+    CLI 在 resume 会话上可能给累计值而非本回合增量——如实透传，任务侧
+    按键取 max 幂等合并，不在此做增量推算。"""
+    if not isinstance(message, dict):
+        return None
+    usage = message.get("usage")
+    return usage if isinstance(usage, dict) else None

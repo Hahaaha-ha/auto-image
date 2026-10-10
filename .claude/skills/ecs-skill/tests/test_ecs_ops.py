@@ -9,6 +9,7 @@
 """
 import contextlib
 import io
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import pathlib
@@ -48,6 +49,7 @@ def make_args(**kw):
         vpc=None, subnet=None, sg=None, az=None,
         no_eip=False, validate=False, dry_run=False,
         disk_type=None, disk_size=None, bandwidth=None,
+        terminate_hours=None, no_auto_terminate=False, _now=None,
     )
     base.update(kw)
     return Namespace(**base)
@@ -371,6 +373,55 @@ def dry_run_server(*flags):
     server = ((payload.get("request") or {}).get("body") or {}).get("server")
     assert isinstance(server, dict), f"输出应含 request.body.server，实得：{payload!r}"
     return server
+
+
+# ---- CLI 互斥：--terminate-hours vs --no-auto-terminate ----
+def test_dry_run_terminate_flags_mutually_exclusive():
+    """两 flag 同时给 → argparse 报错（exit 2），不静默择一。"""
+    code, payload = run_cli(make_cli_scope(), ["create", "--dry-run",
+                                               "--terminate-hours", "4", "--no-auto-terminate"])
+    assert code == 2, f"应 exit 2，实得 {code!r}"
+    assert payload is None, f"stdout 应为空，实得 {payload!r}"
+
+
+def test_terminate_hours_from_scope():
+    """CLI 不给 → 用 scope server.terminate_hours（默认 24 进 scope 可配）。"""
+    scope = make_scope(terminate_hours=48)
+    req = build_create_request(scope, make_args(_now=datetime(2026, 9, 20, 10, 30, 0)))
+    assert req.body.server.auto_terminate_time == "2026-09-22T10:30:00Z", \
+        f"实得 {req.body.server.auto_terminate_time!r}"
+
+
+def test_cli_terminate_hours_overrides_scope():
+    """CLI --terminate-hours 压过 scope terminate_hours。"""
+    scope = make_scope(terminate_hours=48)
+    req = build_create_request(scope, make_args(terminate_hours=4, _now=datetime(2026, 9, 20, 10, 30, 0)))
+    assert req.body.server.auto_terminate_time == "2026-09-20T14:30:00Z", \
+        f"实得 {req.body.server.auto_terminate_time!r}"
+
+
+def test_scope_invalid_terminate_hours_raises():
+    """scope terminate_hours 非数字/bool → 早炸，不发 API。"""
+    for bad in ("abc", True):
+        scope = make_scope(terminate_hours=bad)
+        try:
+            build_create_request(scope, make_args())
+        except ValueError as e:
+            assert "terminate_hours" in str(e), f"报错应点名 terminate_hours，实得：{e}"
+        else:
+            raise AssertionError(f"scope terminate_hours={bad!r} 应抛 ValueError")
+
+
+def test_scope_terminate_hours_bounds_still_enforced():
+    """scope 配的越界值同样被边界校验拦下。"""
+    for bad in (0.1, 24 * 365 * 3 + 1):
+        scope = make_scope(terminate_hours=bad)
+        try:
+            build_create_request(scope, make_args())
+        except ValueError as e:
+            assert "定时删除" in str(e), f"报错应说明定时删除，实得：{e}"
+        else:
+            raise AssertionError(f"scope terminate_hours={bad} 应抛 ValueError")
 
 
 # ---- 缝 B：命令行入口的 dry-run 端到端 ----
@@ -1287,6 +1338,89 @@ def test_poll_until_ready_without_expect_keeps_create_semantics():
         assert ip == "10.0.0.5", f"应取私网 IP，实得 {ip!r}"
 
 
+# ---- 定时删除（auto_terminate_time + EIP 级联释放） ----
+def test_default_sets_auto_terminate_24h():
+    """默认：now+24h 的 UTC ISO8601，秒归零（对齐华为「ss 非 00 取整分钟」）。"""
+    req = build_create_request(make_scope(), make_args(_now=datetime(2026, 9, 20, 10, 30, 45)))
+    assert req.body.server.auto_terminate_time == "2026-09-21T10:31:00Z", \
+        f"实得 {req.body.server.auto_terminate_time!r}"
+    # 输入秒归零时不进位（取整只处理非零秒）
+    req2 = build_create_request(make_scope(), make_args(_now=datetime(2026, 9, 20, 10, 30, 0)))
+    assert req2.body.server.auto_terminate_time == "2026-09-21T10:30:00Z", \
+        f"整分输入实得 {req2.body.server.auto_terminate_time!r}"
+
+
+def test_terminate_hours_flag_overrides():
+    """--terminate-hours 4 → now+4h。"""
+    req = build_create_request(
+        make_scope(), make_args(terminate_hours=4, _now=datetime(2026, 9, 20, 23, 15, 0)))
+    assert req.body.server.auto_terminate_time == "2026-09-21T03:15:00Z", \
+        f"实得 {req.body.server.auto_terminate_time!r}"
+
+
+def test_no_auto_terminate_disables():
+    """--no-auto-terminate → 不下发字段（长期机不自动销毁）。"""
+    req = build_create_request(make_scope(), make_args(no_auto_terminate=True))
+    assert req.body.server.auto_terminate_time is None
+
+
+def test_terminate_hours_bounds():
+    """边界校验：最短半小时（API 约束）、最长三年；nan 拦下。"""
+    build_create_request(make_scope(), make_args(terminate_hours=0.5))  # 合法下界
+    build_create_request(make_scope(), make_args(terminate_hours=24 * 365 * 3))  # 合法上界
+    for bad in (0.1, 24 * 365 * 3 + 1, float("nan"), float("inf")):
+        try:
+            build_create_request(make_scope(), make_args(terminate_hours=bad))
+        except ValueError as e:
+            assert "定时删除" in str(e), f"报错应说明定时删除，实得：{e}"
+        else:
+            raise AssertionError(f"terminate_hours={bad} 应抛 ValueError")
+
+
+def test_min_half_hour_kept_after_ceil():
+    """0.5h 下界：取整 + 1 分钟缓冲后，实际提前量严格大于半小时（真机 Ecs.0005 证实恰 30:00 被拒）。"""
+    for sec in (0, 1, 30, 59):
+        req = build_create_request(
+            make_scope(), make_args(terminate_hours=0.5, _now=datetime(2026, 9, 20, 10, 30, sec)))
+        got = datetime.strptime(req.body.server.auto_terminate_time, "%Y-%m-%dT%H:%M:%SZ")
+        base = datetime(2026, 9, 20, 10, 30, 0)
+        assert (got - base) > timedelta(minutes=30), \
+            f"秒={sec} 时提前量须严格大于半小时（服务端按自身时钟严格比较），实得 {req.body.server.auto_terminate_time!r}"
+
+
+def test_publicip_delete_on_termination_true():
+    """默认带 EIP 时，EIP 随实例释放（定时删除路径只认创建时的该字段）。"""
+    scope = make_scope(**_EIP_TEMPLATE)
+    req = build_create_request(scope, make_args())
+    pub = req.body.server.publicip
+    assert pub is not None and pub.delete_on_termination is True, f"实得 {pub!r}"
+
+
+def test_no_eip_still_no_publicip():
+    """--no-eip 时无 publicip，不涉及 EIP 级联。"""
+    scope = make_scope(**_EIP_TEMPLATE)
+    req = build_create_request(scope, make_args(no_eip=True))
+    assert req.body.server.publicip is None
+
+
+def test_dry_run_auto_terminate_reaches_request():
+    """CLI 端到端：默认 24h 走到请求体；--terminate-hours/--no-auto-terminate 覆盖；EIP 级联。"""
+    att = dry_run_server().get("auto_terminate_time")
+    assert att is not None and att.endswith("Z") and len(att) == 20, f"实得 {att!r}"
+    now = datetime.now(timezone.utc)
+    got = datetime.strptime(att, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    assert abs((got - (now + timedelta(hours=24))).total_seconds()) < 120, \
+        f"默认应约为 now+24h，实得 {att!r}"
+    att4 = dry_run_server("--terminate-hours", "4").get("auto_terminate_time")
+    got4 = datetime.strptime(att4, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    assert abs((got4 - (now + timedelta(hours=4))).total_seconds()) < 120, \
+        f"--terminate-hours 4 应约为 now+4h，实得 {att4!r}"
+    assert dry_run_server("--no-auto-terminate").get("auto_terminate_time") is None
+    pub = dry_run_server().get("publicip") or {}
+    assert pub.get("delete_on_termination") is True, f"实得 {pub!r}"
+
+
+
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
 
 if __name__ == "__main__":
@@ -1303,3 +1437,4 @@ if __name__ == "__main__":
             print(f"✗ {t.__name__}: {type(e).__name__}: {e}")
     print(f"\n{len(TESTS) - failed}/{len(TESTS)} passed")
     sys.exit(1 if failed else 0)
+

@@ -3,31 +3,63 @@
 httpx 自带的 ASGITransport 会把整个响应体收完才返回，SSE 这种
 挂起会话上的无限流会挂死；这里换成边推边读——响应体块进 asyncio.Queue，
 响应对象以异步迭代器消费，aclose 时取消应用协程（等效客户端断开）。
+
+另有各认证/ACL/共享资源测试共用的审计桩（读取、封堵与解除——封堵即把
+目录换成同名文件，audit.record 的 open(a) 必然失败）。
 """
 import asyncio
+import json
+import shutil
 import tempfile
 from pathlib import Path
 
 import httpx
 
 from web.app import create_app
+from web.auth import COOKIE_NAME, hash_password
 from web.fake import FakeSessionFactory
 
 
 TEST_HEARTBEAT = 0.05
+# 测试默认用户清单：tester 可登录，alice/bob 是两个普通用户（owner ACL
+# 测试的对立双方），ghost 预置禁用（撤销类测试现成素材），admin 供 legacy
+# 迁移归属；tester 与 admin 显式拥有管理员角色，供 OBS 配置测试使用
+TEST_PASSWORD = "test-password"
+TEST_USERS = {
+    "tester": TEST_PASSWORD,
+    "alice": TEST_PASSWORD,
+    "bob": TEST_PASSWORD,
+    "ghost": TEST_PASSWORD,
+    "admin": TEST_PASSWORD,
+}
+
+
+def write_test_users(path):
+    """写测试用户清单（低迭代 PBKDF2，保测试速度）。ghost 恒为禁用。"""
+    users = {}
+    for name, password in TEST_USERS.items():
+        users[name] = {
+            "password_hash": hash_password(password, 1000),
+            "enabled": name != "ghost",
+            "role": "admin" if name in ("tester", "admin") else "user",
+        }
+    path.write_text(json.dumps({"users": users}), encoding="utf-8")
+    return path
 
 
 def make_test_app(*, session_factory=None, title_factory=None, **overrides):
     """用完全本地的安全默认依赖装配 Web 应用。
 
     部署与标题各用一套可独立观察的假会话；历史、transcript 时刻和残留
-    CLI 扫描默认均为空。每个应用拥有自己的临时 state 与空凭据配置。
-    专门测试某条边界时可通过同名参数显式覆盖。
+    CLI 扫描默认均为空。每个应用拥有自己的临时 state、空凭据配置、用户
+    清单（tester/ghost）与审计目录。专门测试某条边界时可通过同名参数显式
+    覆盖。
     """
     test_directory = tempfile.TemporaryDirectory(prefix="auto-image-web-test-")
     test_root = Path(test_directory.name)
     scope_config = test_root / "scope.yaml"
     scope_config.write_text("{}\n", encoding="utf-8")
+    write_test_users(test_root / "users.yaml")
     deployment = session_factory if session_factory is not None else FakeSessionFactory()
     titles = title_factory if title_factory is not None else FakeSessionFactory(script=[])
     options = {
@@ -40,6 +72,15 @@ def make_test_app(*, session_factory=None, title_factory=None, **overrides):
         "residual_cli_scan": lambda: [],
         "scope_config": scope_config,
         "state_path": test_root / "state.json",
+        "task_dir": test_root / "task",
+        "users_path": test_root / "users.yaml",
+        "audit_dir": test_root / "audit",
+        # legacy 迁移归属默认给 tester：既有主缝测试以 tester 登录，重启
+        # 恢复的无 owner 历史会话对其可见（多用户 ACL 测试可显式覆盖）
+        "default_owner": "tester",
+        # 产物根也隔离到临时目录：任务跟踪的产物确认扫描会读 deploy/rpm 树，
+        # 不能被真实仓库的运行时产物污染（个别测试显式覆盖时以此为准）
+        "artifact_roots": {name: test_root / name for name in ("deploy", "rpm", "rpmcheck", "hce")},
     }
     options.update(overrides)
     app = create_app(**options)
@@ -49,9 +90,28 @@ def make_test_app(*, session_factory=None, title_factory=None, **overrides):
     return app
 
 
-def async_client(app):
-    """app → 挂真流式 ASGI 传输的 AsyncClient（各主缝测试共用的装配）。"""
-    return httpx.AsyncClient(transport=StreamingASGITransport(app=app), base_url="http://testserver")
+def async_client(app, username="tester", password=TEST_PASSWORD):
+    """app → 挂真流式 ASGI 传输的 AsyncClient（各主缝测试共用的装配）。
+
+    默认以 tester 登录（业务请求直接可用）；username=None 保留未登录形态
+    （401 面测试用）。登录失败按未登录继续——禁用用户的撤销类测试靠热载
+    前的既有 Cookie，不需要这一步成功。
+    """
+
+    async def _login(client):
+        if username is not None:
+            resp = await client.post("/api/auth/login",
+                                     json={"username": username, "password": password})
+            del resp  # 失败即按未登录用（调用方断言 401 就是断言这个）
+        return client
+
+    class _LoggedInClient(httpx.AsyncClient):
+        async def __aenter__(self):
+            await super().__aenter__()
+            return await _login(self)
+
+    return _LoggedInClient(transport=StreamingASGITransport(app=app),
+                           base_url="http://testserver")
 
 
 class StreamingASGITransport(httpx.AsyncBaseTransport):
@@ -124,3 +184,23 @@ class StreamingASGITransport(httpx.AsyncBaseTransport):
 
         headers = [(k.decode("latin-1"), v.decode("latin-1")) for k, v in state["headers"]]
         return httpx.Response(state["status"], headers=headers, content=body_iter(), request=request)
+
+
+def audit_lines(audit_dir):
+    """读出全部审计记录（跨天文件按文件名序拼接）。"""
+    lines = []
+    for f in sorted(Path(audit_dir).glob("audit-*.jsonl")):
+        lines.extend(json.loads(l) for l in f.read_text(encoding="utf-8").splitlines() if l)
+    return lines
+
+
+def block_audit(audit_dir):
+    """封堵审计：目录换成同名文件，写路径必失败（503 阻断测试用）。"""
+    d = Path(audit_dir)
+    if d.is_dir():
+        shutil.rmtree(d)
+    d.write_text("blocked", encoding="utf-8")
+
+
+def unblock_audit(audit_dir):
+    Path(audit_dir).unlink()

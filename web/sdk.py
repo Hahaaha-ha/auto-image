@@ -178,6 +178,9 @@ def to_dict(message):
             "type": "result",
             "subtype": message.subtype,
             "result": message.result,
+            # usage 透传（CLI 的 snake_case dict：input/output/cache_*_tokens）：
+            # 任务跟踪在回合收尾累计 token 消耗；None（缺省/异常形状）如实保留
+            "usage": message.usage if isinstance(message.usage, dict) else None,
         })
     return _with_session_id(message, {})
 

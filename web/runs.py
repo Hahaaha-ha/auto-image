@@ -26,7 +26,10 @@ SESSION_NOT_ACTIVE = "session_not_active"
 
 
 class Conflict(Exception):
-    """并发规则拒绝（转成 HTTP 409，detail 即判定值）。"""
+    """并发规则拒绝（转成 HTTP 409，detail 即判定值）。
+
+    409 判定值与前端 CONFLICT_HINT 同源：调用方以 Conflict.detail 透传。
+    """
 
     def __init__(self, detail):
         super().__init__(detail)
@@ -34,8 +37,9 @@ class Conflict(Exception):
 
 
 class Run:
-    def __init__(self, run_id):
+    def __init__(self, run_id, owner=None):
         self.run_id = run_id
+        self.owner = owner        # 不可变归属用户（创建时服务端注入，见各入口）
         self.status = READY
         self.stage = None
         self.created_at = time.time()
@@ -76,7 +80,8 @@ class RunManager:
         return self.runs.get(run_id)
 
     def register(self, run):
-        """注册重启恢复的 run（不经 create 的并发校验：启动时无执行）。"""
+        """注册 run：重启恢复的会话（启动时无执行）与 draft 的落册（审计
+        成功后由控制方调用）都走这里——runs 注册不变量单点。"""
         self.runs[run.run_id] = run
 
     def adopt_ids(self, run_ids):
@@ -90,8 +95,9 @@ class RunManager:
         if top >= next(self._ids):
             self._ids = itertools.count(top + 1)
 
-    def summaries(self):
-        """全部 run 摘要，按最后活动及稳定次键降序排列。"""
+    def summaries(self, owner=None):
+        """run 摘要，按最后活动及稳定次键降序排列。owner 给定时只返回
+        该用户拥有的会话（列表按当前登录用户过滤）。"""
         def sort_key(run):
             activity_at = run.last_event_at
             if activity_at is None:
@@ -100,31 +106,43 @@ class RunManager:
                 activity_at = run.created_at
             return activity_at, run.created_at, run.run_id
 
+        runs = [r for r in self.runs.values() if owner is None or r.owner == owner]
         return [
             run.summary()
-            for run in sorted(self.runs.values(), key=sort_key, reverse=True)
+            for run in sorted(runs, key=sort_key, reverse=True)
         ]
 
     def running_count(self):
         """执行中回合数（并发上限的计数口径）。"""
         return sum(1 for r in self.runs.values() if r.status == RUNNING)
 
-    def create(self):
-        """新建空会话（不占执行名额、不受并发上限约束）。"""
-        run = Run(f"run_{next(self._ids)}")
+    def draft(self, owner):
+        """分配新 run（不注册）：owner 已定（服务端身份注入，客户端不可
+        伪造）、run_id 已配，注册留给控制审计成功后的 commit——审计失败
+        503 时不留下半创建的会话。"""
+        run = Run(f"run_{next(self._ids)}", owner=owner)
+        return run
+
+    def create(self, owner=None):
+        """新建空会话（不占执行名额、不受并发上限约束）；owner 由创建
+        入口从当前登录用户注入。"""
+        run = Run(f"run_{next(self._ids)}", owner=owner)
         self.runs[run.run_id] = run
         return run
 
-    def begin_turn(self, run, text):
-        """回合开卷的前置校验与状态置位（同步块，与回合收尾互斥）：ENDED
-        拒发、执行中拒发、并发上限拒发；通过则置 RUNNING、记首条指令。
-        连接的建立由调用方随后起回合任务执行。"""
+    def check_turn(self, run):
+        """回合开卷的前置校验（纯判定不置位）：ENDED 拒发、执行中拒发、
+        并发上限拒发。置位在 commit_turn——控制动作的顺序是校验 → 审计
+        前置 → 置位，审计失败 503 不留半执行状态。"""
         if run.status == ENDED:
             raise Conflict(SESSION_NOT_ACTIVE)
         if run.status == RUNNING:
             raise Conflict(TURN_IN_PROGRESS)
         if self.running_count() >= self.max_parallel:
             raise Conflict(PARALLEL_LIMIT_REACHED)
+
+    def commit_turn(self, run, text):
+        """校验通过后置位（与回合收尾互斥的同步块）。"""
         if run.session_id is None:
             # SDK 的 --session-id 只接受 UUID。必须在异步回合任务启动及本次
             # 状态落盘前分配，Result 尚未返回时结束也能留下身份映射与墓碑。
@@ -135,22 +153,27 @@ class RunManager:
         if run.first_prompt is None:
             run.first_prompt = text
 
-    def request_stop(self, run):
-        """停止目标会话的当前回合：置 stop_requested（回合收尾以此判定
-        turn.stopped），打断动作由调用方随后执行。READY 会话无回合可停，
-        幂等无操作；ENDED 不可干预。"""
+    def check_stop(self, run):
+        """停止的前置校验：ENDED 不可干预（READY 无回合可停，置位阶段
+        幂等无操作）。"""
         if run.status == ENDED:
             raise Conflict(SESSION_NOT_ACTIVE)
+
+    def commit_stop(self, run):
         if run.status == RUNNING:
             run.stop_requested = True
 
-    def clone(self, run):
+    def check_clone(self, run):
         """克隆校验：READY / ENDED 源可克隆，RUNNING 源拒（resume 一个正在
-        被写入的 transcript，克隆回合会基于过时上下文执行云操作）。
-        新会话的构造（事件转录、标题继承）由调用方执行。"""
+        被写入的 transcript，克隆回合会基于过时上下文执行云操作）。"""
         if run.status == RUNNING:
             raise Conflict(SESSION_RUNNING)
-        new = self.create()
+
+    def clone_draft(self, run):
+        """克隆的新 run（不注册）：owner 继承源（归属边界不因 Fork 跨越），
+        转录与身份由控制方在 commit 后执行；resume 源、标题继承同理。"""
+        self.check_clone(run)
+        new = self.draft(run.owner)
         new.resumed_from = run.run_id
         new.clone_source = run.run_id
         new.resume_session_id = run.session_id  # 回合以此续接源起新连接
@@ -159,8 +182,8 @@ class RunManager:
         new.title = run.title
         return new
 
-    def end(self, run):
-        """显式结束会话的前置校验；在飞回合的取消与收尾由调用方执行。
-        已 ENDED 幂等拒绝（不可干预之外的一切动作）。"""
+    def check_end(self, run):
+        """显式结束的前置校验：已 ENDED 幂等拒绝（不可干预之外的一切
+        动作）。在飞回合的取消与收尾由调用方执行。"""
         if run.status == ENDED:
             raise Conflict(SESSION_NOT_ACTIVE)

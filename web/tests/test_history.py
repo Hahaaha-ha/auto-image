@@ -11,14 +11,16 @@ import asyncio
 import logging
 import os
 import sys
+import tempfile
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 from web.fake import DEFAULT_SCRIPT, FakeSessionFactory  # noqa: E402
-from web.tests.support import StreamingASGITransport, async_client, make_test_app  # noqa: E402
+from web.tests.support import async_client, make_test_app  # noqa: E402
 from web.tests.test_api import collect_sse, open_stream, wait_status  # noqa: E402
 
 
@@ -79,14 +81,32 @@ def deploy_transcript():
     ]
 
 
+# history_app 自建临时簿记目录的保活清单（应用生命周期即进程生命周期，
+# 测试进程退出随 TemporaryDirectory 清理协议释放）
+_HISTORY_STATE_DIRS = []
+
+
 def history_app(infos, messages_fn, times_fn=None, **kwargs):
     """以假 list_sessions / get_session_messages 装配的应用（重启后形态）；
-    times_fn 为假时刻表读取器（时刻透传对拍缝），缺省不透传。"""
+    times_fn 为假时刻表读取器（时刻透传对拍缝），缺省不透传。历史重放
+    预置 legacy 首启簿记（无 owner 记录的 transcript 迁移归默认 owner
+    tester，对登录客户端可见）——多用户归属语义见 test_owner_acl。"""
+    state_path = kwargs.pop("state_path", None)
+    if state_path is None:
+        # 临时 legacy 簿记：模拟部署过旧版服务后的首次启动
+        tmp = tempfile.TemporaryDirectory(prefix="auto-image-web-hist-")
+        _HISTORY_STATE_DIRS.append(tmp)
+        state_path = Path(tmp.name) / "state.json"
+        state_path.write_text(
+            '{"ended_sessions": [], "sessions": {}, "clone_sources": {}, "owners": {}}',
+            encoding="utf-8")
     return make_test_app(
         session_factory=FakeSessionFactory(script=DEFAULT_SCRIPT),
         list_sessions_fn=lambda: list(infos),
         get_session_messages_fn=messages_fn,
         transcript_times_fn=times_fn or (lambda sid: {}),
+        default_owner="tester",
+        state_path=state_path,
         **kwargs,
     )
 
@@ -101,8 +121,7 @@ def plain_app(**kwargs):
 
 async def test_list_endpoint_returns_summaries_without_clearing_old_runs():
     app = plain_app()
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         empty = (await client.post("/api/runs", json={})).json()["run_id"]
         busy = (await client.post("/api/runs", json={})).json()["run_id"]
         await client.post(f"/api/runs/{busy}/messages", json={"text": "部署 nginx 1.25 到 server-a"})
@@ -211,8 +230,7 @@ async def test_replay_restores_history_chattable():
     infos = [session_info("11111111-2222-3333-4444-555555555555", "部署 nginx 1.25 到 server-a",
                           created_ms=1_700_000_000_000, custom_title="部署 nginx")]
     app = history_app(infos, lambda sid: deploy_transcript())
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         runs = (await client.get("/api/runs")).json()["runs"]
         assert len(runs) == 1, runs
         run = runs[0]
@@ -266,8 +284,7 @@ async def test_replay_restores_history_chattable():
 async def test_replayed_run_interventions_allowed():
     sid = "11111111-2222-3333-4444-555555555555"
     app = history_app([session_info(sid, "部署 nginx", 1_700_000_000_000)], lambda s: deploy_transcript())
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.get("/api/runs")).json()["runs"][0]["run_id"]
         # 重放会话可干预（可续聊、可停止、可结束），不再是只读历史
         for path in ("messages", "stop", "end"):
@@ -280,8 +297,7 @@ async def test_replayed_run_interventions_allowed():
 async def test_replayed_run_serves_as_clone_source():
     sid = "11111111-2222-3333-4444-555555555555"
     app = history_app([session_info(sid, "部署 nginx", 1_700_000_000_000)], lambda s: deploy_transcript())
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.get("/api/runs")).json()["runs"][0]["run_id"]
         r = await client.post(f"/api/runs/{run_id}/clone")
         assert r.status_code == 200, r.text
@@ -311,8 +327,7 @@ async def test_replay_passes_source_times_through():
     times = {m.uuid: T + 600 * i for i, m in enumerate(messages)}
     app = history_app([session_info(sid, "部署 nginx", 1_700_000_000_000)],
                       lambda s: messages, times_fn=lambda s: times)
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.get("/api/runs")).json()["runs"][0]["run_id"]
         resp = await open_stream(client, run_id)
         events, _ = await collect_sse(resp, deadline_s=0.5)
@@ -353,8 +368,7 @@ async def test_replay_falls_back_to_now_without_source_times():
     app = history_app([session_info(sid, "部署 nginx", 1_700_000_000_000)],
                       lambda s: deploy_transcript(),
                       times_fn=lambda s: {"u-does-not-exist": 123.0})
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         runs = (await client.get("/api/runs")).json()["runs"]
         assert len(runs) == 1, runs  # 缺时刻源只回退、不阻断恢复
         run_id = runs[0]["run_id"]
@@ -374,8 +388,7 @@ async def test_replayed_run_clones_with_overwritten_activity():
     times = {m.uuid: T + 600 * i for i, m in enumerate(messages)}
     app = history_app([session_info(sid, "部署 nginx", 1_700_000_000_000)],
                       lambda s: messages, times_fn=lambda s: times)
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         run_id = (await client.get("/api/runs")).json()["runs"][0]["run_id"]
         src_events, _ = await collect_sse(await open_stream(client, run_id), deadline_s=0.5)
         # 源流历史（除 session.started：克隆新流有自己的起点事件）
@@ -412,8 +425,7 @@ async def test_replay_skips_messageless_and_broken_sessions():
         return deploy_transcript() if sid == ok_sid else []
 
     app = history_app(infos, messages)
-    transport = StreamingASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with async_client(app) as client:
         runs = (await client.get("/api/runs")).json()["runs"]
         assert [r["first_prompt"] for r in runs] == ["部署 nginx"], runs  # 空与损坏的都跳过
 

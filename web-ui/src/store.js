@@ -14,6 +14,7 @@ import { useSyncExternalStore } from 'react'
 import { fmtSize } from './derive.js'
 import { mergeSessionEvents, mergeSessionSummary, SESSION_STATUS } from './eventMerge.js'
 import * as tabState from './tabState.js'
+import { emptyUsersQuery, USER_PAGE_SIZES, getUserListView, filterAndSortUsers } from './userList.js'
 
 // 与服务端内部事件协议一致的事件类型全集（四族：session.* / turn.* /
 // user.message / agent.* / stage.*）
@@ -84,19 +85,45 @@ function persistTabs() {
   }
 }
 
+// 侧栏面板选择持久化（从 SidePanel 上提；跨面板跳转需要 store 持有状态）
+const SIDE_PANEL_KEY = 'va-side-panel'
+const SIDE_PANELS = ['sessions', 'tasks', 'artifacts', 'obs', 'ecs']
+function readSidePanel() {
+  try {
+    const v = localStorage.getItem(SIDE_PANEL_KEY)
+    if (SIDE_PANELS.includes(v)) return v
+  } catch {
+    // 存储不可用（隐私模式等）：回落默认面板
+  }
+  return 'artifacts'
+}
+
 // order：全部会话的列表序（含未打开的，服务端列表同源）；tabs：混合标签
 // 栏的标签页数组（{kind:'session',runId} | {kind:'file',relPath,name}），
 // activeKey 复合 key 寻址（session:<runId> / file:<relPath>），决策全走
 // tabState 纯模块，这里只当状态容器。lastSessionKey 记住最后激活的会话
 // 标签页——激活文件标签页时控制面（header/输入条）仍绑定它。
 const restored = restoreTabs()
+const emptyUserReset = () => ({ target: null, busy: false, error: null, errorField: null, notice: null, verifyUsername: null, unknown: false })
+const emptyUserAccess = () => ({ target: null, busy: false, error: null, notice: null, verifyUsername: null })
 let state = {
+  auth: 'checking',             // checking → anonymous | password-change | user
+  userVersion: null,
+  passwordChange: { busy: false, error: null },
+  authNotice: null,
+  canManageUsers: false,
+  users: { items: [], loading: false, error: null },
+  usersQuery: emptyUsersQuery(),
+  userCreate: { busy: false, error: null, notice: null, verifyUsername: null },
+  userAccess: emptyUserAccess(), userReset: emptyUserReset(),
+  user: null,                   // 当前用户名（auth === 'user' 时非空）
   runs: {},
   order: [],
   tabs: restored.openTabs.map((runId) => ({ kind: 'session', runId })),
   activeKey: restored.viewRunId ? `session:${restored.viewRunId}` : null,
   lastSessionKey: restored.viewRunId ? `session:${restored.viewRunId}` : null,
   connection: 'connecting', // 全局事件流连接态：connecting → live / reconnecting
+  capacity: null,           // 匿名全局容量（服务端随 /api/runs 下发：runningCount/maxParallel，不含他人会话细节）
   submitError: null,
   notice: null,               // 成功提示条（与 submitError 对称，绿色短暂展示）
   now: Date.now(),
@@ -109,12 +136,135 @@ let state = {
   obsCache: {},              // OBS 对象内容多槽缓存（对象 key → 条目+content），关标签页不清
   obsArchiving: false,       // 批量归档请求进行中（按钮防重复触发）
   obsZipArchiving: false,    // 打包 zip 归档请求进行中（按钮防重复触发）
+  ecs: { instances: [], region: null, error: null, loading: false, checking: false }, // ECS 实例清单（scope 顶层凭据绑定，尽力而为）
+  ecsCreating: false,        // 建机请求进行中（分钟级长请求，对话框防重复提交）
+  tasks: [],                 // 流水线任务（rpm-*/deploy-* 派发即建；服务端 task/ 目录持久化）
+  sidePanel: readSidePanel(), // 侧栏面板选择（上提到 store：会话标签的任务 pill 要跨面板跳转）
+  activeTaskId: null,        // 任务面板高亮行（openTask 跳转锚点）
 }
 
-// 时长走针仅在控制面会话执行期间（挂起与终态冻结，终态由事件求和定格）
-setInterval(() => {
-  if (state.runs[controlRunId()]?.status === RUNNING) set({ now: Date.now() })
-}, 1000)
+export function setSidePanel(panel) {
+  if (!SIDE_PANELS.includes(panel)) return
+  set({ sidePanel: panel })
+  try {
+    localStorage.setItem(SIDE_PANEL_KEY, panel)
+  } catch {
+    // 存储不可用：只丢面板选择存活，不影响使用
+  }
+}
+
+// 服务端任务 → 前端形状（snake→camel；usage 四键原样数值或 null）
+function makeTask(t) {
+  return {
+    taskId: t.task_id,
+    runId: t.run_id,
+    type: t.type,
+    status: t.status,
+    outcome: t.outcome,
+    name: t.name,
+    software: t.software,
+    version: t.version,
+    confirmed: t.confirmed,
+    stages: (t.stages ?? []).map((s) => ({ stage: s.stage, startedAt: s.started_at, endedAt: s.ended_at })),
+    currentStage: t.current_stage,
+    usage: t.usage
+      ? {
+          inputTokens: t.usage.input_tokens,
+          outputTokens: t.usage.output_tokens,
+          cacheReadTokens: t.usage.cache_read_tokens,
+          cacheCreationTokens: t.usage.cache_creation_tokens,
+        }
+      : null,
+    serverAlias: t.server_alias,
+    instanceId: t.instance_id,
+    createdAt: t.created_at,
+    endedAt: t.ended_at,
+    turnText: t.turn_text,
+    origin: t.origin,
+    spec: t.spec
+      ? {
+          ecsMode: t.spec.ecs_mode,
+          ecsInstance: t.spec.ecs_instance,
+          ecsParams: t.spec.ecs_params,
+          installDoc: t.spec.install_doc,
+        }
+      : null,
+  }
+}
+
+// 任务清单刷新（阶段事件/摘要周期/启动驱动；尽力而为，失败静默——
+// 面板下一周期自愈）
+export async function refreshTasks() {
+  const epoch = identityEpoch
+  try {
+    const resp = await fetch('/api/tasks')
+    const data = await resp.json().catch(() => ({}))
+    if (epoch !== identityEpoch) return
+    if (!resp.ok) return
+    set({ tasks: (data.tasks ?? []).map(makeTask) })
+  } catch {
+    // 网络断等：静默
+  }
+}
+
+// 跳转到任务：切任务面板 + 高亮行（会话标签 pill / 任务互跳的入口）
+export function openTask(taskId) {
+  set({ sidePanel: 'tasks', activeTaskId: taskId })
+  if (!state.tasks.length) refreshTasks()
+}
+
+// 手动建任务（「+ 新建任务」表单提交）：INIT 待运行态落服务端；返回任务
+// 供对话框收尾（失败抛错由对话框行内展示）
+export async function createTask(spec) {
+  const epoch = identityEpoch
+  const data = await postJson('/api/tasks', spec)
+  if (epoch !== identityEpoch) return
+  refreshTasks()
+  return data
+}
+
+// 运行 INIT 任务：服务端新建会话并发出按表单构造的部署指令——新会话
+// 本地落位（adoptNewRun，同新建会话路径）即自动跳到该会话标签页看
+// agent 执行（用户已确认此交互）
+export async function runTask(taskId) {
+  const epoch = identityEpoch
+  const data = await postJson(`/api/tasks/${encodeURIComponent(taskId)}/run`, {})
+  if (epoch !== identityEpoch) return
+  adoptNewRun(makeRun({
+    runId: data.run_id,
+    status: data.status,
+    startedAt: Date.now(),
+  }))
+  refreshTasks()
+  ok(`任务已启动，已打开会话 ${data.run_id}`)
+  return data
+}
+
+// runId → 进行中任务（会话标签 pill 用；一个 run 同时至多一个活动任务）
+export function runningTaskByRun(runId) {
+  return state.tasks.find((t) => t.status === 'RUNNING' && t.runId === runId) ?? null
+}
+
+// ECS 实例 → 运行中任务（instance_id 精确 join；已有别名安装路径的 meta
+// 无 instance_id，按创建命名规约 ecs-<server_alias> 名字兜底）
+export function runningTaskByInstance(inst) {
+  return state.tasks.find((t) => t.status === 'RUNNING' && (
+    (t.instanceId && t.instanceId === inst.id)
+    || (t.serverAlias && inst.name === 'ecs-' + t.serverAlias)
+  )) ?? null
+}
+
+// 时长走针仅在控制面会话执行期间（挂起与终态冻结，终态由事件求和定格）；
+// 轮询计时器统一由 startTimers 登记（deauthed 清停、再登录重建——同页
+// 登出→登录后轮询不丢）
+const timersRef = new Set()
+function startTimers() {
+  if (timersRef.size) return
+  timersRef.add(setInterval(() => {
+    if (state.runs[controlRunId()]?.status === RUNNING) set({ now: Date.now() })
+  }, 1000))
+  timersRef.add(setInterval(() => pollSummaries(), 5000))
+}
 
 function set(patch) {
   state = { ...state, ...patch }
@@ -198,7 +348,10 @@ function ingestEvents(runId, events) {
   const session = state.runs[runId]
   if (!session || !events.length) return
   setRun(runId, mergeSessionEvents(session, events))
-  if (events.some((event) => REFRESH_EVENT_TYPES.includes(event.type))) refreshArtifacts()
+  if (events.some((event) => REFRESH_EVENT_TYPES.includes(event.type))) {
+    refreshArtifacts()
+    refreshTasks() // 任务面同源驱动：阶段推进/回合收尾即任务状态变化
+  }
 }
 
 // 广播帧 → 事件落地：帧带 run_id/seq/ts，先过「该 run 打开着标签页」守卫
@@ -255,6 +408,7 @@ function parseSseEvents(text) {
 // 事件由纯归并入口的 seq 去重吸收。run 已不在（服务端重启丢了空会话等）
 // 静默作罢——摘要轮询会把它从列表剪掉。
 async function loadSnapshot(runId) {
+  const epoch = identityEpoch
   const run = state.runs[runId]
   if (!run) return
   const lastSeq = run.maxSeq ?? 0
@@ -262,7 +416,7 @@ async function loadSnapshot(runId) {
     const resp = await fetch(`/api/runs/${runId}/events`, { headers: { 'Last-Event-ID': String(lastSeq) } })
     if (!resp.ok) return
     const events = parseSseEvents(await resp.text())
-    if (!events.length) return
+    if (epoch !== identityEpoch || !events.length) return
     ingestEvents(runId, events)
   } catch {
     // 快照失败不打断使用：全局流仍在，断线恢复或下次打开再补
@@ -274,17 +428,515 @@ function refreshOpenSnapshots() {
   for (const runId of openRunIds()) loadSnapshot(runId)
 }
 
-// 全局流：应用启动即建一条、永不主动关闭。断线由浏览器自动重连，
-// 恢复（onopen，含首次连上）对打开的会话标签页逐个重拉快照追平——
-// 断线期间错过的事件全靠快照补，重连本身不带断点。
-const globalStream = new EventSource('/api/stream')
-for (const type of EVENT_TYPES) globalStream.addEventListener(type, onBroadcastFrame)
-globalStream.onopen = () => {
-  set({ connection: 'live' })
-  refreshOpenSnapshots()
+// ---------- 认证 ----------
+
+// auth：'checking'（启动确认中）→ 'anonymous'（未登录，登录壳）/'user'
+// （已登录，username 就位）。未登录期间一切数据面（EventSource、轮询、
+// 初始拉取）不启动——未认证客户端读不到任何业务数据。
+let globalStream = null
+let identityEpoch = 0
+
+// 认证失效统一出口：回登录壳并关停数据面。SSE onerror / 401 响应都会
+// 走这里；EventSource 关闭后浏览器不再自动重连（不无限重连的权威手段）。
+// 会话视图一并清空——同一浏览器随后换账号登录时，上一个用户的会话
+// 列表/标签页/草稿不残留（服务端列表本就按 owner 过滤，这里是客户端
+// 不暂存他人数据的收尾）
+function deauthed(reasonText) {
+  identityEpoch += 1
+  if (globalStream) {
+    const stream = globalStream
+    globalStream = null
+    stream.close()
+  }
+  clearTimeout(errorTimer)
+  clearTimeout(noticeTimer)
+  for (const id of timersRef) clearInterval(id)
+  timersRef.clear()
+  for (const key of Object.keys(drafts)) delete drafts[key]
+  set({
+    auth: 'anonymous', user: null, canManageUsers: false, userVersion: null,
+    passwordChange: { busy: false, error: null },
+    users: { items: [], loading: false, error: null }, connection: 'connecting',
+    usersQuery: emptyUsersQuery(),
+    userCreate: { busy: false, error: null, notice: null, verifyUsername: null },
+    userAccess: emptyUserAccess(), userReset: emptyUserReset(),
+    runs: {}, order: [], capacity: null,
+    tabs: [], activeKey: null, lastSessionKey: null,
+    tasks: [], activeTaskId: null,
+    drafts: {},
+    artifacts: { groups: [] }, artifactCache: {}, artifactSel: {}, artifactZipping: false,
+    obs: { objects: [], bucket: null, region: null, domain: null, error: null, loading: false },
+    obsCache: {}, obsArchiving: false, obsZipArchiving: false,
+    ecs: { instances: [], region: null, error: null, loading: false, checking: false }, ecsCreating: false,
+    submitError: null, notice: null,
+  })
+  persistTabs()
+  if (reasonText) fail(reasonText)
 }
-globalStream.onerror = () => {
-  if (globalStream.readyState !== EventSource.CLOSED) set({ connection: 'reconnecting' })
+
+// 登录成功后的数据面启动：建全局流（一次）+ 各初始拉取（幂等——已登录
+// 状态下的重复调用不重复建流）
+function startDataPlane() {
+  if (state.auth !== 'user' || globalStream) return
+  startTimers()
+  globalStream = new EventSource('/api/stream')
+  for (const type of EVENT_TYPES) globalStream.addEventListener(type, onBroadcastFrame)
+  globalStream.onopen = () => {
+    set({ connection: 'live' })
+    refreshOpenSnapshots()
+  }
+  globalStream.onerror = async () => {
+    if (globalStream?.readyState === EventSource.CLOSED) {
+      // 服务端主动关流：401（登录过期/被禁用）还是网络断，先重新确认身份
+      // 再决定——认证失效回登录壳，网络断走重连态。关流顺序：先 close
+      // （防浏览器自动重连）再查身份，查完才清理全局引用。
+      const stream = globalStream
+      stream.close()
+      globalStream = null
+      const confirmed = await confirmIdentity()
+      if (confirmed === null) return
+      if (!confirmed) {
+        deauthed('登录已失效，请重新登录')
+        return
+      }
+      startDataPlane()
+      return
+    }
+    set({ connection: 'reconnecting' })
+  }
+  loadRuns()
+  refreshArtifacts()
+  refreshObs()
+  refreshEcs()
+  refreshTasks()
+}
+
+// 当前身份确认：有效身份 true，失败 false，旧登录的迟到响应 null。
+async function confirmIdentity() {
+  const epoch = identityEpoch
+  try {
+    const resp = await fetch('/api/auth/me')
+    if (epoch !== identityEpoch) return null
+    if (!resp.ok) return false
+    const data = await resp.json().catch(() => null)
+    if (epoch !== identityEpoch) return null
+    if (!data?.username) return false
+    acceptIdentity(data)
+    return true
+  } catch {
+    return epoch === identityEpoch ? false : null
+  }
+}
+
+function acceptIdentity(data) {
+  if (state.user && state.user !== data.username) deauthed(null)
+  if (data.must_change_password === true) {
+    deauthed(null)
+    set({ auth: 'password-change', user: data.username, userVersion: data.user_version, authNotice: null })
+    return
+  }
+  const canManageUsers = data.can_manage_users === true
+  const users = state.user === data.username && canManageUsers
+    ? state.users : { items: [], loading: false, error: null }
+  const usersQuery = state.user === data.username && canManageUsers ? state.usersQuery : emptyUsersQuery()
+  const userCreate = state.user === data.username && canManageUsers
+    ? state.userCreate : { busy: false, error: null, notice: null, verifyUsername: null }
+  const userAccess = state.user === data.username && canManageUsers ? state.userAccess : emptyUserAccess()
+  const userReset = state.user === data.username && canManageUsers ? state.userReset : emptyUserReset()
+  set({ auth: 'user', user: data.username, canManageUsers, users, usersQuery, userCreate, userAccess, userReset, userVersion: null, authNotice: null })
+}
+
+export function setUsersKeyword(keyword) {
+  if (state.canManageUsers) set({ usersQuery: { ...state.usersQuery, keyword, page: 1 } })
+}
+
+export function setUsersPageSize(pageSize) {
+  if (state.canManageUsers && USER_PAGE_SIZES.includes(pageSize)) {
+    set({ usersQuery: { ...state.usersQuery, pageSize, page: 1 } })
+  }
+}
+
+export function setUsersPage(page) {
+  if (!state.canManageUsers || !Number.isInteger(page)) return
+  const query = { ...state.usersQuery, page }
+  set({ usersQuery: { ...query, page: getUserListView(state.users.items, query).page } })
+}
+
+export async function refreshUsers(force = false) {
+  if (!state.canManageUsers || (state.users.loading && !force)) return
+  const identity = state.users
+  const accessToVerify = state.userAccess
+  const resetToVerify = state.userReset
+  const loading = { ...identity, loading: true, error: null }
+  set({ users: loading })
+  try {
+    const resp = await fetch('/api/admin/users')
+    if (state.users !== loading) return
+    if (resp.status === 401) { deauthed('登录已失效，请重新登录'); return }
+    if (resp.status === 403) {
+      const data = await resp.json().catch(() => ({}))
+      if (state.users !== loading) return
+      if (userManagementAccessLost(resp.status, data.detail)) return
+    }
+    if (!resp.ok) throw new Error('用户清单加载失败，请点击刷新重试')
+    const data = await resp.json()
+    if (!Array.isArray(data.users)) throw new Error('invalid users response')
+    if (state.users === loading) {
+      set({ users: { items: data.users, loading: false, error: null },
+        usersQuery: { ...state.usersQuery, page: getUserListView(data.users, state.usersQuery).page } })
+      const verifyAccess = state.userAccess === accessToVerify && accessToVerify.verifyUsername
+      if (verifyAccess) {
+        const user = data.users.find(item => item.username === verifyAccess)
+        set({ userAccess: { ...emptyUserAccess(), notice: { tone: 'warning',
+          text: user
+            ? `清单中「${verifyAccess}」当前${user.enabled ? '已启用' : '已禁用'}。如仍需变更，请重新选择并确认；本次刷新仅核实当前状态。`
+            : `清单中未找到「${verifyAccess}」，请联系管理员核实身份后再操作。`,
+        } } })
+      }
+      if (state.userReset === resetToVerify && resetToVerify.verifyUsername) {
+        const username = resetToVerify.verifyUsername
+        set({ userReset: { ...resetToVerify, verifyUsername: null, error: null, notice: { tone: 'warning',
+          text: resetToVerify.unknown
+            ? `已刷新「${username}」的用户信息，但清单无法验证密码，重置结果仍未知。请通过外部渠道核实；仍无法核实且需要继续时，请明确发起新的重置。`
+            : `已刷新用户信息。如仍需重置「${username}」的密码，请重新选择目标并确认。`,
+        } } })
+      }
+      const username = state.userCreate.verifyUsername
+      if (username) {
+        const exists = data.users.some((user) => user.username === username)
+        set({ userCreate: { ...state.userCreate, verifyUsername: null, notice: { tone: 'warning',
+          text: exists
+            ? `清单中已有同名用户「${username}」。无法仅凭清单确认是否由本次创建或密码是否匹配，请先核实，不要重复新增。`
+            : `刷新后清单中未找到「${username}」。如仍需新增，请重新填写并明确提交。`,
+        } } })
+      }
+    }
+  } catch {
+    if (state.users === loading) set({ users: { items: [], loading: false, error: '用户清单加载失败，请点击刷新重试' } })
+  }
+}
+
+function revokeUserManagement() {
+  set({ canManageUsers: false, sidePanel: 'artifacts', users: { items: [], loading: false, error: null },
+    usersQuery: emptyUsersQuery(),
+    userAccess: emptyUserAccess(), userReset: emptyUserReset(),
+    userCreate: { busy: false, error: null, notice: null, verifyUsername: null } })
+}
+
+function userManagementAccessLost(status, detail) {
+  if (status === 401) {
+    deauthed('登录已失效，请重新登录')
+    return true
+  }
+  if (status === 403 && (detail === 'not_admin' || detail === 'password_change_required')) {
+    revokeUserManagement()
+    return true
+  }
+  return false
+}
+
+const USER_NOTICE_KEYS = ['userCreate', 'userAccess', 'userReset']
+
+export function dismissUserNotice(key) {
+  if (!USER_NOTICE_KEYS.includes(key) || state[key].notice?.tone !== 'success') return
+  set({ [key]: { ...state[key], notice: null } })
+}
+
+function clearPreviousUserSuccess() {
+  const updates = {}
+  for (const key of USER_NOTICE_KEYS) {
+    if (state[key].notice?.tone === 'success') updates[key] = { ...state[key], notice: null }
+  }
+  return updates
+}
+
+const USER_RECONFIRM_ERRORS = ['user_version_conflict', 'admin_read_only', 'no_such_user']
+
+export function beginUserAccess(username) {
+  if (!state.canManageUsers || state.users.loading || state.users.error || state.userAccess.busy || state.userAccess.verifyUsername || state.userReset.busy || state.userReset.target) return
+  const user = state.users.items.find(item => item.username === username)
+  if (user?.role !== 'user' || !user.user_version) return
+  set({ userAccess: { ...emptyUserAccess(), target: { ...user } } })
+}
+
+export function cancelUserAccess() {
+  if (!state.userAccess.busy) set({ userAccess: { ...state.userAccess, target: null, error: null } })
+}
+
+const USER_ACCESS_HINT = {
+  user_version_conflict: '目标用户已发生变化，本次未提交。请刷新清单，重新选择并确认。',
+  users_unavailable: '状态尚未修改：用户文件不可用，请联系管理员修复后再试。',
+  audit_unavailable: '状态尚未修改：审计不可用，请联系管理员修复后再试。',
+  state_unavailable: '状态尚未修改：服务处于受限恢复状态，请联系管理员。',
+  admin_read_only: '管理员只读，不能启用或禁用。请刷新清单。',
+  no_such_user: '目标用户不存在，请刷新清单核实。',
+}
+
+export async function submitUserAccess() {
+  // 仅确认时保存的版本可提交，清单刷新不能偷偷替换旧表单的版本。
+  const { target, busy, verifyUsername } = state.userAccess
+  if (!state.canManageUsers || !target || busy || verifyUsername) return
+  const attempt = { ...emptyUserAccess(), target, busy: true }
+  const action = target.enabled ? '禁用' : '启用'
+  set({ userAccess: attempt })
+  try {
+    const resp = await fetch(`/api/admin/users/${target.enabled ? 'disable' : 'enable'}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: target.username, expected_version: target.user_version }),
+    })
+    if (state.userAccess !== attempt) return
+    if (userManagementAccessLost(resp.status)) return 'not_committed'
+    const data = await resp.json()
+    if (state.userAccess !== attempt) return
+    if (data.outcome === 'committed') {
+      const auditFailed = data.audit_status !== 'recorded'
+      set({ ...clearPreviousUserSuccess(), userAccess: { ...emptyUserAccess(), notice: {
+        tone: auditFailed ? 'warning' : 'success',
+        text: `用户「${target.username}」已${action}。${target.enabled ? '既有登录已撤销；执行中的回合继续。' : '请原使用者重新登录，旧登录仍无效。'}${auditFailed ? '变更已生效，审计记录异常；请联系管理员检查审计，无需重复提交。' : ''}`,
+      } } })
+      refreshUsers(true)
+      return 'committed'
+    }
+    if (userManagementAccessLost(resp.status, data.detail)) return 'not_committed'
+    if (data.outcome === 'not_committed' || resp.status === 403) {
+      const recheck = USER_RECONFIRM_ERRORS.includes(data.detail)
+      set({ userAccess: { ...attempt, busy: false, target: recheck ? null : target,
+        verifyUsername: recheck ? target.username : null,
+        error: USER_ACCESS_HINT[data.detail] || '状态尚未修改，请刷新页面后重新确认操作。',
+      } })
+      return 'not_committed'
+    }
+    throw new Error('unknown access outcome')
+  } catch {
+    if (state.userAccess !== attempt) return
+    set({ userAccess: { ...emptyUserAccess(), verifyUsername: target.username, notice: {
+      tone: 'warning', text: `无法确认「${target.username}」的${action}结果。请先刷新清单核实当前状态，再决定是否重新操作；系统不会自动重提。`,
+    } } })
+    return 'unknown'
+  }
+}
+
+export function beginUserReset(username) {
+  if (!state.canManageUsers || state.users.loading || state.users.error || state.userReset.busy
+      || state.userReset.verifyUsername || state.userAccess.busy || state.userAccess.target) return
+  const user = state.users.items.find(item => item.username === username)
+  if (user?.role !== 'user' || !user.user_version) return
+  set({ userReset: { ...emptyUserReset(), target: { ...user } } })
+}
+
+export function cancelUserReset() {
+  if (!state.userReset.busy) set({ userReset: { ...state.userReset, target: null, error: null, errorField: null } })
+}
+
+export function clearUserResetError(field) {
+  if (!state.userReset.busy && state.userReset.error && state.userReset.errorField === field) {
+    set({ userReset: { ...state.userReset, error: null, errorField: null } })
+  }
+}
+
+const RESET_PASSWORD_HINT = {
+  user_version_conflict: '目标用户已发生变化，本次未提交。请刷新清单，重新选择并确认。',
+  invalid_new_password: '新密码须为 8–128 位英文字母、数字或半角符号，不含空格、其他空白或中文；不要求组合。',
+  users_unavailable: '密码尚未修改：用户文件不可用，请联系管理员修复后再试。',
+  audit_unavailable: '密码尚未修改：审计不可用，请联系管理员修复后再试。',
+  state_unavailable: '密码尚未修改：服务处于受限恢复状态，请联系管理员。',
+  admin_read_only: '管理员只读，不能重置密码。请刷新清单。',
+  no_such_user: '目标用户不存在，请刷新清单核实。',
+}
+
+export async function resetUserPassword(password) {
+  const { target, busy, verifyUsername } = state.userReset
+  if (!state.canManageUsers || !target || busy || verifyUsername) return
+  const attempt = { ...emptyUserReset(), target, busy: true }
+  set({ userReset: attempt })
+  try {
+    const resp = await fetch('/api/admin/users/reset-password', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: target.username, expected_version: target.user_version, password }),
+    })
+    if (state.userReset !== attempt) return
+    if (userManagementAccessLost(resp.status)) return 'not_committed'
+    const data = await resp.json()
+    if (state.userReset !== attempt) return
+    if (data.outcome === 'committed') {
+      const auditFailed = data.audit_status !== 'recorded'
+      set({ ...clearPreviousUserSuccess(), userReset: { ...emptyUserReset(), notice: {
+        tone: auditFailed ? 'warning' : 'success',
+        text: `用户「${target.username}」的密码已重置，既有登录已撤销。请自行交付新密码，下次登录须再次改密。${target.enabled ? '' : '该用户仍已禁用，不能登录。'}${auditFailed ? '重置已生效，审计记录异常；请联系管理员检查审计，无需重复提交。' : ''}`,
+      } } })
+      refreshUsers(true)
+      return 'committed'
+    }
+    if (userManagementAccessLost(resp.status, data.detail)) return 'not_committed'
+    if (data.outcome === 'not_committed' || resp.status === 403) {
+      const recheck = USER_RECONFIRM_ERRORS.includes(data.detail)
+      set({ userReset: { ...attempt, busy: false, target: recheck ? null : target,
+        verifyUsername: recheck ? target.username : null,
+        error: RESET_PASSWORD_HINT[data.detail] || '密码尚未修改，请刷新页面后重新确认操作。',
+        errorField: data.detail === 'invalid_new_password' ? 'password' : null,
+      } })
+      return 'not_committed'
+    }
+    throw new Error('unknown reset outcome')
+  } catch {
+    if (state.userReset !== attempt) return
+    set({ userReset: { ...emptyUserReset(), verifyUsername: target.username, unknown: true, notice: {
+      tone: 'warning', text: `无法确认「${target.username}」的重置结果，系统不会自动重提。请先刷新清单并通过外部渠道核实；清单无法验证密码，仍无法核实时须明确发起新的重置。`,
+    } } })
+    return 'unknown'
+  }
+}
+
+const CREATE_USER_HINT = {
+  invalid_username: '用户名须为 1–64 位英文字母、数字、下划线、短横线或点；区分大小写，不可含空格。',
+  invalid_new_password: '初始密码须为 8–128 位可见 ASCII 字符（英文字母、数字或半角符号），不可含空格、其他空白或中文。',
+  username_exists: '用户名已存在，未覆盖原用户。请为新使用者选择独立用户名。',
+  users_unavailable: '用户尚未创建：用户文件不可用，请联系管理员修复后再试。',
+  audit_unavailable: '用户尚未创建：审计不可用，请联系管理员修复后再试。',
+  state_unavailable: '用户尚未创建：服务处于受限恢复状态，请联系管理员。',
+}
+
+export function clearUserCreateError(field) {
+  if (!state.userCreate.busy && state.userCreate.error && (!field || state.userCreate.errorField === field)) {
+    set({ userCreate: { ...state.userCreate, error: null, errorField: null } })
+  }
+}
+
+export function showCreatedUser() {
+  const username = state.userCreate.createdUsername
+  if (!state.canManageUsers || !username || state.users.loading || state.users.error) return false
+  const matching = filterAndSortUsers(state.users.items, username)
+  const index = matching.findIndex(user => user.username === username)
+  if (index < 0) return false
+  set({ usersQuery: { ...state.usersQuery, keyword: username,
+    page: Math.floor(index / state.usersQuery.pageSize) + 1 } })
+  return true
+}
+
+export async function createUser(username, password) {
+  if (!state.canManageUsers || state.userCreate.busy || state.userCreate.verifyUsername) return
+  const attempt = { busy: true, error: null, errorField: null, notice: null, verifyUsername: null }
+  set({ userCreate: attempt })
+  try {
+    const resp = await fetch('/api/admin/users', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    })
+    const data = await resp.json()
+    if (state.userCreate !== attempt) return
+    if (data.outcome === 'committed') {
+      const auditFailed = data.audit_status !== 'recorded'
+      set({ ...clearPreviousUserSuccess(), userCreate: { ...attempt, busy: false, createdUsername: username, notice: {
+        tone: auditFailed ? 'warning' : 'success',
+        text: `用户「${username}」已创建。${auditFailed ? '变更已生效，审计记录异常；无需重复新增，请联系管理员检查审计。' : '请自行交付初始密码；用户首次登录须改密。'}`,
+      } } })
+      refreshUsers(true)
+      return 'committed'
+    }
+    if (resp.status === 401) { deauthed('登录已失效，请重新登录'); return 'not_committed' }
+    if (resp.status === 403) {
+      if (data.detail === 'not_admin' || data.detail === 'password_change_required') revokeUserManagement()
+      else set({ userCreate: { ...attempt, busy: false, error: '新增请求被拒绝，请刷新页面并确认管理权限后再试。' } })
+      return 'not_committed'
+    }
+    if (data.outcome === 'not_committed') {
+      set({ userCreate: { ...attempt, busy: false, error: CREATE_USER_HINT[data.detail]
+        || '用户尚未创建，请检查输入；仍失败请联系管理员。',
+        errorField: ['invalid_username', 'username_exists'].includes(data.detail) ? 'username'
+          : data.detail === 'invalid_new_password' ? 'password' : null } })
+      return 'not_committed'
+    }
+    throw new Error('unknown create outcome')
+  } catch {
+    if (state.userCreate !== attempt) return
+    set({ userCreate: { ...attempt, busy: false, verifyUsername: username, notice: {
+      tone: 'warning', text: `无法确认「${username}」的新增结果。请先刷新清单核实；核实前不能再次新增，系统不会自动重提。`,
+    } } })
+    refreshUsers(true)
+    return 'unknown'
+  }
+}
+
+// 启动身份检查：通过即带用户名进入数据面；否则登录壳（不建 EventSource）
+export async function initAuth() {
+  set({ auth: 'checking' })
+  const confirmed = await confirmIdentity()
+  if (confirmed === null) return
+  if (confirmed) startDataPlane()
+  else deauthed(null)
+}
+
+// 登录：成功后带用户名进入数据面（登录壳表单提交入口）
+export async function login(username, password) {
+  const epoch = identityEpoch
+  const resp = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  const data = await resp.json().catch(() => ({}))
+  if (epoch !== identityEpoch) return
+  if (!resp.ok) throw Object.assign(new Error(data.detail || `HTTP ${resp.status}`), {
+    status: resp.status, detail: data.detail,
+  })
+  acceptIdentity(data)
+  startDataPlane()
+  return data
+}
+
+const PASSWORD_CHANGE_HINT = {
+  current_password_incorrect: '当前密码不正确，请重新输入。',
+  invalid_new_password: '新密码须为 8–128 位可见 ASCII 字符，不含空格、空白、控制字符或中文。',
+  password_confirmation_mismatch: '两次新密码不一致，请检查后提交。',
+  password_unchanged: '新密码必须与当前密码不同。',
+  users_unavailable: '密码尚未修改：用户文件不可用，请联系管理员修复后再试。',
+  audit_unavailable: '密码尚未修改：审计不可用，请联系管理员修复后再试。',
+  state_unavailable: '密码尚未修改：服务处于受限恢复状态，请联系管理员。',
+}
+
+export async function changePassword(currentPassword, newPassword, confirmPassword) {
+  if (state.auth !== 'password-change' || state.passwordChange.busy) return
+  const attempt = { busy: true, error: null }
+  set({ passwordChange: attempt })
+  const backToLogin = (text, tone = 'warning') => {
+    deauthed(null)
+    set({ authNotice: { tone, text } })
+  }
+  try {
+    const resp = await fetch('/api/auth/change-password', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword,
+        confirm_password: confirmPassword, expected_version: state.userVersion }),
+    })
+    const data = await resp.json()
+    if (state.passwordChange !== attempt) return
+    if (data.outcome === 'committed') {
+      const auditFailed = data.audit_status !== 'recorded'
+      backToLogin(auditFailed
+        ? '密码已生效，审计记录异常。请用新密码重新登录，无需重复改密，并联系管理员检查审计。'
+        : '密码已更新，请用新密码重新登录。', auditFailed ? 'warning' : 'success')
+    } else if ([401, 403, 409].includes(resp.status)) {
+      backToLogin('本次密码尚未修改：登录已失效或用户信息已变化，请重新登录确认最新状态。')
+    } else if (data.outcome === 'not_committed') {
+      set({ passwordChange: { busy: false, error: PASSWORD_CHANGE_HINT[data.detail]
+        || '密码尚未修改，请检查输入；仍失败请联系管理员。' } })
+    } else {
+      throw new Error('unknown change outcome')
+    }
+  } catch {
+    if (state.passwordChange !== attempt) return
+    backToLogin('无法确认改密结果。请先用新密码登录；失败可尝试原密码，两者均失败请联系管理员。请勿重复提交原改密请求。')
+  }
+}
+
+// 登出：清服务端 Cookie 后回登录壳（数据面关停由 deauthed 完成）
+export async function logout() {
+  try {
+    await fetch('/api/auth/logout', { method: 'POST' })
+  } catch {
+    // 网络失败也照样回登录壳（本地态为准）
+  }
+  deauthed(null)
 }
 
 // ---------- HTTP ----------
@@ -310,18 +962,25 @@ function makeRun(overrides) {
 }
 
 // 摘要列表拉取与合并（loadRuns 首屏与轮询共用）：新会话补进 runs，order
-// 以服务端为源覆盖。返回列表 order（失败返回 null，调用方各自善后）
+// 以服务端为源覆盖；容量字段（匿名全局 running count / max parallel）随
+// 摘要周期一并刷新——跨用户负载可见，他人会话细节不可见。返回列表 order
+// （失败返回 null，调用方各自善后）
 async function fetchSummaries() {
+  const epoch = identityEpoch
   const resp = await fetch('/api/runs')
   if (!resp.ok) return null
-  const { runs } = await resp.json()
+  const { runs, running_count: runningCount, max_parallel: maxParallel } = await resp.json()
+  if (epoch !== identityEpoch) return null
   const map = {}
   const order = []
   for (const s of runs ?? []) {
     map[s.run_id] = mergeSummary(state.runs[s.run_id] ?? makeRun({ runId: s.run_id }), s)
     order.push(s.run_id)
   }
-  set({ runs: { ...state.runs, ...map }, order })
+  const capacity = runningCount != null && maxParallel != null
+    ? { runningCount, maxParallel }
+    : null
+  set({ runs: { ...state.runs, ...map }, order, capacity })
   return order
 }
 
@@ -375,14 +1034,17 @@ function mergeSummary(run, s) {
 
 // 摘要轮询：驱动非查看中标签页的状态点与排序（全局流只覆盖打开的标签
 // 页，他人会话或重启新会话只有列表最知道）。轻字段覆盖，不动 events。
-setInterval(() => pollSummaries(), 5000)
-
+// （注册在 startTimers——随登录态开合）
 async function pollSummaries() {
+  const epoch = identityEpoch
   try {
     await fetchSummaries()
   } catch {
     // 轮询失败静默：SSE 在的标签页不受影响，下个周期再试
   }
+  // 任务清单随摘要周期刷新：未开标签页的 run 广播帧被丢弃，任务面板/
+  // ECS 运行态/会话标签 pill 都靠这里保活（服务端是内存读，开销可忽略）
+  if (epoch === identityEpoch) refreshTasks()
 }
 
 // 新会话落位（新建/Fork 共用）：run 注册、标签页尾插并切为查看中，再拉一次
@@ -396,8 +1058,10 @@ function adoptNewRun(run) {
 
 // 新建 = 一步创建空会话（READY），无中间表单；新建不受其他会话执行影响
 export async function createRun() {
+  const epoch = identityEpoch
   try {
     const data = await postJson('/api/runs', {})
+    if (epoch !== identityEpoch) return
     adoptNewRun(
       makeRun({
         runId: data.run_id,
@@ -407,6 +1071,7 @@ export async function createRun() {
       })
     )
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`新建会话失败：${conflictMessage(err)}`)
   }
 }
@@ -414,10 +1079,12 @@ export async function createRun() {
 // Fork = 从控制面会话（READY/ENDED）分叉新会话：事件流转录、标题继承
 // （转录历史经 adoptNewRun 的快照补齐——转录不带 session.started）
 export async function cloneRun() {
+  const epoch = identityEpoch
   const src = state.runs[controlRunId()]
   if (!src) return
   try {
     const data = await postJson(`/api/runs/${src.runId}/clone`, {})
+    if (epoch !== identityEpoch) return
     adoptNewRun(
       makeRun({
         runId: data.run_id,
@@ -427,17 +1094,21 @@ export async function cloneRun() {
       })
     )
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`Fork 失败：${conflictMessage(err)}`)
   }
 }
 
 // 停止：打断控制面会话的当前回合（只作用它，不误停别人）
 export async function stop() {
+  const epoch = identityEpoch
   const run = state.runs[controlRunId()]
   if (!run || run.status !== RUNNING) return
   try {
     await postJson(`/api/runs/${run.runId}/stop`, {})
+    if (epoch !== identityEpoch) return
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`停止失败：${err.message}`)
   }
 }
@@ -445,6 +1116,7 @@ export async function stop() {
 // 向控制面会话发指令：执行中发送由服务端 409（turn_in_progress）拒绝，
 // 想改方向先显式停止。返回是否投递成功（失败时输入由调用方保留）。
 export async function send(text) {
+  const epoch = identityEpoch
   const trimmed = (text ?? '').trim()
   const run = state.runs[controlRunId()]
   if (!run || !trimmed) return false
@@ -455,9 +1127,11 @@ export async function send(text) {
   }
   try {
     const data = await postJson(`/api/runs/${run.runId}/messages`, { text: trimmed })
+    if (epoch !== identityEpoch) return
     setRun(run.runId, { status: data.status })
     return true
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`发送失败：${conflictMessage(err)}`)
     return false
   }
@@ -465,11 +1139,14 @@ export async function send(text) {
 
 // 结束控制面会话（显式、不可逆；执行中或挂起均可）
 export async function endRun() {
+  const epoch = identityEpoch
   const run = state.runs[controlRunId()]
   if (!run || !isOperable(run.status)) return
   try {
     await postJson(`/api/runs/${run.runId}/end`, {})
+    if (epoch !== identityEpoch) return
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`结束会话失败：${err.message}`)
   }
 }
@@ -536,10 +1213,12 @@ function pruneSelection(groups) {
 
 // 清单刷新：阶段推进/终态事件触发（无 run 参数，全局镜像）
 export async function refreshArtifacts() {
+  const epoch = identityEpoch
   try {
     const resp = await fetch('/api/artifacts')
     if (!resp.ok) return
     const data = await resp.json()
+    if (epoch !== identityEpoch) return
     set({ artifacts: data, artifactSel: pruneSelection(data.groups) })
   } catch {
     // 清单刷新是尽力而为：失败不打断会话观察，下次阶段事件再试
@@ -598,6 +1277,7 @@ export function clearDraft(runId) {
 // encode 会把 / 也编码）。内容缓存与标签页独立——关标签页不清缓存，
 // 重开瞬开。
 export async function openArtifact(relPath, entry) {
+  const epoch = identityEpoch
   if (entry?.binary) {
     const cut = relPath.lastIndexOf('/')
     set({
@@ -616,12 +1296,14 @@ export async function openArtifact(relPath, entry) {
     try {
       const resp = await fetch(`/api/artifacts/file/${relPath.split('/').map(encodeURIComponent).join('/')}`)
       const data = await resp.json().catch(() => ({}))
+      if (epoch !== identityEpoch) return
       if (!resp.ok) {
         fail(`打开产物失败：${data.detail || `HTTP ${resp.status}`}`)
         return
       }
       set({ artifactCache: { ...state.artifactCache, [relPath]: data } })
     } catch (err) {
+      if (epoch !== identityEpoch) return
       fail(`打开产物失败：${err.message}`)
       return
     }
@@ -641,6 +1323,7 @@ export function downloadArtifact(relPath) {
 // 批量下载：勾选集 POST 到 zip 端点，blob 经 objectURL 触发下载；文件名
 // 取服务端 Content-Disposition（auto-image-artifacts-<n>-<时间戳>.zip）
 export async function downloadArtifactZip() {
+  const epoch = identityEpoch
   const paths = Object.keys(state.artifactSel)
   if (!paths.length || state.artifactZipping) return
   set({ artifactZipping: true })
@@ -652,12 +1335,15 @@ export async function downloadArtifactZip() {
     })
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}))
+      if (epoch !== identityEpoch) return
       fail(`打包下载失败：${data.detail || `HTTP ${resp.status}`}`)
       return
     }
     const disposition = resp.headers.get('Content-Disposition') || ''
     const match = disposition.match(/filename="?([^";]+)"?/)
-    const url = URL.createObjectURL(await resp.blob())
+    const blob = await resp.blob()
+    if (epoch !== identityEpoch) return
+    const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
     a.download = match ? match[1] : 'auto-image-artifacts.zip'
@@ -666,9 +1352,10 @@ export async function downloadArtifactZip() {
     a.remove()
     URL.revokeObjectURL(url)
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`打包下载失败：${err.message}`)
   } finally {
-    set({ artifactZipping: false })
+    if (epoch === identityEpoch) set({ artifactZipping: false })
   }
 }
 
@@ -677,11 +1364,13 @@ export async function downloadArtifactZip() {
 // 桶内清单刷新（启动即拉一次 + 面板刷新钮；尽力而为，失败落面板错误行
 // 不打断使用。流水线事件不联动——OBS 上传不经过本服务的已知事件面）
 export async function refreshObs() {
+  const epoch = identityEpoch
   if (state.obs.loading) return
   set({ obs: { ...state.obs, loading: true } })
   try {
     const resp = await fetch('/api/obs/objects?limit=1000')
     const data = await resp.json().catch(() => ({}))
+    if (epoch !== identityEpoch) return
     if (!resp.ok) {
       set({ obs: { ...state.obs, loading: false, error: data.detail || `HTTP ${resp.status}` } })
       return
@@ -697,6 +1386,7 @@ export async function refreshObs() {
       },
     })
   } catch (err) {
+    if (epoch !== identityEpoch) return
     set({ obs: { ...state.obs, loading: false, error: err.message } })
   }
 }
@@ -705,10 +1395,12 @@ export async function refreshObs() {
 // 寻址，fetch 前逐段编码）。二进制/超限对象（端点 422）不拉内容，占位
 // 视图元信息取清单条目。
 export async function openObsObject(key, entry) {
+  const epoch = identityEpoch
   if (!state.obsCache[key]) {
     try {
       const resp = await fetch(`/api/obs/content?key=${encodeURIComponent(key)}`)
       const data = await resp.json().catch(() => ({}))
+      if (epoch !== identityEpoch) return
       if (resp.ok) {
         set({ obsCache: { ...state.obsCache, [key]: data } })
       } else if (resp.status === 422) {
@@ -730,6 +1422,7 @@ export async function openObsObject(key, entry) {
         return
       }
     } catch (err) {
+      if (epoch !== identityEpoch) return
       fail(`打开 OBS 对象失败：${err.message}`)
       return
     }
@@ -740,9 +1433,11 @@ export async function openObsObject(key, entry) {
 // OBS 对象下载：先取签名链接（服务端本地签名），临时 <a> 新标签打开——
 // 文本浏览器直接渲染，二进制按 OBS 响应下载
 export async function downloadObsObject(key) {
+  const epoch = identityEpoch
   try {
     const resp = await fetch(`/api/obs/url?key=${encodeURIComponent(key)}`)
     const data = await resp.json().catch(() => ({}))
+    if (epoch !== identityEpoch) return
     if (!resp.ok) {
       fail(`获取 OBS 下载链接失败：${data.detail || `HTTP ${resp.status}`}`)
       return
@@ -755,6 +1450,7 @@ export async function downloadObsObject(key) {
     a.click()
     a.remove()
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`获取 OBS 下载链接失败：${err.message}`)
   }
 }
@@ -789,14 +1485,18 @@ export async function copyText(text) {
 // 复制 OBS 对象签名下载链接（7 天有效）：返回是否复制成功（行级按钮据此
 // 打 ✓ 反馈）。两条兜底出口：剪贴板全拒时链接打到控制台供手动复制
 export async function copyObsLink(key) {
+  const epoch = identityEpoch
   try {
     const resp = await fetch(`/api/obs/url?key=${encodeURIComponent(key)}&expires=604800`)
     const data = await resp.json().catch(() => ({}))
+    if (epoch !== identityEpoch) return
     if (!resp.ok) {
       fail(`获取 OBS 下载链接失败：${data.detail || `HTTP ${resp.status}`}`)
       return false
     }
-    if (await copyText(data.signed_url)) {
+    const copied = await copyText(data.signed_url)
+    if (epoch !== identityEpoch) return
+    if (copied) {
       ok(`已复制下载链接（签名 7 天有效）：${key}`)
       return true
     }
@@ -805,6 +1505,7 @@ export async function copyObsLink(key) {
     fail('复制到剪贴板失败（浏览器限制）——链接已打印到控制台（F12），可手动复制')
     return false
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`获取 OBS 下载链接失败：${err.message}`)
     return false
   }
@@ -814,6 +1515,7 @@ export async function copyObsLink(key) {
 // 路径约束解析后逐个 putFile，对象名 = 产物路径），完成后刷新 OBS 清单；
 // 部分失败如实逐项点名
 export async function archiveToObs() {
+  const epoch = identityEpoch
   const paths = Object.keys(state.artifactSel)
   if (!paths.length || state.obsArchiving) return
   set({ obsArchiving: true })
@@ -824,6 +1526,7 @@ export async function archiveToObs() {
       body: JSON.stringify({ paths }),
     })
     const data = await resp.json().catch(() => ({}))
+    if (epoch !== identityEpoch) return
     if (!resp.ok) {
       fail(`归档到 OBS 失败：${data.detail || `HTTP ${resp.status}`}`)
       return
@@ -835,15 +1538,17 @@ export async function archiveToObs() {
       ok(`已归档 ${data.count} 个产物到 OBS（对象名 = 产物路径）`)
     }
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`归档到 OBS 失败：${err.message}`)
   } finally {
-    set({ obsArchiving: false })
+    if (epoch === identityEpoch) set({ obsArchiving: false })
   }
 }
 
 // 打包归档：勾选集 → 自定义包名（prompt，取消即中止）→ 服务端内存打 zip
 // 直传 OBS（对象名固定 zip/ 前缀，.zip 后缀服务端自动补，同名覆盖）
 export async function archiveZipToObs() {
+  const epoch = identityEpoch
   const paths = Object.keys(state.artifactSel)
   if (!paths.length || state.obsZipArchiving) return
   const d = new Date()
@@ -864,6 +1569,7 @@ export async function archiveZipToObs() {
       body: JSON.stringify({ paths, name }),
     })
     const data = await resp.json().catch(() => ({}))
+    if (epoch !== identityEpoch) return
     if (!resp.ok) {
       fail(`打包归档失败：${data.detail || `HTTP ${resp.status}`}`)
       return
@@ -871,14 +1577,111 @@ export async function archiveZipToObs() {
     refreshObs()
     ok(`已打包 ${data.zipped} 个产物 → ${data.key}（${fmtSize(data.size)}，同名覆盖）`)
   } catch (err) {
+    if (epoch !== identityEpoch) return
     fail(`打包归档失败：${err.message}`)
   } finally {
-    set({ obsZipArchiving: false })
+    if (epoch === identityEpoch) set({ obsZipArchiving: false })
+  }
+}
+
+// ---------- ECS 实例 ----------
+
+// 502 家族 detail 是对象（服务端 SDK 错误面）：人话化成字符串供错误行/toast
+const ecsErrText = (detail, fallback) =>
+  typeof detail === 'object' && detail !== null
+    ? JSON.stringify(detail)
+    : detail || fallback
+
+// 实例清单刷新（启动即拉一次 + 面板刷新钮；尽力而为，失败落面板错误行
+// 不打断使用。云侧变化不经本服务事件面，无联动——刷新钮手动重拉。已有
+// 存活检查结果按 id 保留，✓/✗ 不被刷新清掉）
+export async function refreshEcs() {
+  const epoch = identityEpoch
+  if (state.ecs.loading) return
+  set({ ecs: { ...state.ecs, loading: true } })
+  try {
+    const resp = await fetch('/api/ecs/instances?limit=1000')
+    const data = await resp.json().catch(() => ({}))
+    if (epoch !== identityEpoch) return
+    if (!resp.ok) {
+      set({ ecs: { ...state.ecs, loading: false, error: ecsErrText(data.detail, `HTTP ${resp.status}`) } })
+      return
+    }
+    const prev = {}
+    state.ecs.instances.forEach((i) => {
+      if (i.checked_at != null) prev[i.id] = i
+    })
+    set({
+      ecs: {
+        instances: (data.instances ?? []).map((i) => (
+          prev[i.id]
+            ? { ...i, ssh_port_open: prev[i.id].ssh_port_open, alive: prev[i.id].alive, checked_at: prev[i.id].checked_at }
+            : i
+        )),
+        region: data.region ?? null,
+        error: null,
+        loading: false,
+      },
+    })
+  } catch (err) {
+    if (epoch !== identityEpoch) return
+    set({ ecs: { ...state.ecs, loading: false, error: err.message } })
+  }
+}
+
+// 一键存活检查：POST /api/ecs/check（服务端并发探测 22 端口），结果按 id
+// 合并进清单（行内 ✓/✗）；列表里已消失的实例如实清掉检查标记
+export async function checkEcs() {
+  const epoch = identityEpoch
+  if (state.ecs.checking) return
+  set({ ecs: { ...state.ecs, checking: true } })
+  try {
+    const data = await postJson('/api/ecs/check', {})
+    if (epoch !== identityEpoch) return
+    const byId = Object.fromEntries((data.instances ?? []).map((i) => [i.id, i]))
+    set({
+      ecs: {
+        ...state.ecs,
+        checking: false,
+        region: data.region ?? state.ecs.region,
+        instances: state.ecs.instances.map((i) => (
+          byId[i.id]
+            ? { ...i, ssh_port_open: byId[i.id].ssh_port_open, alive: byId[i.id].alive, checked_at: data.checked_at }
+            : i
+        )),
+      },
+    })
+    ok(`存活检查：${data.alive_count ?? 0}/${data.count ?? 0} 存活`)
+  } catch (err) {
+    if (epoch !== identityEpoch) return
+    set({ ecs: { ...state.ecs, checking: false } })
+    fail(`存活检查失败：${ecsErrText(err.detail, err.message)}`)
+  }
+}
+
+// 建机（分钟级长请求；fetch 无超时正是所需）。成功与未就绪（ok=false，
+// 机器可能已建出）都返回服务端契约供对话框渲染，HTTP 层失败抛错由对话
+// 框行内展示；两种收尾都刷新清单
+export async function createEcs(body) {
+  const epoch = identityEpoch
+  if (state.ecsCreating) throw new Error('建机请求进行中')
+  set({ ecsCreating: true })
+  try {
+    const data = await postJson('/api/ecs/create', body)
+    if (epoch !== identityEpoch) return
+    refreshEcs()
+    return data
+  } catch (err) {
+    if (epoch !== identityEpoch) return
+    fail(`创建 ECS 失败：${ecsErrText(err.detail, err.message)}`)
+    throw err
+  } finally {
+    if (epoch === identityEpoch) set({ ecsCreating: false })
   }
 }
 
 // 启动即恢复任务列表（含服务重启后经 transcript 重建的历史）与产物清单
-// （loadRuns 无历史时提前 return，产物首刷不能依赖它）；OBS 清单同样尽力拉一次
-loadRuns()
-refreshArtifacts()
-refreshObs()
+// （loadRuns 无历史时提前 return，产物首刷不能依赖它）；OBS 清单、ECS
+// 实例与流水线任务清单同样尽力拉一次——全部挪进登录后的数据面启动
+// （startDataPlane），未认证不拉任何业务数据
+initAuth()

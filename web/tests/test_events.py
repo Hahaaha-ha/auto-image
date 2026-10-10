@@ -80,6 +80,48 @@ def test_adopt_history_renumbers_seq_and_carries_ts():
     assert events[0]["ts"] == source, events  # 转录时刻原样透传
 
 
+def test_observer_notified_on_append():
+    """进程内观察者收完整事件 dict（任务跟踪等旁路消费者的入口）。"""
+    store = EventStore()
+    seen = []
+    store.add_observer(lambda ev: seen.append(ev))
+    store.create("r")
+    store.append("r", "stage.changed", {"stage": "GUIDE", "status": "running"})
+    assert len(seen) == 1, seen
+    assert seen[0]["type"] == "stage.changed"
+    assert seen[0]["payload"]["stage"] == "GUIDE"
+    assert seen[0]["run_id"] == "r" and seen[0]["seq"] == 1
+
+
+def test_observer_suppressed_for_adopt_history():
+    """克隆转录不通知观察者——转录历史里的 stage 派生任务会造成幻影。"""
+    store = EventStore()
+    seen = []
+    store.add_observer(lambda ev: seen.append(ev))
+    store.create("src")
+    store.append("src", "stage.changed", {"stage": "GUIDE", "status": "running"})
+    assert len(seen) == 1
+    store.create("dst")
+    store.adopt_history("dst", "src", skip_types=set())
+    assert len(seen) == 1, seen  # 转录事件广播照常、观察者静默
+
+
+def test_observer_exception_does_not_break_append():
+    """观察者抛错被吞掉只记日志——旁路消费绝不影响事件流本体。"""
+    store = EventStore()
+
+    def boom(_ev):
+        raise RuntimeError("observer bug")
+
+    store.add_observer(boom)
+    seen = []
+    store.add_observer(lambda ev: seen.append(ev))
+    store.create("r")
+    event = store.append("r", "user.message", {"text": "hi"})
+    assert event["seq"] == 1  # append 正常返回
+    assert len(seen) == 1  # 后续观察者照常收到
+
+
 def main():
     tests = [fn for name, fn in sorted(globals().items()) if name.startswith("test_")]
     for fn in tests:

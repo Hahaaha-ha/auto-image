@@ -12,6 +12,7 @@ import os
 import secrets
 import string
 import uuid
+from datetime import datetime, timedelta, timezone
 from argparse import Namespace
 from typing import Any
 
@@ -36,6 +37,12 @@ from huaweicloudsdkecs.v2 import (
 # root_volume 默认：仅当 scope 完全没给时注入（只对低风险字段配硬默认）
 DEFAULT_ROOT_VOLUME_TYPE = "SSD"
 DEFAULT_ROOT_VOLUME_SIZE = 40
+
+# 定时删除默认：新建按需机一律 24h 后由华为侧自动删除（联删系统盘 + EIP）
+DEFAULT_TERMINATE_HOURS = 24
+# API 约束：最短当前时间半小时后，最长不超过当前时间三年（3 年按 3*365 天近似）
+MIN_TERMINATE_HOURS = 0.5
+MAX_TERMINATE_HOURS = 24 * 365 * 3
 
 # EIP 默认使用（scope 无 publicip 模板时的兜底；按流量计费）
 DEFAULT_BANDWIDTH_SIZE = 5
@@ -255,6 +262,48 @@ def _require_fields(spec: dict[str, Any], args: Namespace) -> None:
         )
 
 
+def resolve_auto_terminate_time(scope: dict[str, Any], args: Namespace) -> str | None:
+    """定时删除时刻：UTC ISO8601（yyyy-MM-ddTHH:mm:ssZ），秒归零。
+
+    --no-auto-terminate 关闭；时长优先级 CLI --terminate-hours > scope
+    ecs_create.server.terminate_hours > 默认 24h。边界对齐 API：最短半小时后、
+    最长三年；不合规早炸不发 API。``args._now`` 为可注入时钟（测试缝），
+    缺省取真实当前时刻。
+    """
+    if getattr(args, "no_auto_terminate", False):
+        return None
+    hours = getattr(args, "terminate_hours", None)
+    if hours is None:
+        raw = _server_spec(scope).get("terminate_hours")
+        if raw is None:
+            hours = DEFAULT_TERMINATE_HOURS
+        elif isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise ValueError(
+                f"scope ecs_create.server.terminate_hours 须为数字（小时），实得 {raw!r}。"
+            )
+        else:
+            hours = raw
+    # math.isnan 在 both-comparisons-false 时漏网，显式拦下
+    if hours != hours or hours < MIN_TERMINATE_HOURS or hours > MAX_TERMINATE_HOURS:
+        raise ValueError(
+            f"定时删除时长 {hours}h 越界：须在 {MIN_TERMINATE_HOURS}h 与 {MAX_TERMINATE_HOURS}h 之间"
+            "（API 约束：最短半小时后、最长三年）。"
+        )
+    now = getattr(args, "_now", None) or datetime.now(timezone.utc)
+    # 秒非 00 时华为侧自动取整到分钟开始；本地取整须向后（ceil），否则截断会把
+    # 0.5h 下界实际提前到不足半小时，被 API 拒绝
+    at = now + timedelta(hours=hours)
+    if at.second or at.microsecond:
+        at = at.replace(second=0, microsecond=0) + timedelta(minutes=1)
+    else:
+        at = at.replace(second=0, microsecond=0)
+    # 真机冒烟（Ecs.0005）证实恰 30:00 被拒：服务端按自身时钟严格比较，且与本地
+    # 存在秒级偏差。下界附近补 1 分钟缓冲，只影响 0.5h 附近的请求。
+    if at - now <= timedelta(minutes=30):
+        at += timedelta(minutes=1)
+    return at.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def build_create_request(scope: dict[str, Any], args: Namespace) -> CreateServersRequest:
     """合并 scope.ecs_create.server 默认 + CLI 覆盖，返回 typed CreateServersRequest。"""
     spec = _server_spec(scope)
@@ -292,6 +341,7 @@ def build_create_request(scope: dict[str, Any], args: Namespace) -> CreateServer
 
     server = PrePaidServer(
         name=name,
+        auto_terminate_time=resolve_auto_terminate_time(scope, args),
         image_ref=args.image or spec.get("imageRef"),
         flavor_ref=args.flavor or spec.get("flavorRef"),
         vpcid=vpcid,
@@ -316,7 +366,10 @@ def _build_publicip(spec: dict[str, Any], args: Namespace) -> PrePaidServerPubli
     eip_spec = pub_spec.get("eip") if isinstance(pub_spec.get("eip"), dict) else {}
     bw_spec = eip_spec.get("bandwidth") if isinstance(eip_spec.get("bandwidth"), dict) else {}
     size = getattr(args, "bandwidth", None) or bw_spec.get("size") or DEFAULT_BANDWIDTH_SIZE
+    # delete_on_termination=True：定时删除路径只认创建时的该字段（事后不可补救），
+    # 不设则到期只删机器、EIP 悬挂继续计费。手动 delete 走 delete_publicip=True 强删，与此正交。
     return PrePaidServerPublicip(
+        delete_on_termination=True,
         eip=PrePaidServerEip(
             iptype=eip_spec.get("iptype", DEFAULT_EIP_IPTYPE),
             bandwidth=PrePaidServerEipBandwidth(

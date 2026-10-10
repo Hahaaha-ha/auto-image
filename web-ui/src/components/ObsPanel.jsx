@@ -3,11 +3,12 @@
 // （文本预览 / 二进制占位）。下载不直下：⧉ 复制签名下载链接（7 天有效，
 // 剪贴板带 execCommand 兜底），成功后行内 ✓ 反馈。无勾选与 zip——OBS 侧
 // 只有在线列举与单对象访问；清单不随流水线事件联动（上传不经过本服务
-// 事件面），刷新钮手动重拉 + 归档动作完成后自动刷新。头部 ⚙ 配置钮开
+// 事件面），刷新钮手动重拉 + 归档动作完成后自动刷新。头部「配置」钮开
 // 配置对话框（当前配置脱敏视图 + 在线改配：ak/sk 服务端密文落盘）。
 import { useEffect, useState } from 'react'
 import * as store from '../store.js'
 import { fmtSize, obsGroups, artifactTree, defaultOpenPaths } from '../derive.js'
+import { useModal } from './modal.js'
 
 // 行级复制链接按钮：复制成功后 ✓ 反馈 1.5 秒（本地态，不打断浏览）
 function CopyLink({ objKey }) {
@@ -23,6 +24,7 @@ function CopyLink({ objKey }) {
     <button
       className="va-art-dl"
       title="复制下载链接（签名，7 天有效；桶私有，匿名不可访问）"
+      aria-label={`复制 ${objKey} 的下载链接`}
       onClick={onClick}
     >
       {copied ? '✓' : '⧉'}
@@ -97,17 +99,26 @@ function ObsDir({ node, toggles, setToggles, defaultOpen, openKeys, activeKey })
   )
 }
 
+// 配置视图 can_write → 写面可见；缺键/非布尔一律只读（fail closed——
+// 服务端视图漂移时普通用户不会多拿到写入口）
+export const canWriteOf = (cfg) => cfg?.can_write === true
+
 // 配置对话框：打开即拉当前配置（GET /api/obs/config 脱敏视图——ak/sk
 // 只显头尾几位 + 来源与长度，明文永不出服务）；提交走 POST /api/obs/
 // config：ak/sk 服务端加密（enc:v1）落 scope.yaml 的 obs 段、明文键自动
 // 删除，改 region 时 endpoint/domain 服务端重推；保存后尽力健康检查，
 // 结果行内反馈（失败不回滚，由使用者决断），成功即刷新对象清单。
-function ObsConfigDialog({ onClose }) {
+// can_write=false（非管理员）只读：改表单不出现，提示这是全局管理能力。
+// 具名导出：测试渲染 can_write 两种视图（store mock 之外唯一的外部缝）。
+export function ObsConfigDialog({ onClose }) {
   const [cfg, setCfg] = useState(null)
   const [loadErr, setLoadErr] = useState(null)
   const [form, setForm] = useState({ ak: '', sk: '', bucket: '', region: '', endpoint: '' })
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState(null) // {kind: 'ok'|'warn'|'err', text}
+  const panelRef = useModal(() => !saving, onClose)
+
+  const canWrite = canWriteOf(cfg)
 
   useEffect(() => {
     fetch('/api/obs/config')
@@ -186,8 +197,17 @@ function ObsConfigDialog({ onClose }) {
   )
 
   return (
-    <div className="va-modal-overlay" onClick={onClose}>
-      <div className="va-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="OBS 配置">
+    // saving 中遮罩点击不关闭：POST 已在飞，误关后本地 saving 复位开双提交窗口
+    <div className="va-modal-overlay" onClick={() => !saving && onClose()}>
+      <div
+        className="va-modal"
+        ref={panelRef}
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="OBS 配置"
+      >
         <div className="va-modal-title">
           <span>OBS 配置</span>
           {cfg && (
@@ -195,7 +215,7 @@ function ObsConfigDialog({ onClose }) {
               {cfg.configured ? '已配置' : '未配置'}
             </span>
           )}
-          <button className="va-modal-close" onClick={onClose} title="关闭">✕</button>
+          <button className="va-modal-close" onClick={onClose} disabled={saving} title="关闭" aria-label="关闭对话框">✕</button>
         </div>
         {loadErr && <div className="va-cfg-msg err">配置读取失败：{loadErr}</div>}
         {cfg && (
@@ -226,27 +246,35 @@ function ObsConfigDialog({ onClose }) {
                 <span className="va-cfg-sub">{cfg.enc_key?.file}</span>
               </span>
             </div>
-            <div className="va-cfg-sec">修改（ak/sk 提交后加密落盘，明文自动删除；留空不改）</div>
-            <div className="va-cfg-fields">
-              {field('ak', 'AK', 'password')}
-              {field('sk', 'SK', 'password')}
-              {field('bucket', 'bucket')}
-              {field('region', 'region')}
-              {field('endpoint', 'endpoint')}
+            <div className="va-cfg-sec">
+              {canWrite
+                ? '修改（ak/sk 提交后加密落盘，明文自动删除；留空不改）'
+                : '修改仅限部署管理员（共享桶的全局凭据，普通用户只读）'}
             </div>
+            {canWrite && (
+              <div className="va-cfg-fields">
+                {field('ak', 'AK', 'password')}
+                {field('sk', 'SK', 'password')}
+                {field('bucket', 'bucket')}
+                {field('region', 'region')}
+                {field('endpoint', 'endpoint')}
+              </div>
+            )}
           </>
         )}
         {msg && <div className={`va-cfg-msg ${msg.kind}`}>{msg.text}</div>}
         <div className="va-modal-actions">
           <button className="va-cfg-cancel" onClick={onClose} disabled={saving}>关闭</button>
-          <button
-            className="va-cfg-save"
-            onClick={save}
-            disabled={saving || !cfg}
-            title="保存（ak/sk 密文落盘）后自动做一次健康检查"
-          >
-            {saving ? '保存中…' : '保存'}
-          </button>
+          {canWrite && (
+            <button
+              className="va-cfg-save"
+              onClick={save}
+              disabled={saving || !cfg}
+              title="保存（ak/sk 密文落盘）后自动做一次健康检查"
+            >
+              {saving ? '保存中…' : '保存'}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -266,7 +294,7 @@ export default function ObsPanel({ openKeys, activeKey }) {
         <span>OBS 产物 · {s.obs.objects.length}</span>
         {s.obs.bucket && (
           <span className="va-obs-bucket" title={s.obs.domain ?? s.obs.bucket}>
-            ☁ {s.obs.bucket}
+            {s.obs.bucket}
           </span>
         )}
         <button
@@ -274,7 +302,7 @@ export default function ObsPanel({ openKeys, activeKey }) {
           onClick={() => setCfgOpen(true)}
           title="查看/配置 OBS 凭据与桶（ak/sk 加密落盘，明文自动删除）"
         >
-          ⚙ 配置
+          配置
         </button>
         <button
           className="va-obs-refresh"
