@@ -61,7 +61,7 @@ describe('用户清单查询', () => {
     await vi.waitFor(() => expect(store.getState().users.loading).toBe(false))
     const [, options] = fetch.mock.calls.find(([, options]) => options?.method === 'POST')
     expect(JSON.parse(options.body)).toMatchObject({ username: 'member-070', expected_version: 'v70' })
-    expect(store.getState().usersQuery).toEqual({ keyword: 'member', page: 5, pageSize: 20 })
+    expect(store.getState().usersQuery).toEqual({ keyword: 'member', page: 5, pageSize: 10 })
   })
 
   it('读取失败保留查询位置，重试恢复；同身份复核保留，换身份与迟到响应不能带回查询', async () => {
@@ -85,11 +85,11 @@ describe('用户清单查询', () => {
     await store.initAuth()
     release(response({ users: members }))
     await oldRead
-    expect(store.getState().usersQuery).toEqual({ keyword: '', page: 1, pageSize: 20 })
+    expect(store.getState().usersQuery).toEqual({ keyword: '', page: 1, pageSize: 10 })
     expect(store.getState().users.items).toEqual([])
     store.setUsersKeyword('private search')
     await store.logout()
-    expect(store.getState().usersQuery).toEqual({ keyword: '', page: 1, pageSize: 20 })
+    expect(store.getState().usersQuery).toEqual({ keyword: '', page: 1, pageSize: 10 })
   })
   it('创建成功保留原查询；主动查看按精确身份定位，保留页大小', async () => {
     const existing = Array.from({ length: 25 }, (_, i) => ({ ...members[i], username: `a${i}-new-user` }))
@@ -108,9 +108,9 @@ describe('用户清单查询', () => {
     expect(store.getState().usersQuery).toEqual({ keyword: 'new-user', page: 2, pageSize: 20 })
   })
   it('分页限于展示；关键词或页大小变化回首页，刷新收敛到有效页', async () => {
-    expect(store.getState().usersQuery).toEqual({ keyword: '', page: 1, pageSize: 20 })
+    expect(store.getState().usersQuery).toEqual({ keyword: '', page: 1, pageSize: 10 })
     store.setUsersPage(99)
-    expect(store.getState().usersQuery.page).toBe(6)
+    expect(store.getState().usersQuery.page).toBe(11)
     expect(store.getState().users.items).toHaveLength(105)
     store.setUsersKeyword('member')
     expect(store.getState().usersQuery.page).toBe(1)

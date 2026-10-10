@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 const { state } = vi.hoisted(() => ({ state: {
   sidePanel: 'users', tabs: [], canManageUsers: true,
-  usersQuery: { keyword: '', page: 1, pageSize: 20 },
+  usersQuery: { keyword: '', page: 1, pageSize: 10 },
   users: { items: [
     { username: 'operator', role: 'admin', enabled: true, created_at: '2026-09-01T02:00:00Z' },
     { username: 'second', role: 'admin', enabled: true, created_at: null },
@@ -19,7 +19,7 @@ import SidePanel from './components/SidePanel.jsx'
 import UsersPanel from './components/UsersPanel.jsx'
 
 describe('用户管理内容', () => {
-  it('完整清单稳定排序后默认仅展示二十人，跨页搜索保留旧用户名原文', () => {
+  it('完整清单稳定排序后默认仅展示十人，跨页搜索保留旧用户名原文', () => {
     const original = state.users
     state.users = { items: Array.from({ length: 105 }, (_, i) => ({
       username: `member-${String(104 - i).padStart(3, '0')}`, role: 'user', enabled: true,
@@ -29,16 +29,17 @@ describe('用户管理内容', () => {
       expect(html).toContain('共 105 名用户')
       expect(html).not.toContain('aria-label="用户清单顶部分页"')
       expect(html).toContain('aria-label="用户清单分页"')
-      expect(html).toContain('member-019')
-      expect(html).not.toContain('member-020')
-      expect(html.indexOf('member-000')).toBeLessThan(html.indexOf('member-019'))
-      state.usersQuery = { keyword: 'member-104', page: 1, pageSize: 20 }
+      expect(html).toContain('member-009')
+      expect(html).not.toContain('member-010')
+      expect(html.indexOf('member-000')).toBeLessThan(html.indexOf('member-009'))
+      state.usersQuery = { keyword: 'member-104', page: 1, pageSize: 10 }
       html = renderToStaticMarkup(<UsersPanel />)
       expect(html).toContain('member-104')
       expect(html).not.toContain('member-000')
       expect(html).not.toContain('aria-label="用户清单顶部分页"')
       expect(html).toContain('aria-label="用户清单分页"')
-      expect(html).toContain('aria-label="跳转页码"')
+      expect(html).toContain('aria-label="上一页"')
+      expect(html).toContain('aria-label="下一页"')
       expect(html).toContain('每页条数')
       state.users.items.push({ username: '旧 身份@EXAMPLE.test', role: 'user', enabled: false })
       state.usersQuery.keyword = '@example'
@@ -46,7 +47,7 @@ describe('用户管理内容', () => {
       expect(html).toContain('旧 身份@EXAMPLE.test')
     } finally {
       state.users = original
-      state.usersQuery = { keyword: '', page: 1, pageSize: 20 }
+      state.usersQuery = { keyword: '', page: 1, pageSize: 10 }
     }
   })
   it('重置仅面向普通用户，未知结果持续呈现并要求主动发起新重置', () => {

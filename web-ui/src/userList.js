@@ -1,5 +1,5 @@
 export const USER_PAGE_SIZES = [10, 20, 50, 100]
-export const emptyUsersQuery = () => ({ keyword: '', page: 1, pageSize: 20 })
+export const emptyUsersQuery = () => ({ keyword: '', page: 1, pageSize: 10 })
 
 export function filterAndSortUsers(items, keyword) {
   // 搜索忽略大小写，但不规范化账户原文；排序固定按字符串序，不受浏览器语言影响。
