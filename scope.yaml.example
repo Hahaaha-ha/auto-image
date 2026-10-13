@@ -40,7 +40,10 @@ ecs_create:
     password: ""                 # 固定密码（如 ScopePwd@@123456）；CLI --password / 环境变量 ECS_ADMIN_PASSWORD 可覆盖
     security_groups:
       - id: <YOUR_SG_ID>         # 须对调用方出口 IP 放行 22
-    # 默认带 EIP（公网可达）。--no-eip 时不注入；下面的 publicip 作为模板。
+    # 不带公网 EIP（本机与新机同 VPC 时退回私网路径，省 EIP 费用与公网暴露面）。
+    # CLI --no-eip 单次等效；两者任一为真即不注入 EIP，无 CLI 强制开启的反向开关。
+    no_eip: false
+    # 默认带 EIP（公网可达）。--no-eip / 上面的 no_eip: true 时不注入；下面的 publicip 作为模板。
     publicip:
       eip:
         iptype: 5_bgp

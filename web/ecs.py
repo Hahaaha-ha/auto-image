@@ -441,7 +441,7 @@ def resolve_defaults(scope_path):
         "disk_size": rv.get("size") if isinstance(rv.get("size"), int) else DEFAULT_ROOT_VOLUME_SIZE,
         "bandwidth": eip.get("size") if isinstance(eip.get("size"), int) else DEFAULT_BANDWIDTH_SIZE,
         "availability_zone": str(spec.get("availability_zone") or "") or None,
-        "has_eip": True,  # 表单不暴露 no-eip：与 ecs-skill 默认一致恒带 EIP
+        "has_eip": spec.get("no_eip") is not True,  # scope no_eip: true → 私网形态（与 ecs-skill 同语义，表单不暴露开关）
         "auth_method": auth_method,
         "auto_password": auto_password,
     }
@@ -451,7 +451,8 @@ def resolve_create_spec(scope, body):
     """scope.ecs_create.server 默认 + 表单覆盖 → 建机参数（纯函数）。
 
     表单可覆盖 name/flavor/image/disk_size/bandwidth；网络层（vpcid/
-    subnet/安全组/AZ）与镜像默认全由 scope 提供，不经本 API 覆盖。
+    subnet/安全组/AZ）与镜像默认全由 scope 提供，不经本 API 覆盖。scope
+    no_eip: true 时不注入 EIP（eip=None，私网路径），无表单反向开关。
     鉴权四层（表单无密码字段）：env ECS_ADMIN_PASSWORD > scope key_name
     > scope password > 自动生成。必填缺失 → EcsNotConfigured；scope/env
     密码不合规 → ValueError（端点 422）。
@@ -478,19 +479,23 @@ def resolve_create_spec(scope, body):
     if isinstance(body.get("disk_size"), int) and not isinstance(body.get("disk_size"), bool):
         size = body["disk_size"]
 
-    # EIP：scope publicip 模板 > 默认模板；表单 bandwidth 覆盖带宽
-    pub = spec.get("publicip") if isinstance(spec.get("publicip"), dict) else {}
-    eip_spec = pub.get("eip") if isinstance(pub.get("eip"), dict) else {}
-    bw = eip_spec.get("bandwidth") if isinstance(eip_spec.get("bandwidth"), dict) else {}
-    bandwidth = bw.get("size") if isinstance(bw.get("size"), int) else DEFAULT_BANDWIDTH_SIZE
-    if isinstance(body.get("bandwidth"), int) and not isinstance(body.get("bandwidth"), bool):
-        bandwidth = body["bandwidth"]
-    eip = {
-        "iptype": str(eip_spec.get("iptype") or "") or DEFAULT_EIP_IPTYPE,
-        "sharetype": str(bw.get("sharetype") or "") or DEFAULT_EIP_SHARETYPE,
-        "chargemode": str(bw.get("chargemode") or "") or DEFAULT_EIP_CHARGEMODE,
-        "size": bandwidth,
-    }
+    # EIP：scope no_eip: true → 不注入（私网路径，与 ecs-skill 同语义：任一为真即关，
+    # 无表单/请求体反向开关）；否则 scope publicip 模板 > 默认模板，表单 bandwidth 覆盖带宽
+    if spec.get("no_eip") is True:
+        eip = None
+    else:
+        pub = spec.get("publicip") if isinstance(spec.get("publicip"), dict) else {}
+        eip_spec = pub.get("eip") if isinstance(pub.get("eip"), dict) else {}
+        bw = eip_spec.get("bandwidth") if isinstance(eip_spec.get("bandwidth"), dict) else {}
+        bandwidth = bw.get("size") if isinstance(bw.get("size"), int) else DEFAULT_BANDWIDTH_SIZE
+        if isinstance(body.get("bandwidth"), int) and not isinstance(body.get("bandwidth"), bool):
+            bandwidth = body["bandwidth"]
+        eip = {
+            "iptype": str(eip_spec.get("iptype") or "") or DEFAULT_EIP_IPTYPE,
+            "sharetype": str(bw.get("sharetype") or "") or DEFAULT_EIP_SHARETYPE,
+            "chargemode": str(bw.get("chargemode") or "") or DEFAULT_EIP_CHARGEMODE,
+            "size": bandwidth,
+        }
 
     # 鉴权四层，命中即停（密钥对与密码互斥）
     env_pwd = os.getenv(PASSWORD_ENV_VAR)

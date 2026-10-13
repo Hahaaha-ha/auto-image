@@ -1,6 +1,6 @@
 ---
 name: ecs-skill
-version: 0.7.0
+version: 0.8.0
 description: "CRITICAL: 华为云 ECS 拉起/查询/切换OS/删除。把一台华为云 ECS 从无到有拉起到「就绪」（ACTIVE + 可达 IP + 22 通），纯 JSON 输出。默认带公网 EIP（公网浮动 IP 即可达）；本机与新机同 VPC 时加 --no-eip 退回私网路径。支持密钥对与密码两种登录鉴权方式（密码可自动生成）。create（拉起）+ show（查询）+ change-os（切换操作系统/系统盘镜像替换，轮询至新镜像生效 + 探 22）+ delete（级联删除 ECS + 系统盘 + EIP + 数据盘，轮询至实例消失，幂等）；非交互，--dry-run 当确认杠杆；新建机默认 24h 定时删除（联删系统盘+EIP，--no-auto-terminate 关闭）。当用户要求『拉起一台 ecs』『创建华为云服务器』『开一台 ecs』『查那台 ecs 状态』『切换 ecs 操作系统』『重置 ecs 镜像』『删除 ecs』『清理 ecs』时使用。Triggers: 拉起ecs, 创建ecs, 开ecs, 华为云ecs, huawei ecs, create ecs, ecs-skill, ecs 状态, 查询ecs, 就绪, 切换os, change os, 重置镜像, change-os, 删除ecs, 删ecs, 清理ecs, delete ecs, 销毁ecs。需要：仓库根 scope.yaml 已配置（ak/sk/region + ecs_create 默认）或 HUAWEICLOUD_SDK_* 环境变量。"
 allowed-tools: Bash, Read
 keywords: 华为云, ecs, 拉起, 创建, 服务器, huawei, cloudserver, 就绪, 公网, eip, 私网, 查询, show, create, 系统盘, disk, flavor, 规格, 密码, password, 密钥, keypair, 鉴权, change-os, 切换, 重置, 镜像, 删除, delete, 清理, 销毁
@@ -10,7 +10,7 @@ keywords: 华为云, ecs, 拉起, 创建, 服务器, huawei, cloudserver, 就绪
 
 把一台华为云 ECS 拉起到**就绪**：`create`（创建→轮询 ACTIVE→取可达 IP→探 22）+ `show`（查询单台）+ `change-os`（切换操作系统→轮询至新镜像生效→探 22；旧系统仍 ACTIVE 时不算就绪）+ `delete`（级联删除 ECS + 系统盘 + EIP + 数据盘→轮询至实例消失）。纯 JSON 输出，`logs/` 归档。基于官方 `huaweicloudsdkecs` SDK；脚本拆为 `scripts/ecs.py`（入口/CLI/编排）+ `ecs_client.py`（客户端+凭证）+ `ecs_ops.py`（请求构造）；单测在 `tests/`，覆盖请求构造与 `--dry-run` 端到端。
 
-**默认带公网 EIP**：运行本 skill 的机器通常与新机不在同一 VPC，公网浮动 IP 是可达的唯一路径。本机恰好与新机同 VPC 时用 `--no-eip` 退回私网路径（省 EIP 费用与权限要求）。公网浮动 IP 是默认的可达路径。
+**默认带公网 EIP**：运行本 skill 的机器通常与新机不在同一 VPC，公网浮动 IP 是可达的唯一路径。本机恰好与新机同 VPC 时用 `--no-eip` 退回私网路径（省 EIP 费用与权限要求）；固定私网形态可写进 scope（`ecs_create.server.no_eip: true`），CLI 与 scope 任一为真即不注入 EIP。公网浮动 IP 是默认的可达路径。
 
 **默认 24h 定时删除**：新建机默认设置 `auto_terminate_time = 创建后 24h`，由华为侧到期自动删除，**系统盘随实例释放、EIP 因创建时带 `delete_on_termination=true` 一并释放**（定时删除路径只认创建时的该字段，事后不可补救；手动 `delete` 走 `delete_publicip=true` 强删，与此正交）。API 约束：仅按需实例、最短半小时、最长三年，系统每 5 分钟执行一次。`--terminate-hours <小时>` 覆盖时长，`--no-auto-terminate` 关闭（长期机）；到期前手动 `delete` 照常级联删除，不受影响。创建成功回显 `auto_terminate_time`（UTC）。新建 EIP 一律 `delete_on_termination=true`（本 skill 的 EIP 随机器走：手动 delete 走 `delete_publicip=true` 强删；长期机事后在控制台删机时 EIP 也会一并释放，如需保留 EIP 复用请在删机前先解绑）。
 
@@ -38,6 +38,7 @@ python .claude/skills/ecs-skill/scripts/ecs.py create --password 'MyPwd@@123456'
 
 # 不带公网 EIP（本机与新机同 VPC 时省费用；退回私网路径）
 python .claude/skills/ecs-skill/scripts/ecs.py create --no-eip
+# 固定私网形态可写进 scope：ecs_create.server.no_eip: true（CLI 不带参数即生效）
 
 # 系统盘：覆盖类型/大小（scope 完全没给 root_volume 时自动注入默认 {SSD,40}）
 python .claude/skills/ecs-skill/scripts/ecs.py create --disk-type GPSSD --disk-size 100
@@ -86,6 +87,7 @@ python .claude/skills/ecs-skill/scripts/ecs.py delete --name web-01 --dry-run
 | 规格（flavor/image/name/key/password） | CLI → scope.ecs_create.server |
 | 网络（vpc/subnet/sg/az） | CLI → scope.ecs_create.server |
 | 系统盘 | `--disk-type`/`--disk-size` → scope `root_volume`；scope 完全没给则注入默认 `{SSD,40}` |
+| EIP 有无 | `--no-eip` 或 scope `no_eip: true` → 不注入 EIP（私网路径）；两者任一为真即关，无反向强制开启开关 |
 | EIP 带宽 | `--bandwidth` → scope `publicip.eip.bandwidth.size`（默认 5） |
 | 定时删除 | `--terminate-hours` → scope `ecs_create.server.terminate_hours`（默认 24）→ `--no-auto-terminate` 关闭；仅按需实例 |
 | 登录密码 | `--password` → `ECS_ADMIN_PASSWORD` 环境变量 → scope.password |

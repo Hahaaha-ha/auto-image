@@ -359,8 +359,8 @@ def build_create_request(scope: dict[str, Any], args: Namespace) -> CreateServer
 
 
 def _build_publicip(spec: dict[str, Any], args: Namespace) -> PrePaidServerPublicip | None:
-    """默认带 EIP（公网可达）；--no-eip 时不注入。带宽默认 5，--bandwidth 覆盖。"""
-    if getattr(args, "no_eip", False):
+    """默认带 EIP（公网可达）；--no-eip 或 scope no_eip: true 时不注入。带宽默认 5，--bandwidth 覆盖。"""
+    if getattr(args, "no_eip", False) or spec.get("no_eip") is True:
         return None
     pub_spec = spec.get("publicip") if isinstance(spec.get("publicip"), dict) else copy.deepcopy(DEFAULT_PUBLICIP)
     eip_spec = pub_spec.get("eip") if isinstance(pub_spec.get("eip"), dict) else {}
