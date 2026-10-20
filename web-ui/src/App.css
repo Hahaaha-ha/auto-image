@@ -354,6 +354,14 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   margin-left: 11px; padding-left: 8px;
   border-left: 1px solid var(--line);
 }
+/* 制作修订目录较深：每层只占 8px，累计最多 24px；完整路径仍由行 title 提供。 */
+.va-local-art-group > .va-art-children { margin-left: 3px; padding-left: 4px; }
+.va-art-depth-limit > .va-art-children { margin-left: 0; padding-left: 0; border-left: 0; }
+.va-local-art-group .va-art-item { gap: 4px; }
+.va-art-panel { container-type: inline-size; }
+@container (max-width: 260px) {
+  .va-local-art-group .va-art-size { display: none; }
+}
 /* 卡头工具行：全选 / 清空 / 勾选集打包 zip */
 .va-art-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .va-art-tools button { padding: 2px 8px; font-size: 11.5px; }
@@ -420,15 +428,15 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .va-artifact { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .va-artifact-head {
-  display: flex; align-items: center; gap: 8px; padding: 8px 16px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 16px;
   border-bottom: 1px solid var(--line); background: var(--surface-dim);
 }
-.va-artifact-name { font-family: var(--mono); font-size: 13px; font-weight: 600; }
+.va-artifact-name { min-width: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: 13px; font-weight: 600; }
 /* 产物查看头部的单文件下载按钮（dir 靠 margin-left:auto 推右，按钮随之） */
 .va-artifact-dl { flex-shrink: 0; padding: 3px 10px; font-size: 12px; }
 .va-artifact-dir {
   margin-left: auto; color: var(--ink-3); font-size: 11px; font-family: var(--mono);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl;
 }
 .va-artifact-raw {
   flex: 1; margin: 0; padding: 16px; overflow: auto;

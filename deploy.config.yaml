@@ -7,14 +7,36 @@
 #   {{software}}  软件名，小写、连字符分隔，如 nginx / redis / postgresql
 #   {{version}}   软件版本号，如 1.25.3；无法确定时取 unknown_version
 # ============================================================
-# 路径规则：所有文件都位于 output_dir 下。
-#   deploy-install 的输入 = output_dir + install_file
-#   deploy-verify  的输入 = output_dir + verify_file
-#   下游输入由 output_dir 与指南文件名派生，三端自动对齐，无需手动同步。
+# 路径由 python scripts/deploy_record.py 统一解析；output_dir 是版本根。
+# 新阶段写入 runs/<production_id>/stages/<revision_id>/，总结独立追加。
+# 下游使用入口返回的 inputs/paths，不能按同目录或修改时间猜输入。
 # ============================================================
 
 # 公共：输出根目录（指南与结果都放在此目录下，按软件/版本分子目录）
 output_dir: "deploy/{{software}}/{{version}}"
+
+records:
+  runs_dir: "runs"
+  stages_dir: "stages"
+  summaries_dir: "summaries"
+  production_file: "production.json"
+  revision_file: "revision.json"
+  summary_file: "summary.md"
+
+# 别名只维护有官方来源确认的关系；不通过删除标点合并产品。
+software_aliases:
+  anything-llm:
+    id: "anythingllm"
+    source: "https://github.com/Mintplex-Labs/anything-llm"
+  anythingllm:
+    id: "anythingllm"
+    source: "https://github.com/Mintplex-Labs/anything-llm"
+
+# 特殊大版本划分集中维护；不支持的规则在记录中显式标未知并转官方资料。
+software_version_rules:
+  postgresql:
+    rule: "postgresql"
+    source: "https://www.postgresql.org/support/versioning/"
 
 # 软件版本无法确定时的占位值
 unknown_version: "latest"
@@ -23,7 +45,7 @@ unknown_version: "latest"
 install_file: "{{software}}-install.md"
 verify_file: "{{software}}-verify.md"
 target_os: "ubuntu"
-default_ubuntu_version: "auto"                 # auto = 自动探测当前机器
+default_ubuntu_version: "auto"                 # auto = 从目标规格/基础镜像或目标机器只读探测；未知则不复用
 clone_workdir_prefix: "/tmp/deploy-guide-"      # git clone 临时目录前缀（仅阅读文档）
 
 # --- deploy-install 输出文件名（位于 output_dir 下；输入 = output_dir + install_file） ---
@@ -39,6 +61,7 @@ verify_issues_file: "{{software}}-verify-issues.md"
 archive_result_file: "{{software}}-archive-result.md"
 deploy_list_file: "{{software}}-deploy-list.md"
 archive_issues_file: "{{software}}-archive-issues.md"
+pipeline_result_file: "{{software}}-pipeline-result.md"
 
 # --- rpm-check（已有 RPM 包在目标 OS 的可安装性验证；输入=操作指导） ---
 # 输出落 rpmcheck/{{target_image}}/ 树——按目标镜像分目录，不与 rpm-build/

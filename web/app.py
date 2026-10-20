@@ -22,6 +22,7 @@ import os
 import secrets
 import subprocess
 import time
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -29,6 +30,8 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+
+from deploy_records import RecordStore
 
 from . import artifacts as artifacts_mod
 from . import audit as audit_mod
@@ -106,7 +109,8 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
                obs_upload_zip_fn=None, obs_health_fn=None,
                ecs_list_fn=None, ecs_check_fn=None, ecs_create_fn=None, ecs_defaults_fn=None,
     state_path=None, title_factory=None, max_parallel_runs=None, task_dir=None,
-    users_path=None, audit_dir=None, auth_secret=None, default_owner=None):
+    users_path=None, audit_dir=None, auth_secret=None, default_owner=None,
+    record_store=None):
     """session_factory 可注入：生产为 ClaudeSDKClient 真实现（默认），
     测试注入按剧本推消息的假实现——注入边界即唯一测试缝。artifact_roots
     （根名 → 目录映射）与 deploy_config 同理注入（产物目录与文件名约定
@@ -125,7 +129,8 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     为控制审计目录（默认 HOME 下固定位置），auth_secret 为认证签名密钥
     （默认 WEB_AUTH_SECRET，再缺省机器派生——三者皆为测试缝）。default_owner
     为 legacy 无 owner 会话的迁移归属（默认 WEB_DEFAULT_OWNER，再缺省
-    admin；测试缝）。"""
+    admin；测试缝）。record_store 可注入制作记录读取入口；默认按 deploy 根
+    的项目目录和同一 deploy_config 构造。"""
     # 已知凭据值入脱敏清单（幂等；scope 缺失时只剩形状正则防线）
     redact_mod.load_scope_secrets(scope_config or DEFAULT_SCOPE_CONFIG)
     app = FastAPI(title="auto-image deploy web")
@@ -280,10 +285,15 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
             )
         return None
 
-    def start_turn(run, text):
+    def start_turn(run, text, call_id, task_id=None):
         """起回合任务（回合校验通过并置位后调用）：按回合开合连接，
         收尾即散；任务引用挂 run 供 stop / end 定向。"""
-        run.turn_task = asyncio.create_task(run_turn(run, text, factory, store, on_change=persist))
+        context = {"run_id": run.run_id, "call_id": call_id, "task_id": task_id}
+
+        def turn_factory(start):
+            return factory(replace(start, call_context=context))
+
+        run.turn_task = asyncio.create_task(run_turn(run, text, turn_factory, store, on_change=persist))
 
     # 服务重启语义：全量 transcript 重放恢复所有会话（可续聊），state 簿记
     # （墓碑 + 身份映射 + 克隆链镜像 + owner 归属，带显式版本）叠加；未收尾
@@ -346,10 +356,20 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     # 事件不进任务面（历史不是新事实）；重启前未收尾的任务在 recover 里按
     # interrupted 定格。观察者异常被 EventStore 吞掉，绝不影响回合执行。
     task_store = tasks_mod.TaskStore(
-        Path(task_dir) if task_dir is not None else DEFAULT_TASK_DIR, artifact_roots)
+        Path(task_dir) if task_dir is not None else DEFAULT_TASK_DIR, artifact_roots,
+        record_store=(record_store if record_store is not None else RecordStore(
+            artifact_roots.get("deploy", DEFAULT_ARTIFACT_ROOTS["deploy"]).parent,
+            config_path=deploy_config)))
     task_store.recover()
     store.add_observer(task_store.handle_event)
     app.state.task_store = task_store
+
+    def create_call_or_503(run_id, task_id=None):
+        try:
+            return task_store.create_call(run_id, task_id)
+        except OSError as exc:
+            logging.getLogger("web").warning("调用身份持久化失败，拒绝执行", exc_info=True)
+            raise HTTPException(status_code=503, detail="call identity persistence unavailable") from exc
 
     # ---------- 认证端点 ----------
 
@@ -640,6 +660,7 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
             _audit_denied(request, "create_run", run, reason=exc.detail)
             raise HTTPException(status_code=409, detail=exc.detail) from exc
         _persist_or_503()  # 归属落盘门先于审计：审计记成功后动作必然执行
+        call_id = create_call_or_503(run.run_id, task_id)
         # 两段审计（create_run + send）全部前置到任何置位之前：任一门失败
         # 503 都不留下已注册/已置位的半执行会话
         _audit_or_503(actor=request.state.username, action="create_run",
@@ -652,13 +673,13 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
         store.create(run.run_id)
         store.append(run.run_id, "session.started", {})
         manager.commit_turn(run, prompt)
-        store.append(run.run_id, "turn.started", {})
-        store.append(run.run_id, "user.message", {"text": prompt})
+        store.append(run.run_id, "turn.started", {"call_id": call_id})
+        store.append(run.run_id, "user.message", {"text": prompt, "call_id": call_id})
         maybe_assign_title(run, prompt, True)
         task_store.mark_running(task_id, run.run_id, prompt)
         persist()
-        start_turn(run, prompt)
-        return {"task_id": task_id, "run_id": run.run_id, "status": "RUNNING"}
+        start_turn(run, prompt, call_id, task_id)
+        return {"task_id": task_id, "run_id": run.run_id, "call_id": call_id, "status": "RUNNING"}
 
     @app.post("/api/runs/{run_id}/messages")
     async def send_message(run_id: str, request: Request, body: dict):
@@ -676,18 +697,19 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
             raise HTTPException(status_code=409, detail=exc.detail) from exc
         # 发送审计：指令内容不入审计，只记长度与摘要 hash（meta）
         _persist_or_503()  # 归属落盘门先于置位与审计：失败不留半执行回合
+        call_id = create_call_or_503(run.run_id)
         _audit_or_503(actor=actor, action="send", result="success",
                       request_id=request_id(request), run_id=run.run_id,
                       run_owner=run.owner, meta=_prompt_meta(text))
         manager.commit_turn(run, text)
         # 接受指令与开卷事件是同一个同步段：成功响应一旦返回，随后到达的
         # stop 必然排在这两条事实之后，不依赖异步回合任务是否已获调度。
-        store.append(run.run_id, "turn.started", {})
-        store.append(run.run_id, "user.message", {"text": text})
+        store.append(run.run_id, "turn.started", {"call_id": call_id})
+        store.append(run.run_id, "user.message", {"text": text, "call_id": call_id})
         persist()
         maybe_assign_title(run, text, is_first)
-        start_turn(run, text)
-        return {"run_id": run.run_id, "status": run.status}
+        start_turn(run, text, call_id)
+        return {"run_id": run.run_id, "call_id": call_id, "status": run.status}
 
     @app.post("/api/runs/{run_id}/stop")
     async def stop_run(run_id: str, request: Request, body: dict | None = None):

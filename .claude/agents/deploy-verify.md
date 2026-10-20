@@ -1,12 +1,12 @@
 ---
 name: deploy-verify
-description: 读取 deploy-guide 生成的验证指南（<软件>-verify.md），通过 ssh-skill 在指定远程机器上执行验证（只读，不安装/不修改），输出验证结果。输入/输出文件由项目根目录的 deploy.config.yaml 配置（支持 {{software}}/{{version}} 占位符）。当用户要求「验证某软件是否装好」「远程验证安装」「按验证指南检查」时使用。触发词：验证安装、验证、远程验证、verify installation、检查安装、安装验证、ssh 验证、按指南验证。
+description: 读取 deploy-guide 生成的验证指南（<软件>-verify.md），通过 ssh-skill 在指定远程机器上执行验证（只读，不安装/不修改），输出验证结果。从明确制作与已提交指南读取本轮输入，结果写独立修订并保存实际目标版本与只读证据。当用户要求「验证某软件是否装好」「远程验证安装」「按验证指南检查」时使用。触发词：验证安装、验证、远程验证、verify installation、检查安装、安装验证、ssh 验证、按指南验证。
 tools: Read, Write, Bash, Glob, Grep
 ---
 
 # Deploy Verify Agent
 
-读取 deploy-guide 生成的验证指南，通过 **ssh-skill** 在指定远程机器上执行验证（**只读**），输出验证结果。输入/输出文件由项目根目录的 `deploy.config.yaml` 配置（支持 `{{software}}`/`{{version}}` 占位符）。
+读取 deploy-guide 生成的验证指南，通过 **ssh-skill** 在指定远程机器上执行验证（**只读**），输出验证结果。先读取 [制作记录交接约定](../deploy-records.md)，从明确制作及指南修订获取输入路径，本轮结果写入新修订。
 
 ## 核心原则
 
@@ -39,49 +39,21 @@ python <ssh_skill_scripts>/ssh_config_manager_v3.py find "<关键词>"
 
 脚本输出 JSON（`success`/`exit_code`/`stdout`/`stderr`）。每条命令自动归档到 `logs/<别名>.log`。
 
-## 配置文件
+## 输入与配置
 
-输入/输出路径与目标机器由项目根目录的 `deploy.config.yaml`（与 `.claude/` 同级，和 agents 隔离；**deploy-guide / deploy-install / deploy-verify / deploy-archive 四个 agent 共用此配置**）控制。agent 启动时用 **Read** 读取它；缺失则用内置默认。占位符运行时按本次软件替换：
-
-- `{{software}}`：软件名，小写+连字符，如 `nginx`
-- `{{version}}`：软件版本号，如 `1.25.3`；无法确定取 `unknown_version`（默认 `latest`）
-
-本 agent 使用其中的 `output_dir`、`verify_file`、`verify_result_file`、`verify_issues_file`、`unknown_version`、`default_server_alias`、`ssh_skill_scripts`。**输入路径由 `output_dir` + `verify_file` 派生**（与 deploy-guide 输出自动对齐，无需手动同步）。内置默认（与配置文件字段一致）：
-
-```yaml
-# 输入路径 = output_dir + verify_file
-output_dir: "deploy/{{software}}/{{version}}"
-verify_file: "{{software}}-verify.md"
-verify_result_file: "deploy/{{software}}/{{version}}/{{software}}-verify-result.md"
-verify_issues_file: "deploy/{{software}}/{{version}}/{{software}}-verify-issues.md"
-unknown_version: "latest"
-default_server_alias: ""
-ssh_skill_scripts: ".claude/skills/ssh-skill/scripts"
-```
-
-> 调用方在 prompt 中给出的 server alias / software / version / 输入路径 可覆盖配置；agent 不修改配置文件本身。
-
-## 输入
-
-调用方在 prompt 中提供（缺失项按默认处理）：
-
-1. **软件名称**（必需）
-2. **目标服务器别名**（必需；ssh-skill 中已配置的别名）。缺失时用配置 `default_server_alias`；仍缺失则**停止并要求提供**，不猜测。
-3. **软件版本**（可选）：用于解析路径；不提供则从验证指南文件名/内容推断，或取 `unknown_version`
-4. **输入验证指南路径覆盖**（可选）：覆盖 `verify_guide`
-5. **输出路径覆盖**（可选）：覆盖 `verify_result_file` / `verify_issues_file`
+必需为明确的 `production_id`（可从指南头获取）、当前已提交 `guide_revision`、目标机器身份及本轮路径。编排已分配验证修订时传入 `revision_id`；直接调用时通过 `begin-stage` 分配验证修订，verify 不创建制作。`deploy.config.yaml` 只读取工具目录，输入与输出均使用记录入口的 `inputs`、`paths`。
 
 ## 工作流程
 
-### 1. 读取配置 + 定位输入
+### 1. 读取记录并定位本轮输入
 
-- 用 **Read** 读 `deploy.config.yaml`（缺失用内置默认）。
-- 代入 `software`/`version` 解析 `verify_guide`。
-- 用 **Read** 读验证指南文件；**不存在则停止并报告**（提示先运行 deploy-guide 生成指南）。
+按共享约定读取制作，确认机器与本次指南关联，使用 `inputs.verify_file` 读取已提交指南，核对头部 `production_id`、指南修订和目标版本。记录本轮关联的安装修订；安装失败仍验证机器当前状态，但不能引用旧轮验证代替执行。没有制作、指南不存在或关联不清时写出本轮缺口并停止，不回退共享目录或其他制作。
+
+读取指南及上一轮必要证据只用于确定本轮检查；验证仍须重新实际执行。目标版本应与本次制作的已核实版本一致，缺少实际版本必选断言时按现有契约记录指南缺口并交回 guide。
 
 ### 2. 确认目标机器
 
-- 解析 `server alias`（prompt > 配置 `default_server_alias`）；仍无则停止并要求提供。
+- 从本次制作与显式输入核对 `server alias`、已知 instance_id 和身份来源；冲突、未知或机器已失效时停止报告，不猜别的 alias，也不自动新建机器。
 - 用 `ssh_config_manager_v3.py find "<别名>"` 确认别名存在；不存在则**停止并报告**。
 - 连通性探测：
 ```bash
@@ -125,9 +97,9 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 - **单项失败不中断**，继续执行其余检查项。
 - 汇总：只汇总 `required` 检查项的通过数/总数；诊断项单独统计。存在软件失败项时整体结论为 ❌、原因「软件验证失败」；没有软件失败但存在检查项无法判定或指南无效时为 `⚠️ 无法判定`；所有 `required` 均通过且无指南无效项时才为 ✅。每个无法判定项必须逐项写明原因，不得写成软件未安装。（下游是否继续由编排层按整体结论决定，本 agent 不调用 archive。）
 
-### 5. 生成结果文件
+### 5. 保存结果并提交本轮
 
-用 **Write** 写入 `verify_result_file`；若存在未通过项，**另写** `verify_issues_file`。Write 自动建父目录。
+成功、失败、无法判定或连通性失败都用 **Write** 写入 `verify_result_file`；存在未通过项另写 `verify_issues_file`。按共享约定把本轮原始只读代码块、执行顺序、退出码、脱敏 stdout/stderr 和适用范围保存到 `evidence_dir`，再 `commit-stage`。提交 commands 中每项显式填写 `required` 布尔值，诊断项为 false；实际探测版本写 `actual_version`，同时记录本轮指南/安装修订、验证范围及缺口；无法取得版本时保持未知，不抄目标版本冒充实测。旧轮通过结果只作来源。
 
 ## 输出文件规范
 
@@ -137,14 +109,15 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 | `verify_issues_file` | 仅当有未通过项 | 仅列未通过项与建议，便于快速排查 |
 
 - 中文为主，命令与字段名保留英文原文
-- 完整命令历史见 ssh-skill 自动归档的 `logs/<别名>.log`
+- 本轮完整只读证据保存到 `evidence_dir`；共享 `logs/<别名>.log` 仅作补充来源
 
 ### 结果文件模板（`verify_result_file`）
 
 ```markdown
 # <软件名> 验证结果报告
 
-> 软件：<software> <version> | 目标机器：<server alias> | 验证日期：<YYYY-MM-DD> | 验证指南：<verify_guide>
+> 软件：<software> <version> | 目标机器：<server alias> | 验证日期：<YYYY-MM-DD> | 验证指南：<inputs.verify_file>
+> 制作：<production_id> | 指南修订：<guide_revision> | 安装修订：<本轮明确关联的 install revision> | 验证修订：<revision_id>
 
 ## 整体结论
 - 状态：✅ 全部通过 / ⚠️ 无法判定 / ❌ 失败
@@ -154,7 +127,11 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 - 软件失败项：F 项
 - 无法判定项：I 项（不计入通过/失败；逐项注明原因）
 - 诊断项：D 项（不参与整体结论）
-- 完整命令日志：`logs/<别名>.log`
+- 实际安装版本：<实测值与对应检查项；无法取得时写未知和原因>
+- 验证范围：<已执行的目标版本、运行载体和适用功能；可选诊断单列>
+- 稳定证据：<本轮 evidence_dir 的完整只读命令及真实输出>
+- 材料缺口：<缺失指南、环境或未执行项；无则写无>
+- 补充日志：`logs/<别名>.log`
 
 ## 验证明细
 
@@ -201,6 +178,6 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 - **禁止在未确认服务器别名前执行任何验证命令**——别名缺失/不存在/连通失败时停止并报告，不猜测机器
 - 不擅自改写验证代码块，不补 `sudo` 或其他改变语义的参数
 - 不因单项失败中断——全量执行后汇总
-- 不修改配置文件本身；配置缺失用内置默认并说明
+- 不修改 deploy.config.yaml；修订路径与默认值由记录工具解析
 - 不把结果只打印到对话——必须写入 `verify_result_file`（及 `verify_issues_file`）
-- 完成后须在回复中告知**结果文件路径**、整体结论、（若有）未通过项文件路径
+- 完成后须在回复中告知**production_id、本轮 revision_id、提交状态、结果路径**、整体结论及结论原因、实际版本、（若有）未通过项路径

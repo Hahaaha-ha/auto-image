@@ -250,6 +250,9 @@ async def test_archive_zip_shape_and_packing():
         out.mkdir(parents=True)
         (out / "a.md").write_text("# a\n", encoding="utf-8")
         (out / "b.md").write_text("# b\n", encoding="utf-8")
+        second = out / "runs" / "prod-second"
+        second.mkdir(parents=True)
+        (second / "a.md").write_text("# second production\n", encoding="utf-8")
         seen = {}
 
         def fake_upload(key, data):
@@ -260,19 +263,26 @@ async def test_archive_zip_shape_and_packing():
             artifact_roots={"deploy": root / "deploy"}, obs_upload_zip_fn=fake_upload,
         )) as client:
             r = await client.post("/api/obs/archive-zip", json={
-                "paths": ["deploy/lobechat/a.md", "deploy/lobechat/b.md", "deploy/absent.md"],
+                "paths": ["deploy/lobechat/a.md", "deploy/lobechat/b.md",
+                          "deploy/lobechat/runs/prod-second/a.md", "deploy/lobechat/a.md",
+                          "deploy/absent.md"],
                 "name": "bundle.zip",
             })
             assert r.status_code == 200, r.text
             data = r.json()
             assert data["key"] == "zip/bundle.zip"
-            assert data["zipped"] == 2  # 缺失项跳过，计数如实
-            assert data["sources"] == ["deploy/lobechat/a.md", "deploy/lobechat/b.md", "deploy/absent.md"]
+            assert data["zipped"] == 3  # 相同路径去重，跨制作同名保留，缺失项跳过
+            assert data["sources"] == ["deploy/lobechat/a.md", "deploy/lobechat/b.md",
+                                       "deploy/lobechat/runs/prod-second/a.md",
+                                       "deploy/lobechat/a.md", "deploy/absent.md"]
             assert seen["key"] == "zip/bundle.zip"
             assert seen["data"][:2] == b"PK"  # 真 zip 字节流
             import io, zipfile
             zf = zipfile.ZipFile(io.BytesIO(seen["data"]))
-            assert sorted(zf.namelist()) == ["a.md", "b.md"]  # 平铺文件名，不带目录树
+            assert zf.namelist() == ["deploy/lobechat/a.md", "deploy/lobechat/b.md",
+                                     "deploy/lobechat/runs/prod-second/a.md"]
+            assert zf.read("deploy/lobechat/a.md") == b"# a\n"
+            assert zf.read("deploy/lobechat/runs/prod-second/a.md") == b"# second production\n"
 
 
 async def test_archive_zip_missing_and_not_configured():

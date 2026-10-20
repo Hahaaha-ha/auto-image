@@ -9,8 +9,8 @@ function ArtifactShell({ artifact, relPath, onDownload, downloadLabel, children 
     <div className="va-artifact">
       <div className="va-artifact-head">
         {artifact.stage && <StageBadge stage={artifact.stage} />}
-        <span className="va-artifact-name">{artifact.name}</span>
-        <span className="va-artifact-dir">{artifact.dir}</span>
+        <span className="va-artifact-name" title={artifact.name}>{artifact.name}</span>
+        <span className="va-artifact-dir" title={artifact.dir}>{artifact.dir}</span>
         <button
           className="va-artifact-dl"
           onClick={() => onDownload(relPath)}

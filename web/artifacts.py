@@ -21,6 +21,8 @@ from pathlib import Path, PurePosixPath
 
 import yaml
 
+from deploy_records.contract import is_control_file
+
 from .normalize import ARCHIVE, BUILD, GUIDE, INSTALL, VERIFY
 
 # deploy.config.yaml 的产物文件键 → 所属阶段（config 是文件名的唯一权威源，
@@ -85,8 +87,8 @@ def load_file_stages(config_path):
     for key, stage in CONFIG_KEY_STAGES.items():
         pattern = data[key]
         suffixes.append((pattern.replace("{{software}}", ""), stage))
-    # 流水线汇总由 deploy skill 编排层直接落盘（不进 deploy.config.yaml）
-    suffixes.append(("-pipeline-result.md", ARCHIVE))
+    # 旧配置尚无 pipeline_result_file 时兼容既有命名。
+    suffixes.append((data.get("pipeline_result_file", "{{software}}-pipeline-result.md").replace("{{software}}", ""), ARCHIVE))
     suffixes.extend(RPM_FILE_STAGES)
     return tuple(suffixes)
 
@@ -114,6 +116,8 @@ def browse(artifact_roots, file_stages):
             rel_dir = Path(dirpath).relative_to(root_path).as_posix()
             group_dir = f"{root_name}/{rel_dir}" if rel_dir != "." else root_name
             for name in filenames:
+                if is_control_file(name):
+                    continue
                 try:
                     stat = os.stat(Path(dirpath) / name)
                 except OSError:
@@ -139,7 +143,7 @@ def resolve(artifact_roots, file_stages, rel_path):
     if not rel_path or Path(rel_path).is_absolute():
         return None  # 绝对路径与空串前置拒绝（Path / "/abs" 会整体替换根）
     parts = PurePosixPath(rel_path).parts
-    if ".." in parts:
+    if ".." in parts or any(is_control_file(part) for part in parts):
         return None  # 目录段夹带 .. 前置拒绝（resolve 兜底之外的显式语义）
     root_path = artifact_roots.get(parts[0])
     if root_path is None or len(parts) < 2:
@@ -164,11 +168,10 @@ def read(artifact_roots, file_stages, rel_path):
 
 
 def zip_files(artifact_roots, file_stages, rel_paths):
-    """批量打包：给定 rel_paths（根前缀）产出一个内存 zip。包内不带目录
-    结构——文件一律按自身文件名平铺在 zip 根层（完整相对路径层级太深，
-    解包即得文件本体）。仅收录根内存在的普通文件，缺失/越界/未知根如实
-    跳过；按包内文件名去重、保持给定顺序（不同目录的同名文件首个胜出、
-    后者跳过——同名 zip 条目解包行为因工具而异，不留歧义）。返回
+    """批量打包：包内保留含根名前缀的相对路径，各制作同名文件均保留。
+
+    仅收录根内存在的普通文件，缺失/越界/未知根如实跳过；只对相同相对
+    路径去重，保持给定顺序。下载与 OBS 单包上传共用此入口。返回
     (zip 字节流, 收录数)；一个都没收到返回 (None, 0)。"""
     buf = io.BytesIO()
     seen = set()
@@ -179,7 +182,7 @@ def zip_files(artifact_roots, file_stages, rel_paths):
             if found is None:
                 continue
             _entry, target = found
-            arcname = target.name
+            arcname = PurePosixPath(rel).as_posix()
             if arcname in seen:
                 continue
             seen.add(arcname)

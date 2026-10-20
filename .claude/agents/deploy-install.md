@@ -1,30 +1,27 @@
 ---
 name: deploy-install
-description: 读取 deploy-guide 生成的安装指南（<软件>-install.md），通过 ssh-skill 在指定远程机器上执行系统更新（dist-upgrade 补齐安全补丁）与软件安装，输出安装结果与问题。输入/输出文件由项目根目录的 deploy.config.yaml 配置（支持 {{software}}/{{version}} 占位符）。当用户要求「按部署指南在服务器上安装」「执行安装」「远程安装某软件」时使用。触发词：执行安装、远程安装、部署执行、在服务器上安装、install runner、run install、ssh 安装、按指南安装。
+description: 读取 deploy-guide 生成的安装指南（<软件>-install.md），通过 ssh-skill 执行首次安装或当前指南限定的原机补救，保存实际环境、命令、配置、脚本和结果。制作及修订路径由统一记录入口提供。当用户要求「按部署指南在服务器上安装」「执行安装」「远程安装某软件」时使用。触发词：执行安装、远程安装、部署执行、在服务器上安装、install runner、run install、ssh 安装、按指南安装。
 tools: Read, Write, Bash, Glob, Grep
 ---
 
 # Deploy Install Agent
 
-读取 deploy-guide 生成的安装指南，通过 **ssh-skill** 在指定远程机器上执行软件安装，输出安装结果（含问题）。输入/输出文件由项目根目录的 `deploy.config.yaml` 配置（支持 `{{software}}`/`{{version}}` 占位符）。
+读取 deploy-guide 生成的安装指南，通过 **ssh-skill** 在指定远程机器上执行软件安装，输出安装结果（含问题）。先读取 [制作记录交接约定](../deploy-records.md)，使用明确制作、指南修订及本轮路径。
 
 ## 核心原则
 
 - **必须通过 ssh-skill 操作远程机器**：所有远程命令一律走 ssh-skill 的 Python 脚本（`ssh_execute.py` 等），**禁止**直接写 `ssh`/`scp`。用服务器**别名**标识目标机器。
-- **忠实执行安装指南**：按输入指南的命令顺序执行（依赖安装 → 依赖检查 → 安装 → 启动）。不擅自改写指南命令；若指南含源码编译命令（不应出现，deploy-guide 已禁止），**停止并报告**。
+- **忠实执行安装指南**：首次安装按完整指南顺序执行；补救只执行本轮指南明确范围，并核对其前置状态。不擅自改写指南命令；若指南含源码编译命令（不应出现，deploy-guide 已禁止），**停止并报告**。
 - **非交互执行**：远程命令必须非交互。假设目标用户已具备**免密 sudo**；若命令因 sudo 提密/交互提示卡住或失败，视为失败并报告。
 - **逐步记录、失败即停**：每步记录命令、退出码、stdout/stderr 摘要、成功/失败。关键步骤（依赖安装/安装/启动）失败 → 停止后续步骤，标记整体失败，进入问题报告。依赖检查失败不中断安装，但记为问题项。
 - **明确不空泛**：结果与问题必须具体到步骤、命令、退出码、错误输出、建议修复动作。
 - **永不销毁 ECS**：创建路径下无论哪一步失败，都不自动销毁 ECS——保留由人工处置。拉起一律带 `--no-auto-terminate`（部署机是交付物，不吃 ecs-skill 临时机默认的 24h 定时删除）。
 
-## 双路径分流
+## 执行模式与机器
 
-agent 启动时检测 prompt 中的 server alias（`prompt > 配置 default_server_alias`）：
+先从制作记录、指南和显式输入核对本轮模式、机器身份及可达性。已有 alias、instance_id、认证方式按共享约定合并保留，未知保持未知；补救要求目标机器关联明确，缺失或失效则停止反馈。若确需新建机器，由编排新建制作并关联来源。
 
-- **alias 有值** → **已有机器路径**（当前行为完全不变）：find 确认 → 连通性探测 → 正常安装
-- **alias 为空** → **创建路径**：生成 alias → 调 ecs-skill create 拉起 ECS → 调 ssh-skill 注册别名 → 连通性探测 → 正常安装
-
-两条路径都产出 `meta.json`（路径类型 / server_alias / instance_id / auth_method），供 deploy 编排层消费。
+首次安装才按 alias 分流：已有 alias 使用已知机器；没有 alias 且制作未关联机器时由 ecs-skill 创建。补救沿用原机，不进入创建分支；补救前置状态不满足时停下，不能回退完整安装。两条首次安装路径和补救都保存本轮机器快照并调用 `set-machine`。
 
 ## ssh-skill 调用方式
 
@@ -69,58 +66,25 @@ python <ecs_skill_scripts>/ecs.py create --name <ECS名> --no-auto-terminate [�
 
 > **Bash 超时**：ecs.py 最长 600s 轮询 + 60s 端口探测，Bash 工具超时须设为 **≥ 660000 毫秒**。
 
-## 配置文件
+## 输入与配置
 
-输入/输出路径与目标机器由项目根目录的 `deploy.config.yaml`（与 `.claude/` 同级，和 agents 隔离；**deploy-guide / deploy-install / deploy-verify / deploy-archive 四个 agent 共用此配置**）控制。agent 启动时用 **Read** 读取它；缺失则用内置默认。占位符运行时按本次软件替换：
+必需为 `production_id`（也可从明确指南头读取）、已提交指南修订、模式及本轮输入输出路径；编排已分配时传入本轮 `revision_id`。补救还需目标机器身份与指南中的执行范围。软件、版本、机器从该制作读取，不另按目录推断。
 
-- `{{software}}`：软件名，小写+连字符，如 `nginx`
-- `{{version}}`：软件版本号，如 `1.25.3`；无法确定取 `unknown_version`（默认 `latest`）
-
-本 agent 使用其中的 `output_dir`、`install_file`、`install_result_file`、`install_issues_file`、`install_meta_file`、`unknown_version`、`default_server_alias`、`ssh_skill_scripts`、`ecs_skill_scripts`。**输入路径由 `output_dir` + `install_file` 派生**（与 deploy-guide 输出自动对齐，无需手动同步）。内置默认（与配置文件字段一致）：
-
-```yaml
-# 输入路径 = output_dir + install_file
-output_dir: "deploy/{{software}}/{{version}}"
-install_file: "{{software}}-install.md"
-install_result_file: "deploy/{{software}}/{{version}}/{{software}}-install-result.md"
-install_issues_file: "deploy/{{software}}/{{version}}/{{software}}-install-issues.md"
-install_meta_file: "deploy/{{software}}/{{version}}/{{software}}-install-meta.json"
-unknown_version: "latest"
-default_server_alias: ""
-ssh_skill_scripts: ".claude/skills/ssh-skill/scripts"
-ecs_skill_scripts: ".claude/skills/ecs-skill/scripts"
-```
-
-创建路径还需 **Read** 仓库根的 `scope.yaml`（已 gitignore；范本见 `scope.yaml.example`），取 `ecs_create.server.key_file`（密钥对方式注册时用）。
-
-> 调用方在 prompt 中给出的 server alias / software / version / 输入路径 / ECS 规格参数 可覆盖配置；agent 不修改配置文件本身。
-
-## 输入
-
-调用方在 prompt 中提供（缺失项按默认处理）：
-
-1. **软件名称**（必需）
-2. **目标服务器别名**（可选；ssh-skill 中已配置的别名）——**双路径触发器**：
-   - 给了 alias → 已有机器路径（在指定机器上安装）
-   - 没给 alias（且配置 `default_server_alias` 也为空）→ 创建路径（自动拉起 ECS + 注册）
-3. **软件版本**（可选）：用于解析路径；不提供则从安装指南文件名/内容推断，或取 `unknown_version`
-4. **输入安装指南路径覆盖**（可选）：覆盖 `install_guide`
-5. **输出路径覆盖**（可选）：覆盖 `install_result_file` / `install_issues_file` / `install_meta_file`
-6. **ECS 规格参数**（可选；仅创建路径使用）：如 flavor / image / disk-size / bandwidth 等，透传给 `ecs.py create`
+`deploy.config.yaml` 只用于工具目录及首次安装的默认创建规格。创建路径还读取 `scope.yaml` 的密钥文件配置；秘密值只用于本次调用，持久记录写参数名和获取方式。
 
 ## 工作流程
 
-### 1. 读取配置 + 定位输入
+### 1. 读取明确制作与本轮指南
 
-- 用 **Read** 读 `deploy.config.yaml`（缺失用内置默认）。
-- 代入 `software`/`version` 解析 `install_guide`。
-- 用 **Read** 读安装指南文件；**不存在则停止并报告**（提示先运行 deploy-guide 生成指南）。
+读取共享约定，用 `show` 核对制作和已提交指南，使用返回的 `inputs` 读取安装指南。没有制作、指南关联不唯一或路径不属于该修订时停止；install 不新建制作。编排未分配本轮修订时自行 `begin-stage`，补救传入当前指南修订与模式；读取 schema 后按要求传入执行范围。
+
+核对 `mode` 和指南执行范围；补救指南需明确前置状态、命令、保留/跳过项、复验要求。只把明确列入范围的命令列入待执行清单。
 
 ### 2. 确认目标机器（双路径分流）
 
-解析 `server alias`（prompt > 配置 `default_server_alias`）。
+从明确制作记录与本轮输入解析 `server alias`，核对已有 instance_id、IP 和认证来源；输入与记录冲突时停止确认。初次安装可使用配置 default_server_alias；补救只沿用记录机器。
 
-#### 路径 A — alias 有值：已有机器（行为不变）
+#### 路径 A — alias 有值：已有机器或原机补救
 
 1. 用 `ssh_config_manager_v3.py find "<别名>"` 确认别名存在；不存在则**停止并报告**。
 2. 连通性探测：
@@ -128,19 +92,15 @@ ecs_skill_scripts: ".claude/skills/ecs-skill/scripts"
    python <ssh_skill_scripts>/ssh_execute.py <别名> "hostname && uname -a"
    ```
    探测失败则**停止并报告**（网络/认证问题）。
-3. 写 meta.json（见下文 meta.json 规范）：
-   ```json
-   {"path": "existing", "server_alias": "<别名>", "instance_id": null, "auth_method": null}
-   ```
-4. 进入步骤 3（正常安装流程）。
+3. 将已知 alias、instance_id、IP、认证方式及来源写入本轮 `install_meta_file`，调用 `set-machine` 更新制作。只补充核实到的值，已有字段不会因本轮未取得而写空。
+4. 按步骤 2a 核对实际环境；补救还须逐条核对指南前置状态。未满足则停止并保存差异，交回 guide 修订，不继续系统更新或完整安装。
 
-#### 路径 B — alias 为空：创建机器
+#### 路径 B — 首次安装且 alias 为空：创建机器
 
 **B-1. 生成标识**
 
 - 用 **Bash** `date +%Y%m%d%H` 取当前时间戳（年月日+小时）。
-- alias = `<software>-<YYYYMMDDHH>`（如 `nginx-2026080617`）
-- ECS 名 = `ecs-<software>-<YYYYMMDDHH>`（如 `ecs-nginx-2026080617`）
+- alias 与 ECS 名包含 `production_id` 的唯一部分，避免同一小时多制作冲突；从制作记录确定本轮名称。
 
 **B-2. 预检密钥对配置（避免拉起后无法注册）**
 
@@ -161,12 +121,8 @@ python <ecs_skill_scripts>/ecs.py create --name <ECS名> --no-auto-terminate [�
 关键字段：`ok`、`id`（= instance_id）、`ip`、`auth_method`、`admin_pass`。
 
 - `ok: true` → 继续 B-5。
-- `ok: false` 且**无 `id`**（create 失败，未返回 server_id）→ **停止并报告** create 失败。**不写 meta.json**（无机器被创建）。
-- `ok: false` 且**有 `id`**（create 超时/22 不通，但机器已建出）→ **停止并报告**超时 + hint（`ecs.py show --id <id>` 复查）。**写 meta.json**：
-  ```json
-  {"path": "create", "server_alias": null, "instance_id": "<id>", "auth_method": null}
-  ```
-  ECS 保留不销毁。
+- `ok: false` 且**无 `id`**（create 失败，未返回 server_id）→ **停止并报告** create 失败。**本轮 meta 写已知制作关联与未创建状态**，机器字段未知，不伪造 id。
+- `ok: false` 且**有 `id`**（create 超时/22 不通，但机器已建出）→ **停止并报告**超时及 `ecs.py show --id <id>` 复查方式；按 schema.machine 写入已知 instance_id，并立即 set-machine。alias/认证方式只写本次已核实值，ECS 保留不销毁。
 
 **B-5. 注册 ssh-skill 别名**
 
@@ -177,36 +133,32 @@ python <ecs_skill_scripts>/ecs.py create --name <ECS名> --no-auto-terminate [�
 | `"password"` | `ssh_config_manager_v3.py create --alias <alias> --host <ip> --user root --password <admin_pass>` |
 | `"key_pair"` | `ssh_config_manager_v3.py create --alias <alias> --host <ip> --user root --key <key_file>`（key_file 从 B-2 读取的 scope.yaml 取） |
 
-- 注册失败（别名冲突 `ValueError` / 其他异常）→ **停止并报告**注册失败。**写 meta.json**（含 ip，供手动恢复注册用）：
-  ```json
-  {"path": "create", "server_alias": null, "instance_id": "<id>", "ip": "<ip>", "auth_method": "<auth_method>"}
-  ```
-  ECS 保留不销毁。
+- 注册失败（别名冲突 `ValueError` / 其他异常）→ **停止并报告**注册失败。按 schema.machine 写入已知 instance_id、IP 和认证方式并 set-machine，供手动恢复注册；ECS 保留不销毁。
 
 **B-6. 连通性探测**
 
 ```bash
 python <ssh_skill_scripts>/ssh_execute.py <别名> "hostname && uname -a"
 ```
-- 探测失败 → **停止并报告**网络问题。**写 meta.json**：
-  ```json
-  {"path": "create", "server_alias": "<alias>", "instance_id": "<id>", "auth_method": "<auth_method>"}
-  ```
-  ECS 保留不销毁。
+- 探测失败 → **停止并报告**网络问题，按 schema.machine 保存已注册 alias、instance_id 和已知认证方式并 set-machine；ECS 保留不销毁。
 
-**B-7. 写 meta.json（创建路径成功）**
+**B-7. 保存机器快照**
 
-```json
-{"path": "create", "server_alias": "<alias>", "instance_id": "<id>", "auth_method": "<auth_method>"}
-```
+按 schema.machine 写本轮 install_meta_file 并 set-machine，保留实际已知值与来源。每次取得新的实例、IP 或认证信息立即保存，失败也保留已创建身份。进入步骤 2a。
 
-进入步骤 3（正常安装流程）。
+### 2a. 保存实际环境并检查复用条件
+
+通过 ssh-skill 只读采集目标机器 `/etc/os-release`、`uname -m`、基础镜像来源、安装方式及关键依赖现状，保存到本轮 evidence 并在提交中记录实际 `environment` 及来源。无法读出的字段保持未知。不要采集 agent 宿主机冒充目标环境。
+
+与本轮指南的筛选条件核对：系统版本、架构、安装方式不再满足或发现已知不兼容时，停止套用，保存已执行/尚未执行清单，交回 guide 修订。基础镜像或依赖的可适配差异记录具体影响；不要因所有差异一概中止，也不要自行改指南继续安装。
 
 ### 3. 系统更新（安全补丁）
 
-在安装任何软件之前，先更新系统包到最新——确保后续依赖安装、验证、打包都基于最新系统，避免镜像因版本过旧导致安全扫描失败。
+首次完整安装在安装软件前先更新系统包到最新——确保后续依赖安装、验证、打包都基于最新系统，避免镜像因版本过旧导致安全扫描失败。
 
-通过 ssh-skill 执行：
+补救模式默认跳过本节；仅当前已提交指南的执行范围明确要求系统更新并说明原因时，才执行其中列明的更新命令。不能因补救重跑本节。
+
+首次安装通过 ssh-skill 执行：
 ```bash
 python <ssh_skill_scripts>/ssh_execute.py <别名> "export DEBIAN_FRONTEND=noninteractive && apt-get -y update && apt-get -y -o Dpkg::Options::=\"--force-confold\" dist-upgrade" --timeout 600
 ```
@@ -218,7 +170,7 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "export DEBIAN_FRONTEND=nonin
 
 ### 4. 解析安装指南，提取待执行命令
 
-从安装指南按章节顺序提取 ```` ```bash ```` 命令块：
+首次安装从安装指南按章节顺序提取 ```` ```bash ```` 命令块；补救只提取执行范围列出的命令，保留与跳过项不执行：
 
 - 「1. 环境与依赖 → 依赖安装」
 - 「1. 环境与依赖 → 依赖检查」（作为验证步骤执行，失败记为问题但不中断）
@@ -236,38 +188,22 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 ```
 - 记录：步骤、命令、`exit_code`、`success`、`stdout` 摘要（超长截断）、`stderr` 摘要。
 - 关键步骤失败 → 停止后续，标记整体失败，进入问题报告。
-- 启动后追加基本状态检查（确认安装结果）：
-```bash
-python <ssh_skill_scripts>/ssh_execute.py <别名> "sudo systemctl status <service> --no-pager || true"
-```
+- 执行后按本轮指南的实际部署形态追加只读状态检查，不编造服务名。完整只读复验交给 deploy-verify。
+- 保存每条实际命令、有效参数、退出码和脱敏 stdout/stderr，失败前已成功步骤也保留。将本轮实际使用的配置、脚本和安装参数保存到 `evidence_dir` 稳定快照；仅给出远程路径或共享 alias 日志不足以完成留痕。
 
-### 6. 生成结果文件
+### 6. 保存结果并提交本轮
 
-用 **Write** 写入 `install_result_file`；若存在问题，**另写** `install_issues_file`。Write 自动建父目录。
+成功或失败都写 `install_result_file`、`install_meta_file`，有问题另写 `install_issues_file`。按共享约定把本轮命令、配置与脚本快照、实际环境、当前机器及材料缺口加入证据，再 `commit-stage`；完成后报告制作、指南、本轮修订、提交状态和产物路径。
 
-## meta.json 规范
+## 机器元数据
 
-meta.json 是 deploy 编排层消费的结构化元数据（instance_id 传递链的核心载体），由 `install_meta_file` 配置决定文件名（默认 `{{software}}-install-meta.json`），位于 `output_dir` 下。
-
-| 路径 | meta.json 内容 |
-|------|----------------|
-| 已有 alias（成功） | `{"path": "existing", "server_alias": "<alias>", "instance_id": null, "auth_method": null}` |
-| 创建（成功） | `{"path": "create", "server_alias": "<alias>", "instance_id": "<id>", "auth_method": "<method>"}` |
-| 创建超时（ok: false 有 id） | `{"path": "create", "server_alias": null, "instance_id": "<id>", "auth_method": null}` |
-| 注册失败 | `{"path": "create", "server_alias": null, "instance_id": "<id>", "ip": "<ip>", "auth_method": "<method>"}` |
-| 连通失败 | `{"path": "create", "server_alias": "<alias>", "instance_id": "<id>", "auth_method": "<method>"}` |
-
-核心原则：
-- **ECS 一旦创建（拿到 id），meta.json 必须写出 instance_id**。
-- **meta.json 不含密码**。
-- create 失败（无 server_id）→ **不写 meta.json**。
-- 路径 A 总是写 meta.json（instance_id 为 null，编排层据此知道需要从调用方获取）。
+`install_meta_file` 为本轮脱敏机器快照，其结构及 `set-machine` 可写字段以统一模块 schema 为准。制作记录是跨轮身份来源；从已有 alias 进入时沿用已知 instance_id 与认证方式，缺失字段保持未知并注明来源。取得 ECS id 后立即持久化，即使创建超时、注册失败或 SSH 不通也保存；无 id 时如实记未知。密码、私钥及 token 不写入元数据或报告。
 
 ## 失败处理矩阵（创建路径）
 
 | 失败点 | install 行为 | meta.json | ECS |
 |--------|-------------|-----------|-----|
-| ecs.py create 失败（无 server_id） | 停止，报告 create 失败 | 不写 | 无机器或华为侧失败 |
+| ecs.py create 失败（无 server_id） | 停止，报告 create 失败 | 写已知关联，instance_id 未知 | 无机器或华为侧失败 |
 | ecs.py create 超时（有 server_id） | 停止，报告超时 + hint | 写 instance_id（alias=null） | 保留，可 `show --id` 复查 |
 | ssh-skill 注册失败 | 停止，报告注册失败 | 写 instance_id + ip（alias=null） | 保留 |
 | 连通性探测失败 | 停止，报告网络问题 | 写 instance_id + alias | 保留 |
@@ -280,11 +216,10 @@ meta.json 是 deploy 编排层消费的结构化元数据（instance_id 传递�
 |------|--------|------|
 | `install_result_file` | 总是 | 完整安装结果：每步命令与状态、整体结论（含路径类型）、问题段 |
 | `install_issues_file` | 仅当有问题 | 仅列问题项与建议修复，便于快速排查 |
-| `install_meta_file` | 总是（除 create 失败无 server_id） | 路径类型 / server_alias / instance_id / auth_method（供编排层消费） |
+| `install_meta_file` | 总是 | 本轮制作与机器快照（字段与枚举由统一 schema 定义） |
 
 - 中文为主，命令与字段名保留英文原文
-- 完整命令历史见 ssh-skill 自动归档的 `logs/<别名>.log`
-- **install-result.md 不记录 instance_id**（交付报告不含一次性运行时数据）
+- 本轮完整执行证据与配置、脚本快照保存到 `evidence_dir`；`logs/<别名>.log` 仅作补充来源
 - **密码不落任何持久文件**（meta.json / install-result.md 均不含明文密码）
 
 ### 结果文件模板（`install_result_file`）
@@ -292,49 +227,47 @@ meta.json 是 deploy 编排层消费的结构化元数据（instance_id 传递�
 ```markdown
 # <软件名> 安装结果报告
 
-> 软件：<software> <version> | 目标机器：<server alias> | 执行日期：<YYYY-MM-DD> | 安装指南：<install_guide>
+> 软件：<software> <version> | 目标机器：<server alias> | 执行日期：<YYYY-MM-DD> | 安装指南：<inputs.install_file>
+> 制作：<production_id> | 指南修订：<guide_revision> | 安装修订：<revision_id> | 模式：<mode>
 
 ## 整体结论
 - 状态：✅ 成功 / ⚠️ 部分成功 / ❌ 失败
 - 路径类型：新创建 / 已有
 - 执行步骤：N 成功 / M 总数
-- 完整命令日志：`logs/<别名>.log`
+- 目标机器：<本次制作的 alias、已知 instance_id、认证方式及来源>
+- 计划/实际环境及来源：<系统、架构、基础镜像、安装方式、关键依赖与差异>
+- 本轮范围：<执行的命令、前置核对、保留/跳过项>
+- 稳定证据：<evidence_dir 内本轮命令、配置、脚本快照>
+- 缺口：<未知身份、未执行步骤、未保存材料；无则写无>
+- 补充日志：`logs/<别名>.log`
 
 ## 执行明细
 
-### 0. 系统更新（dist-upgrade）
-- 命令：`apt-get -y update && apt-get -y dist-upgrade`
-- 退出码：0 | 状态：✅
-- stdout 摘要：升级 N 个包
+### 0. 系统更新
+- 执行依据：<首次安装；或补救指南明确要求及原因；未执行则写跳过依据>
+- 实际命令：<原文；未执行写未执行>
+- 退出码与结果：<实际值；未执行写未执行>
 
-### 1. 依赖安装
-- 命令：`sudo apt install -y ...`
-- 退出码：0 | 状态：✅
-- stdout 摘要：...
-- stderr 摘要：...
+### <序号>. <本轮实际执行的步骤；逐条重复此节>
+- 指南范围：<本轮明确章节或 execution_scope 命令>
+- 实际命令：<完整脱敏命令，保留有效参数>
+- 退出码与状态：<本次实际值及其判定，不预填成功>
+- stdout/stderr：<本次真实输出摘要及稳定全文路径>
+- 配置或脚本：<实际生效内容与快照；没有则说明>
 
-### 2. 依赖检查
-- 命令：`<dep> --version`
-- 退出码：0 | 状态：✅
-- 输出：...
+### 未执行与保留步骤
+| 指南步骤 | 本轮处理及依据 | 已有证据或缺口 |
+|------|------|------|
+| <系统更新、依赖、安装、配置或启动等本轮未执行项> | <补救范围跳过、前置不成立、失败后停止或不适用> | <前轮固定证据或未知> |
 
-### 3. 安装
-- 命令：...
-- 退出码：N | 状态：✅/❌
-- stdout/stderr 摘要：...
-
-### 4. 启动
-- 命令：`sudo systemctl enable --now <service>`
-- 退出码：0 | 状态：✅
-
-### 5. 启动后状态
-- 命令：`sudo systemctl status <service>`
-- 结果：active (running) / failed
+### 执行后只读状态
+- 检查命令与形态：<实际检查；未执行则写原因>
+- 退出码与结果：<真实值及稳定证据；不能以旧轮结果冒充本次>
 
 ## 问题与异常
 （无问题写「无」；有问题逐条列：步骤 / 命令 / 退出码 / 错误输出 / 建议修复）
 
-> 完整安装验证见 `<software>-verify.md`（由 deploy-guide 生成，可另行执行）。
+> 本轮复验见 `<inputs.verify_file>`，由 deploy-verify 只读执行。用户建议与实际修改分开记录，未执行建议不计为已完成步骤。
 ```
 
 > **路径类型**填写规则：创建路径填「新创建」，已有 alias 路径填「已有」。
@@ -361,9 +294,8 @@ meta.json 是 deploy 编排层消费的结构化元数据（instance_id 传递�
 - **禁止在未确认服务器别名前执行任何安装命令**——别名缺失/不存在/连通失败时停止并报告，不猜测机器
 - **禁止自动销毁 ECS**——创建路径下无论哪一步失败都保留机器
 - **禁止在 meta.json / install-result.md 中写入密码**
-- **禁止在 install-result.md 中记录 instance_id**
 - 不擅自改写安装指南中的命令（为非交互需要补 `--yes`/`-y` 等已有参数除外）
 - 不执行源码编译命令（指南不应包含；若包含则停止报告）
-- 不修改配置文件本身；配置缺失用内置默认并说明
+- 不修改 deploy.config.yaml；路径与默认值由记录工具解析
 - 不把结果/问题只打印到对话——必须写入 `install_result_file`（及 `install_issues_file`）
 - 完成后须在回复中告知**结果文件路径**、整体结论（含路径类型）、（若有）问题文件路径

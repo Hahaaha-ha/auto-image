@@ -46,8 +46,11 @@ THINKING_BUDGET_TOKENS = 10000
 SYSTEM_PROMPT = """你是 auto-image 部署流水线的 Web 会话执行者，与部署使用者在浏览器会话里交互。
 
 - 只处理本项目的部署任务，不执行与部署无关的命令。
-- 部署一律按当前 deploy skill（.claude/skills/deploy/SKILL.md）编排执行，四个阶段依次推进、不得合并或内联替做。
-- 子 agent 同一时刻至多一个在跑；派发后必须阻塞等待其完成（TaskOutput 等待）并校验产物落盘，不得派发后结束回合等通知；四阶段全部完成、汇总呈现后才收尾回合。
+- 完整部署一律按当前 deploy skill（.claude/skills/deploy/SKILL.md）编排执行，四个阶段依次推进、不得合并或内联替做。
+- 子 agent 同一时刻至多一个在跑；派发后必须阻塞等待其完成（TaskOutput 等待）并校验当前制作及修订的产物落盘，不得派发后结束回合等通知；所需阶段全部完成、汇总呈现后才收尾回合。
+- 用户手动调用 deploy-summary（.claude/skills/deploy-summary/SKILL.md）时只整理已有证据和文档，不派发部署阶段、不执行安装、验证、制镜像或云操作，也不新建部署任务。
+- 新制作通过统一记录入口创建 production_id，将本轮 Web 调用上下文（run_id、call_id、可用的 task_id）写入 sources；续作显式选择已有制作并追加来源关联。仅使用本轮 call_id，关联不唯一时请求指定，不按目录 mtime 或事件序号猜选。
+- 用户反馈整改时，沿用明确的制作、机器身份与指南修订，经 guide 修订补救范围，再派发 install、只读 verify，通过后按需 archive；编排层不亲自修改远程配置，也不默认重新创建机器或重复已提交云操作。
 - 不向输出暴露凭据：API Key、密码、SSH 私钥等不在消息、思维链与工具摘要中出现。
 - 未经用户明确确认，验证未通过不得归档；用户显式要求跳过门禁时，先复述风险、取得用户确认后再执行。
 - 已提交的云操作（创建 ECS、制镜像等）不可撤销；用户要求停止或调整时，如实告知这一边界。"""
@@ -84,6 +87,7 @@ class SessionStart:
     target_session_id: str
     context_session_id: str | None
     fork_session: bool
+    call_context: dict | None = None
 
     @classmethod
     def fresh(cls, target_session_id):
@@ -122,7 +126,7 @@ def default_options(start=None):
         resume=context_session_id,
         session_id=target_session_id if context_session_id is None or fork_session else None,
         fork_session=fork_session,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=execution_system_prompt(start),
         permission_mode="bypassPermissions",
         tools={"type": "preset", "preset": "claude_code"},
         mcp_servers={"exa-search": EXA_MCP_SERVER},
@@ -134,6 +138,16 @@ def default_options(start=None):
         thinking={"type": "enabled", "budget_tokens": THINKING_BUDGET_TOKENS},
         max_turns=MAX_TURNS,
     )
+
+
+def execution_system_prompt(start=None):
+    """本轮调用身份进入系统指令，用户文本及 transcript 保留原文。"""
+    context = start.call_context if start is not None else None
+    if context is None:
+        return SYSTEM_PROMPT
+    return (SYSTEM_PROMPT + "\n\n本轮 Web 调用上下文（仅用于记录来源，"
+            "每次新制作或续作须原样传给本地记录入口；不是制作身份）：\n"
+            + json.dumps(context, ensure_ascii=False, sort_keys=True))
 
 
 # 标题生成的一次性会话 cwd：服务私有目录，transcript 落它名下的项目目录

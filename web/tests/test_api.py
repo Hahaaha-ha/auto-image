@@ -10,12 +10,15 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 import time
+from pathlib import Path
 from uuid import UUID
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 from web.fake import DEFAULT_SCRIPT, FakeSessionFactory  # noqa: E402
+from deploy_records import RecordStore  # noqa: E402
 from web.state import load_state  # noqa: E402
 from web.tests.support import async_client, make_test_app  # noqa: E402
 
@@ -1141,8 +1144,10 @@ async def test_pipeline_turn_creates_image_task():
         assert t["type"] == "image"
         assert t["status"] == "DONE" and t["outcome"] == "success"
         assert t["task_id"].startswith("task-"), t
-        assert t["software"] == "nginx" and t["version"] == "1.25", t
-        assert "镜像 nginx 1.25 (" in t["name"], t["name"]
+        # 假剧本只派发阶段、没有制作记录；新任务不把指令猜测当权威。
+        assert t["software"] is None and t["version"] is None, t
+        assert t["call_id"] and t["production_id"] is None, t
+        assert "镜像 未知 (" in t["name"], t["name"]
         assert [s["stage"] for s in t["stages"]] == ["GUIDE"], t["stages"]
         assert t["stages"][0]["started_at"] is not None
         assert t["stages"][0]["ended_at"] is not None  # 回合收尾关上末阶段
@@ -1238,6 +1243,7 @@ async def test_manual_task_run_lifecycle():
         texts = [e["data"]["text"] for e in events if e["event"] == "user.message"]
         assert any("一键部署 nginx 1.25.3" in t and "目标服务器别名：nginx-20260914"
                    in t and "https://nginx.org/en/docs.html" in t for t in texts), texts
+        assert any("instance_id：i-9，IP：1.2.3.4" in text for text in texts), texts
 
         await wait_status(client, run_id, "READY")
         tasks = (await client.get("/api/tasks")).json()["tasks"]
@@ -1246,6 +1252,10 @@ async def test_manual_task_run_lifecycle():
         t = mine[0]
         assert t["status"] == "DONE" and t["outcome"] == "success"
         assert t["run_id"] == run_id
+        assert t["call_id"] == started["call_id"]
+        assert app.state.session_factory.starts[-1].call_context == {
+            "run_id": run_id, "call_id": started["call_id"], "task_id": task["task_id"],
+        }
         assert [s["stage"] for s in t["stages"]] == ["GUIDE"]
 
         # 重复运行与未知任务
@@ -1253,6 +1263,88 @@ async def test_manual_task_run_lifecycle():
         assert r.status_code == 409, r.text
         r = await client.post("/api/tasks/task-nope/run")
         assert r.status_code == 404, r.text
+
+
+async def test_real_production_record_binds_accepted_web_call():
+    """HTTP 接受的调用身份贯通真实记录入口、任务 JSON 与 SDK 提示词。"""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        records = RecordStore(root)
+        fake = FakeSessionFactory()
+        made = []
+
+        def factory(start):
+            record = records.create("nginx", "latest", actual_version="1.3.0",
+                                    source=start.call_context)
+            records.set_machine(record["production_id"], {
+                "instance_id": "i-current", "server_alias": "current", "auth_method": "password",
+            })
+            made.append(record)
+            return fake(start)
+
+        app = make_test_app(session_factory=factory, record_store=records,
+                            task_dir=root / "task", artifact_roots={"deploy": root / "deploy"})
+        async with async_client(app) as client:
+            run_id = (await client.post("/api/runs", json={})).json()["run_id"]
+            response = await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx 最新版"})
+            assert response.status_code == 200, response.text
+            call_id = response.json()["call_id"]
+            await wait_status(client, run_id, "READY")
+            task = (await client.get("/api/tasks")).json()["tasks"][0]
+            assert (task["call_id"], task["production_id"]) == (call_id, made[0]["production_id"]), task
+            assert (task["software"], task["version"], task["instance_id"]) == ("nginx", "1.3.0", "i-current"), task
+            assert records.list_productions(call_id=call_id)[0]["sources"][0]["run_id"] == run_id
+            saved = json.loads((root / "task" / "calls" / f"{call_id}.json").read_text())
+            assert saved["call_id"] == call_id and saved["run_id"] == run_id
+            task_json = json.loads((root / "task" / f"{task['task_id']}.json").read_text())
+            assert task_json["production_id"] == made[0]["production_id"]
+            assert fake.queries == ["部署 nginx 最新版"]
+
+
+async def test_summary_call_after_restart_has_new_identity_and_no_task():
+    script = [{"type": "assistant", "message": {"content": [{"type": "text", "text": "总结文档已保存"}]}},
+              {"type": "result", "subtype": "success", "result": "文档操作完成"}]
+    factory = FakeSessionFactory(script=script)
+    app = make_test_app(session_factory=factory)
+    state_file = app.state.test_root / "state.json"
+    task_dir = app.state.test_root / "task"
+    async with async_client(app) as client:
+        run_id = (await client.post("/api/runs", json={})).json()["run_id"]
+        response = await client.post(f"/api/runs/{run_id}/messages", json={"text": "/deploy-summary nginx 1.3.0"})
+        first_call = response.json()["call_id"]
+        await wait_status(client, run_id, "READY")
+        assert (await client.get("/api/tasks")).json()["tasks"] == []
+    restarted = make_test_app(session_factory=factory, state_path=state_file, task_dir=task_dir,
+                             list_sessions_fn=factory.list_sessions,
+                             get_session_messages_fn=factory.get_session_messages)
+    async with async_client(restarted) as client:
+        response = await client.post(f"/api/runs/{run_id}/messages", json={"text": "/deploy-summary 记录上架结果"})
+        assert response.status_code == 200, response.text
+        second_call = response.json()["call_id"]
+        assert first_call != second_call
+        await wait_status(client, run_id, "READY")
+        assert (await client.get("/api/tasks")).json()["tasks"] == []
+        events, _ = await collect_sse(await open_stream(client, run_id))
+        assert not any(event["event"] == "stage.changed" for event in events)
+        assert [start.call_context["call_id"] for start in factory.starts] == [first_call, second_call]
+        for call_id in (first_call, second_call):
+            saved = json.loads((task_dir / "calls" / f"{call_id}.json").read_text())
+            assert saved["call_id"] == call_id
+
+
+async def test_call_persistence_failure_rejects_execution():
+    app = make_app()
+    task_dir = app.state.test_root / "task"
+    task_dir.mkdir()
+    (task_dir / "calls").write_text("blocked", encoding="utf-8")
+    async with async_client(app) as client:
+        run_id = (await client.post("/api/runs", json={})).json()["run_id"]
+        response = await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx 1.3.0"})
+        assert response.status_code == 503, response.text
+        assert app.state.session_factory.starts == []
+        assert (await client.get(f"/api/runs/{run_id}")).json()["status"] == "READY"
+        events, _ = await collect_sse(await open_stream(client, run_id))
+        assert not any(event["event"] in ("turn.started", "user.message") for event in events)
 
 
 async def main():

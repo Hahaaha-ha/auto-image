@@ -9,6 +9,7 @@
 """
 import os
 import sys
+from dataclasses import replace
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 from web.sdk import EXA_MCP_SERVER, SYSTEM_PROMPT, SessionStart, default_options  # noqa: E402
@@ -35,6 +36,29 @@ def test_options_pin_control_boundary():
     options = default_options()
     assert options.system_prompt == SYSTEM_PROMPT
     assert options.max_turns == 200
+
+
+def test_turn_context_is_explicit_and_replaced_on_resume():
+    """每回合来源进入实际 SDK 系统提示词，续聊替换旧调用身份。"""
+    first = replace(SessionStart.fresh("session-a"), call_context={
+        "run_id": "run-a", "call_id": "call-first", "task_id": None,
+    })
+    resumed = replace(SessionStart.resume("session-a"), call_context={
+        "run_id": "run-a", "call_id": "call-second", "task_id": "task-a",
+    })
+    first_prompt = default_options(first).system_prompt
+    resumed_prompt = default_options(resumed).system_prompt
+    assert '"call_id": "call-first"' in first_prompt
+    assert '"call_id": "call-second"' in resumed_prompt and "call-first" not in resumed_prompt
+    assert '"task_id": "task-a"' in resumed_prompt
+    assert default_options().system_prompt == SYSTEM_PROMPT
+
+
+def test_summary_and_remediation_control_boundaries():
+    """总结与补救分别保留文档入口和原机限定执行要求。"""
+    for phrase in ("deploy-summary", "不派发部署阶段", "不新建部署任务", "call_id",
+                   "补救范围", "只读 verify", "不默认重新创建机器"):
+        assert phrase in default_options().system_prompt, phrase
 
 
 def test_session_start_distinguishes_new_resume_and_fork():

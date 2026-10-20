@@ -6,10 +6,10 @@ RPM：guide→build→verify→archive）。识别信号是 stage.changed 事件
 rpm-check / hce-rpm-check 是 skill 不是子 agent，天然不产生任务。
 
 数据来源与局限（如实）：
-- 软件名/版本：回合指令文本启发式解析（parse_software_version），
-  产物目录（deploy/<软件>/<版本>、rpm/<软件>/<版本>）落盘后由
-  _confirm_from_artifacts 修正确认——产物目录是权威源，启发式只是
-  任务创建初期的占位。
+- 新镜像任务按持久化 call_id 精确读取制作记录，软件、实际版本与机器
+  均来自同一制作；关联缺失或不唯一时显示未知，不按目录时间猜选。
+- 旧任务与 RPM 任务保留指令启发式及旧顶层产物读取；新制作的 runs/、
+  summaries/ 文件不参与旧产物确认。
 - token：回合收尾事件的 usage（CLI 的 Result 累计值；resume 会话可能
   为全程累计而非本回合增量，按键取 max 幂等合并）。进行中任务为
   null（前端显示 —）。
@@ -131,6 +131,10 @@ def build_task_prompt(spec):
             machine = (f"目标机器：已有 ECS「{name}」（IP {ip}）。"
                        "请用 ssh-skill 解析其登录方式（已注册别名则用别名，"
                        "否则按 IP 注册后再执行）。")
+        instance_id = str(inst.get("id") or "").strip()
+        if instance_id:
+            machine += f"已有 ECS instance_id：{instance_id}，IP：{ip}。"
+            machine += "执行前核对登录目标与此实例身份，将已知身份写入制作记录并传给后续阶段。"
     else:
         params = spec.get("ecs_params") or {}
         parts = [f"{label}={params[key]}" for key, label in ECS_PARAM_LABELS
@@ -147,13 +151,36 @@ def build_task_prompt(spec):
 class TaskStore:
     """任务注册表：事件观察者驱动 + task/ 目录持久化（每任务一个 JSON）。"""
 
-    def __init__(self, task_dir, artifact_roots=None):
+    def __init__(self, task_dir, artifact_roots=None, record_store=None):
         self._dir = Path(task_dir)
         roots = artifact_roots or {}
         self._roots = {name: Path(p) for name, p in roots.items()}
+        self._records = record_store
         self._tasks = {}            # task_id → 任务记录
         self._active = {}           # run_id → 进行中 task_id（一个 run 同时至多一个）
         self._turn_text = {}        # run_id → 本回合指令文本（启发式解析源）
+        self._turn_call = {}        # run_id → 持久化的本回合调用标识
+
+    def create_call(self, run_id, task_id=None):
+        """回合接受前持久化随机调用身份；失败由 HTTP 层拒绝执行。
+
+        独立于进程内事件序号和任务：纯对话或总结也有来源身份，但不会因此
+        生成部署任务。独占创建阻止重启或碰撞时复用已有调用。
+        """
+        calls_dir = self._dir / "calls"
+        calls_dir.mkdir(parents=True, exist_ok=True)
+        while True:
+            call_id = "call-" + secrets.token_hex(16)
+            record = {"format_version": 1, "call_id": call_id, "run_id": run_id,
+                      "task_id": task_id, "accepted_at": time.time()}
+            try:
+                with (calls_dir / f"{call_id}.json").open("x", encoding="utf-8") as fh:
+                    json.dump(record, fh, ensure_ascii=False, indent=2)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+            except FileExistsError:
+                continue
+            return call_id
 
     # ---- 手动任务（面板「+ 新建任务」→ INIT → 「▶ 运行」起会话）----
 
@@ -172,6 +199,8 @@ class TaskStore:
         task = {
             "task_id": task_id,
             "run_id": None,
+            "call_id": None,
+            "production_id": None,
             "origin": "manual",
             "type": ttype,
             "status": "INIT",
@@ -213,9 +242,11 @@ class TaskStore:
         task["status"] = "RUNNING"
         task["run_id"] = run_id
         task["turn_text"] = prompt
+        task["call_id"] = self._turn_call.get(run_id)
         task["updated_at"] = time.time()
         self._active[run_id] = task_id
         self._turn_text[run_id] = prompt
+        self._maybe_confirm(task)
         self._save(task)
         return task
 
@@ -230,6 +261,7 @@ class TaskStore:
             return
         if etype == "user.message":
             self._turn_text[run_id] = str(payload.get("text") or "")
+            self._turn_call[run_id] = payload.get("call_id")
             return
         if etype == "stage.changed":
             self._on_stage(run_id, payload, ts)
@@ -266,6 +298,7 @@ class TaskStore:
     def _on_turn_end(self, run_id, outcome, payload, ts):
         task_id = self._active.pop(run_id, None)
         self._turn_text.pop(run_id, None)
+        self._turn_call.pop(run_id, None)
         if not task_id:
             return
         task = self._tasks[task_id]
@@ -292,6 +325,8 @@ class TaskStore:
         task = {
             "task_id": task_id,
             "run_id": run_id,
+            "call_id": self._turn_call.get(run_id),
+            "production_id": None,
             "type": ttype,
             "status": "RUNNING",
             "outcome": None,
@@ -317,7 +352,10 @@ class TaskStore:
     # ---- 产物确认（软件/版本/机器）----
 
     def _maybe_confirm(self, task):
-        """未确认、或镜像任务还缺机器标识时，扫产物树修正。"""
+        """新任务读取明确制作；旧任务仍按旧顶层产物修正。"""
+        if task["type"] == "image" and (task.get("call_id") or task.get("production_id")):
+            self._confirm_production(task)
+            return
         missing_machine = (task["type"] == "image"
                            and not task["instance_id"] and not task["server_alias"])
         if task["confirmed"] and not missing_machine:
@@ -332,6 +370,38 @@ class TaskStore:
         if task["type"] == "image" and task["software"] and task["version"]:
             self._read_install_meta(task)
 
+    def _confirm_production(self, task):
+        """新任务只接受明确制作关联，绑定后的读取也不退回旧共享路径。"""
+        record = None
+        try:
+            if self._records is not None:
+                bound = task.get("production_id")
+                call_id = task.get("call_id")
+                matches = self._records.list_productions(call_id=call_id) if call_id else []
+                if len(matches) == 1:
+                    candidate = matches[0]
+                    if not bound or bound == candidate["production_id"]:
+                        record = candidate
+                elif not matches and bound:
+                    record = self._records.get(bound)
+        except (OSError, ValueError, KeyError, TypeError):
+            logging.getLogger("web").warning("制作关联读取失败：%s", task["task_id"], exc_info=True)
+        if record is not None:
+            task["production_id"] = record["production_id"]
+            software = record.get("software") or {}
+            version = record.get("version") or {}
+            machine = record.get("machine") or {}
+            task["software"] = software.get("id") or None
+            task["version"] = version.get("actual") or None
+            task["server_alias"] = machine.get("server_alias") or None
+            task["instance_id"] = machine.get("instance_id") or None
+            task["confirmed"] = bool(task["software"] and task["version"])
+        else:
+            for key in ("software", "version", "server_alias", "instance_id"):
+                task[key] = None
+            task["confirmed"] = False
+        task["name"] = _task_name(task)
+
     def _scan_candidate(self, task):
         """deploy/、rpm/ 两层目录走查：目录内有文件新于任务创建时刻即候选。
 
@@ -345,7 +415,7 @@ class TaskStore:
                 continue
             for sw_dir in _iterdirs(root):
                 for ver_dir in _iterdirs(sw_dir):
-                    newest = _newest_mtime(ver_dir)
+                    newest = _newest_mtime(ver_dir, recursive=root_name == "rpm")
                     if newest is not None and newest >= task["created_at"] - 2:
                         candidates.append((root_name, sw_dir.name, ver_dir.name, newest))
         if not candidates:
@@ -425,6 +495,7 @@ class TaskStore:
         self._tasks = {}
         self._active = {}
         self._turn_text = {}
+        self._turn_call = {}
         if not self._dir.is_dir():
             return
         now = time.time()
@@ -459,11 +530,11 @@ def _iterdirs(base):
         return []
 
 
-def _newest_mtime(directory):
-    """目录树内最新文件 mtime；空/不可读返回 None。"""
+def _newest_mtime(directory, *, recursive=False):
+    """旧 deploy 只读顶层；RPM 保持原有递归产物确认。"""
     newest = None
     try:
-        for f in directory.rglob("*"):
+        for f in directory.rglob("*") if recursive else directory.iterdir():
             if f.is_file():
                 m = f.stat().st_mtime
                 if newest is None or m > newest:

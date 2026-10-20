@@ -168,6 +168,148 @@ def test_artifact_confirm_and_install_meta():
         assert "nginx 1.25.3" in task["name"]
 
 
+class ProductionReader:
+    """任务测试使用的只读记录边界；制作存储自身另有外部行为测试。"""
+
+    def __init__(self, records):
+        self.records = records
+
+    def list_productions(self, call_id=None):
+        return [record for record in self.records
+                if any(source.get("call_id") == call_id for source in record["sources"])]
+
+    def get(self, production_id):
+        for record in self.records:
+            if record["production_id"] == production_id:
+                return record
+        raise ValueError("unknown production")
+
+
+def production(production_id, call_id, software="nginx", version="1.3.0", machine=None):
+    return {"production_id": production_id, "software": {"id": software},
+            "version": {"actual": version}, "machine": machine or {},
+            "sources": [{"run_id": "r1", "call_id": call_id, "task_id": None}]}
+
+
+def test_call_binding_keeps_software_version_and_machine_together():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        records = ProductionReader([production("prod-selected", "call-selected", machine={
+            "instance_id": "i-selected", "server_alias": "selected",
+        })])
+        # 旧顶层安装元数据和另一个版本的总结都有更新的 mtime，不能改变关联。
+        old = root / "deploy" / "redis" / "7.2"
+        old.mkdir(parents=True)
+        (old / "redis-install-meta.json").write_text(json.dumps({
+            "instance_id": "i-wrong", "server_alias": "wrong",
+        }))
+        summary = root / "deploy" / "nginx" / "1.4.0" / "summaries" / "sum-other"
+        summary.mkdir(parents=True)
+        (summary / "summary.md").write_text("其他版本的总结")
+        store = TaskStore(root / "task", {"deploy": root / "deploy"}, records)
+        base = time.time()
+        store.handle_event(ev("r1", "user.message", {
+            "text": "部署 redis 7.2", "call_id": "call-selected",
+        }, base))
+        store.handle_event(stage_event("r1", "GUIDE", "deploy-guide", base + 1))
+        task = store.list()[0]
+        assert (task["software"], task["version"]) == ("nginx", "1.3.0"), task
+        assert (task["production_id"], task["call_id"]) == ("prod-selected", "call-selected")
+        assert (task["instance_id"], task["server_alias"]) == ("i-selected", "selected")
+        (summary / "summary.md").write_text("总结再次写入")
+        store.handle_event(stage_event("r1", "INSTALL", "deploy-install", base + 2))
+        stored = json.loads((root / "task" / f"{task['task_id']}.json").read_text())
+        assert stored["production_id"] == "prod-selected" and stored["instance_id"] == "i-selected"
+
+
+def test_new_call_missing_or_ambiguous_association_stays_unknown():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        legacy = root / "deploy" / "nginx" / "1.3.0"
+        legacy.mkdir(parents=True)
+        (legacy / "nginx-install-meta.json").write_text(json.dumps({"instance_id": "i-old"}))
+        for index, records in enumerate(([], [production("prod-a", "call-new"),
+                                             production("prod-b", "call-new")])):
+            store = TaskStore(root / f"task-{index}", {"deploy": root / "deploy"}, ProductionReader(records))
+            now = time.time()
+            store.handle_event(ev("r1", "user.message", {
+                "text": "部署 nginx 1.3.0", "call_id": "call-new",
+            }, now))
+            store.handle_event(stage_event("r1", "INSTALL", "deploy-install", now + 1))
+            task = store.list()[0]
+            assert task["production_id"] is None and not task["confirmed"], task
+            assert all(task[key] is None for key in ("software", "version", "instance_id", "server_alias")), task
+            assert "未知" in task["name"], task
+
+
+def test_bound_production_disappearance_never_reads_legacy_machine():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        records = ProductionReader([production("prod-a", "call-a", machine={"instance_id": "i-new"})])
+        store = TaskStore(root / "task", {"deploy": root / "deploy"}, records)
+        store.handle_event(ev("r1", "user.message", {"text": "部署 nginx 1.3.0", "call_id": "call-a"}, 1))
+        store.handle_event(stage_event("r1", "GUIDE", "deploy-guide", 2))
+        records.records.clear()
+        legacy = root / "deploy" / "nginx" / "1.3.0"
+        legacy.mkdir(parents=True)
+        (legacy / "nginx-install-meta.json").write_text(json.dumps({"instance_id": "i-old"}))
+        store.handle_event(stage_event("r1", "INSTALL", "deploy-install", 3))
+        task = store.list()[0]
+        assert task["production_id"] == "prod-a" and task["instance_id"] is None, task
+        assert task["software"] is None and not task["confirmed"], task
+
+
+def test_restarted_calls_are_persistent_and_never_match_old_turn():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        records = ProductionReader([])
+        store = TaskStore(root / "task", record_store=records)
+        old_call = store.create_call("r1")
+        records.records.append(production("prod-original", old_call))
+        store.handle_event(ev("r1", "user.message", {"text": "部署 nginx 1.3.0", "call_id": old_call}, 1))
+        store.handle_event(stage_event("r1", "GUIDE", "deploy-guide", 2))
+        restored = TaskStore(root / "task", record_store=records)
+        restored.recover()
+        new_call = restored.create_call("r1")
+        assert old_call != new_call
+        for call_id in (old_call, new_call):
+            saved = json.loads((root / "task" / "calls" / f"{call_id}.json").read_text())
+            assert saved["call_id"] == call_id and saved["run_id"] == "r1"
+        restored.handle_event(ev("r1", "user.message", {"text": "继续制作", "call_id": new_call}, 3))
+        restored.handle_event(stage_event("r1", "GUIDE", "deploy-guide", 4))
+        assert restored.list()[0]["production_id"] is None, restored.list()
+        # 明确续作通过新增 source 绑定，保留原制作身份。
+        records.records[0]["sources"].append({"run_id": "r1", "call_id": new_call})
+        restored.handle_event(stage_event("r1", "INSTALL", "deploy-install", 5))
+        assert restored.list()[0]["production_id"] == "prod-original"
+
+
+def test_summary_turn_with_call_does_not_create_task():
+    with tempfile.TemporaryDirectory() as td:
+        store = TaskStore(Path(td))
+        call_id = store.create_call("r1")
+        store.handle_event(ev("r1", "user.message", {"text": "/deploy-summary nginx 1.3.0", "call_id": call_id}, 1))
+        store.handle_event(ev("r1", "turn.completed", {"result": "总结已保存"}, 2))
+        assert store.list() == []
+
+
+def test_legacy_task_ignores_new_run_and_summary_files():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        base = time.time()
+        old = root / "deploy" / "nginx" / "1.2.0"
+        old.mkdir(parents=True)
+        (old / "nginx-install.md").write_text("legacy guide")
+        newer = root / "deploy" / "nginx" / "9.0.0"
+        for subtree in ("runs/prod-other", "summaries/sum-other"):
+            path = newer / subtree
+            path.mkdir(parents=True)
+            (path / "result.md").write_text("new record")
+        store = TaskStore(root / "task", {"deploy": root / "deploy"})
+        store.handle_event(stage_event("r1", "GUIDE", "deploy-guide", base))
+        assert store.list()[0]["version"] == "1.2.0", store.list()
+
+
 def test_recover_interrupts_running_and_no_dup():
     with tempfile.TemporaryDirectory() as td:
         task_dir = Path(td) / "task"
@@ -254,15 +396,17 @@ def test_build_task_prompt_cases():
     # 镜像 + 已有 ECS（流水线命名规约：ecs-<别名> → 别名直给）
     p = build_task_prompt({"software": "nginx", "version": "1.25.3", "task_type": "image",
                            "ecs_mode": "existing",
-                           "ecs_instance": {"name": "ecs-nginx-20260914", "ip": "1.2.3.4"},
+                           "ecs_instance": {"id": "i-1", "name": "ecs-nginx-20260914", "ip": "1.2.3.4"},
                            "install_doc": "https://doc.example"})
     assert p.startswith("一键部署 nginx 1.25.3")
     assert "目标服务器别名：nginx-20260914" in p
+    assert "instance_id：i-1，IP：1.2.3.4" in p
     assert "安装文档：https://doc.example" in p
     # 外来机器（无 ecs- 前缀）：name+IP 让 agent 解析
     p = build_task_prompt({"software": "redis", "task_type": "image", "ecs_mode": "existing",
-                           "ecs_instance": {"name": "my-server", "ip": "5.6.7.8"}})
+                           "ecs_instance": {"id": "i-2", "name": "my-server", "ip": "5.6.7.8"}})
     assert "已有 ECS「my-server」（IP 5.6.7.8）" in p and "ssh-skill" in p
+    assert "instance_id：i-2，IP：5.6.7.8" in p
     assert "redis 最新稳定版" in p  # 版本缺省
     assert "请检索官方最新稳定版文档" in p
     # 按需创建：只列填写项
