@@ -252,6 +252,7 @@ python web/tests/test_obs_api.py    # OBS 端点（假云函数注入）
 python web/tests/test_obs_config.py # OBS 配置加密落盘与脱敏视图
 python web/tests/test_owner_acl.py  # owner 会话隔离（双认证客户端互不可见/不可控）
 python web/tests/test_redact.py     # 事件出口脱敏（形状正则 + 已知值清单）
+python web/tests/test_session_entrypoint.py # 会话来源过滤（entrypoint 黑名单，临时目录真 JSONL）
 python web/tests/test_shared_resources.py # 产物/OBS 共享读取、归档审计、OBS 配置 admin-only
 python web/tests/test_stream_isolation.py # 全局流 owner 逐帧过滤、心跳身份撤销、匿名容量
 python web/tests/test_sdk.py        # options 契约（身份、Fork、系统提示词、无值守写权限）
@@ -281,7 +282,7 @@ cd web-ui && npm test && npm run build    # 前端完整测试与生产构建
 | `rebuild.py` | 服务重启后的恢复（单一流程）：全量 transcript 按 session 粒度重放 + state 簿记叠加——身份映射命中的沿用原 run_id 并恢复 owner 归属，墓碑会话标 ENDED；其余重放会话 READY 可续聊，未收尾回合（transcript 推导 turn_open）补 `turn.interrupted` 不伪造完成 |
 | `state.py` | 恢复簿记（`~/.auto-image-web/state.json`，全量原子替换，带显式 version）：墓碑（用户 ENDED 的 session_id 集合）+ 身份映射（run_id ↔ session_id）+ Fork 来源镜像（session_id → 来源 run_id）+ owner 归属（run_id → 用户；与身份映射同生命周期登记）（stage/title/first_prompt 从 transcript 重放推导）；读取按状态分类（modern/legacy/missing/corrupt）支撑受限恢复判定，strict 落盘失败抛 `StatePersistError`（控制动作 503 门）；初始化标记（state 同名 `.initialized`）区分首次启动与初始化后缺失 |
 | `title.py` | 会话标题 LLM 生成（Codex 同构，research/codex-session-title.md）：首条指令到达即起一次性无工具会话生成，成功落 run.title + `session.title_changed` 事件 + transcript custom-title 行；失败静默维持截断标题；Fork 会话继承源标题不再生成 |
-| `sdk.py` | ClaudeSDKClient 生产实现：目标身份/上下文来源/Fork 启动意图、options 全配、消息形状适配、工厂、历史读取包装 |
+| `sdk.py` | ClaudeSDKClient 生产实现：目标身份/上下文来源/Fork 启动意图、options 全配、消息形状适配、工厂、历史读取包装；发现层会话来源过滤（transcript 头窗口 entrypoint 黑名单——交互客户端人工会话不进面板，无标记与未知来源保留） |
 | `fake.py` | 脚本化假会话（默认剧本含敏感样例），测试注入用 |
 
 ## SDK 与浏览器实测记录（claude-agent-sdk 0.2.144 + CLI 2.1.220）
@@ -405,6 +406,20 @@ cd web-ui && npm test && npm run build    # 前端完整测试与生产构建
 19. **二进制产物**（真实浏览器）：无 `content` 的 RPM 在 Markdown 解析前
     分流，显示文件名、`12.0 KB`、不支持在线预览说明与下载动作；下载得到
     12,292 bytes，魔数 `ed ab ee db`。Markdown 与 JSON 视图保持原行为。
+20. **会话来源过滤（entrypoint 黑名单）**（VS Code 插件 2.1.296
+    extension.js 逆向 + 本机 50 条 transcript 头扫描实测）：CLI 把会话来源
+    `"entrypoint"` 写进每条消息行的元数据区（先于 message 内容，首条
+    user 行必落在头 64KB 窗口内），SDK 的 SessionSummary / SessionMessage
+    均不透出、只能自读。本机取值分布：sdk-py × 38、cli × 8、
+    claude-vscode × 3、无标记（旧版 CLI）× 1；全集另有 sdk-ts/sdk-cli/
+    claude-desktop(-3p) 与 `CLAUDE_CODE_ENTRYPOINT` 的 remote_*/claude-in-slack
+    等 surface 值。VS Code 插件的历史列表反向做了同一件事——头 64KB 扫描
+    命中 sdk-* 三值即隐藏（程序化会话不进插件列表），web 发现层据此互为
+    镜像：黑名单藏交互客户端四种值，无标记与未知来源保留（未来新增
+    entrypoint 不误伤）。实测本机 50 条 → 39 条（38 sdk-py + 1 旧会话）；
+    过滤只在服务启动恢复时生效（`list_project_sessions` 唯一调用点是
+    重放恢复），运行中创建/克隆的 run 不经发现层；被隐藏会话的 state
+    簿记（身份映射/墓碑）原样保留，撤掉过滤重启即带原 run_id 回归。
 
 - CLI stderr 对本环境网关模型名报 `[claude-code:unrecognized_model]`
   警告，不影响会话执行，服务日志如实记录。

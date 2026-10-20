@@ -7,7 +7,9 @@
 transcript 时刻读取器（transcript_times / _session_transcript_path）也
 在此：SDK 的 SessionMessage 形状不带 timestamp，事件时刻透传（重启重放/
 克隆转录找源时刻）只能自读 transcript JSONL——不 import SDK 私有模块
-（_internal 随版本漂移），文件定位与目录名派生在 web 层薄薄复刻。
+（_internal 随版本漂移），文件定位与目录名派生在 web 层薄薄复刻。会话
+来源过滤（_session_entrypoint，发现层剔除交互客户端人工会话）复用同一
+transcript 定位，读头窗口内的 entrypoint 字段。
 """
 import json
 import logging
@@ -260,8 +262,16 @@ class TitleSessionFactory:
 
 
 def list_project_sessions(project_root=None):
-    """项目根目录下的 SDK 会话清单（重启重建的发现源；cwd 过滤由 SDK 完成）。"""
-    return list_sessions(directory=str(project_root or PROJECT_ROOT))
+    """项目根目录下的 SDK 会话清单（重启重建的发现源；cwd 过滤由 SDK 完成）。
+
+    交互客户端（终端 / VS Code 插件 / 桌面端）的人工会话按 transcript 头
+    窗口的 entrypoint 剔除（见 _session_entrypoint），面板只呈现本服务系的
+    程序化会话；无 entrypoint（旧版 CLI）与未知来源保留。
+    """
+    return [
+        info for info in list_sessions(directory=str(project_root or PROJECT_ROOT))
+        if _session_entrypoint(info.session_id, project_root) not in _HIDDEN_ENTRYPOINTS
+    ]
 
 
 def project_session_messages(session_id, project_root=None):
@@ -316,6 +326,45 @@ def _session_transcript_path(session_id, project_root):
         if candidate.is_file():
             return candidate
     return None
+
+
+# ---------------------------------------------------------------------------
+# 会话来源过滤 —— transcript 头窗口的 entrypoint 读取
+# ---------------------------------------------------------------------------
+
+# 交互客户端（终端 / VS Code 插件 / 桌面端）的人工会话不进 web 面板：
+# 黑名单语义——无 entrypoint（旧版 CLI）与未知来源保留，未来新增值不误伤
+_HIDDEN_ENTRYPOINTS = frozenset({
+    "cli", "claude-vscode", "claude-desktop", "claude-desktop-3p",
+})
+
+# 头窗口与 CLI 侧列表器同宽（64KB）：entrypoint 由 CLI 写在每条消息行的
+# 元数据区、先于 message 内容，首条 user 行必在头窗口内；只判定不建消息链
+_ENTRYPOINT_HEAD_BYTES = 65536
+_ENTRYPOINT_RE = re.compile(r'"entrypoint"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def _session_entrypoint(session_id, project_root=None):
+    """transcript 头窗口内首次出现的 entrypoint（会话由哪类客户端创建）。
+
+    SDK 的 SessionSummary / SessionMessage 都不透出该字段，只能自读
+    transcript；文件缺失/读失败/头窗口无该字段（旧版 CLI）一律 None。
+    """
+    path = _session_transcript_path(session_id, str(project_root or PROJECT_ROOT))
+    if path is None:
+        return None
+    try:
+        with path.open("rb") as f:
+            head = f.read(_ENTRYPOINT_HEAD_BYTES).decode("utf-8", "replace")
+    except OSError:
+        return None
+    m = _ENTRYPOINT_RE.search(head)
+    if m is None:
+        return None
+    try:
+        return json.loads(f'"{m.group(1)}"')
+    except ValueError:  # 值带非法转义序列：按捕获原文使用
+        return m.group(1)
 
 
 def transcript_times(session_id, project_root=None):
