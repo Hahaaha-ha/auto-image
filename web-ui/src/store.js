@@ -1044,7 +1044,10 @@ async function pollSummaries() {
   }
   // 任务清单随摘要周期刷新：未开标签页的 run 广播帧被丢弃，任务面板/
   // ECS 运行态/会话标签 pill 都靠这里保活（服务端是内存读，开销可忽略）
-  if (epoch === identityEpoch) refreshTasks()
+  if (epoch === identityEpoch) {
+    refreshTasks()
+    refreshArtifacts()
+  }
 }
 
 // 新会话落位（新建/Fork 共用）：run 注册、标签页尾插并切为查看中，再拉一次
@@ -1211,15 +1214,47 @@ function pruneSelection(groups) {
   return next
 }
 
-// 清单刷新：阶段推进/终态事件触发（无 run 参数，全局镜像）
+let artifactRefreshId = 0
+let artifactRequestId = 0
+const artifactRequests = new Map()
+
+async function readArtifactContent(relPath, epoch) {
+  const requestId = ++artifactRequestId
+  artifactRequests.set(relPath, requestId)
+  const resp = await fetch(`/api/artifacts/file/${relPath.split('/').map(encodeURIComponent).join('/')}`)
+  const data = await resp.json().catch(() => ({}))
+  if (epoch !== identityEpoch || artifactRequests.get(relPath) !== requestId) return
+  if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`)
+  const previous = state.artifactCache[relPath]
+  if (JSON.stringify(previous) !== JSON.stringify(data)) {
+    set({ artifactCache: { ...state.artifactCache, [relPath]: data } })
+  }
+}
+
+// 阶段事件与摘要周期刷新清单和已开正文；原位覆盖时保持正文到读取完成，
+// 清单明确缺失时去掉旧内容，避免已清理的成功报告继续被当作当前证据。
 export async function refreshArtifacts() {
   const epoch = identityEpoch
+  const refreshId = ++artifactRefreshId
   try {
     const resp = await fetch('/api/artifacts')
     if (!resp.ok) return
     const data = await resp.json()
-    if (epoch !== identityEpoch) return
+    if (epoch !== identityEpoch || refreshId !== artifactRefreshId) return
     set({ artifacts: data, artifactSel: pruneSelection(data.groups) })
+    const listed = new Map((data.groups ?? []).flatMap(group => group.files.map(file => [`${group.dir}/${file.name}`, file])))
+    await Promise.all(state.tabs.filter(tab => tab.kind === 'file').map(async tab => {
+      const entry = listed.get(tab.relPath)
+      if (!entry) {
+        artifactRequests.set(tab.relPath, ++artifactRequestId)
+        if (!state.artifactCache[tab.relPath]?.missing) {
+          set({ artifactCache: { ...state.artifactCache, [tab.relPath]: { missing: true } } })
+        }
+        return
+      }
+      if (entry.binary) return
+      try { await readArtifactContent(tab.relPath, epoch) } catch { /* 下个周期重试，保留可读正文。 */ }
+    }))
   } catch {
     // 清单刷新是尽力而为：失败不打断会话观察，下次阶段事件再试
   }
@@ -1274,8 +1309,8 @@ export function clearDraft(runId) {
 // 内容进多槽缓存（relPath → 条目+content）。二进制产物（清单带 binary
 // 标记，如 rpms/ 下的 .rpm 包）不拉内容，占位视图元信息来自清单条目。
 // relPath 形如 "rpm/nginx/1.25.3/nginx-rpm-result.md"；逐段编码（整段
-// encode 会把 / 也编码）。内容缓存与标签页独立——关标签页不清缓存，
-// 重开瞬开。
+// encode 会把 / 也编码）。正文缓存只作阅读期间的占位；每次打开重新读取，
+// 让同路径覆盖后的最新文件可见。
 export async function openArtifact(relPath, entry) {
   const epoch = identityEpoch
   if (entry?.binary) {
@@ -1292,16 +1327,10 @@ export async function openArtifact(relPath, entry) {
         },
       },
     })
-  } else if (!state.artifactCache[relPath]) {
+  } else {
     try {
-      const resp = await fetch(`/api/artifacts/file/${relPath.split('/').map(encodeURIComponent).join('/')}`)
-      const data = await resp.json().catch(() => ({}))
+      await readArtifactContent(relPath, epoch)
       if (epoch !== identityEpoch) return
-      if (!resp.ok) {
-        fail(`打开产物失败：${data.detail || `HTTP ${resp.status}`}`)
-        return
-      }
-      set({ artifactCache: { ...state.artifactCache, [relPath]: data } })
     } catch (err) {
       if (epoch !== identityEpoch) return
       fail(`打开产物失败：${err.message}`)

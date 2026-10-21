@@ -31,6 +31,10 @@ export default function ArtifactView({ artifact, onDownload, downloadLabel, bina
     return <div className="artifact-empty">加载中…</div>
   }
 
+  if (artifact.missing) {
+    return <div className="artifact-empty" role="status">当前文件已移除或尚未重新生成。</div>
+  }
+
   const relPath = artifact.dir ? `${artifact.dir}/${artifact.name}` : artifact.name
 
   if (artifact.binary) {

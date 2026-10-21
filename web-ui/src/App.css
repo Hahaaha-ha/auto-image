@@ -354,7 +354,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   margin-left: 11px; padding-left: 8px;
   border-left: 1px solid var(--line);
 }
-/* 制作修订目录较深：每层只占 8px，累计最多 24px；完整路径仍由行 title 提供。 */
+/* 附件目录可能较深：每层只占 8px，累计最多 24px；完整路径仍由行 title 提供。 */
 .va-local-art-group > .va-art-children { margin-left: 3px; padding-left: 4px; }
 .va-art-depth-limit > .va-art-children { margin-left: 0; padding-left: 0; border-left: 0; }
 .va-local-art-group .va-art-item { gap: 4px; }

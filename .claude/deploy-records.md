@@ -1,50 +1,42 @@
-# 制作记录交接约定
+# 软件版本文件交接约定
 
-所有 Ubuntu deploy 阶段、编排和手动总结先读取本文。固定工作目录为项目根；用 `python scripts/deploy_record.py --help` 查看入口，先运行 `python scripts/deploy_record.py schema` 读取当前契约。**正式字段、枚举、默认路径和校验只维护于 `deploy_records/contract.py` 与统一记录模块**；下文示例中的变量取工具返回值，不另造状态、原因码或目录规则。
+所有 Ubuntu deploy 阶段、编排和手动总结先读取本文。工作目录固定为项目根；运行 `python scripts/deploy_record.py schema` 获取当前字段、枚举和默认值，命令参数以 `--help` 为准。正式契约由 `deploy_records/contract.py` 与统一记录模块维护，提示词和模板引用它，不再各维护一份枚举。
 
-## 制作身份
+## 固定路径与覆盖
 
-- 新制作使用 `create --software <输入名> --version <原始版本串> --data <JSON文件>`。同软件同版本也新建；`create` 返回随机 `production_id` 及记录路径。版本参数只是请求值，不能当作实测身份。
-- 续作明确 `production_id`，用 `show --production-id <id>` 读取。需要定位时用 `list` 的软件、版本或 `--call-id` 条件列出；多条结果由用户指定，不能按 mtime、最新目录或事件序号猜选。install、verify、archive 从明确制作或指南头读取身份，不创建制作。
-- 用 `update --production-id <id> --data <JSON文件>` 保存已核实的实际版本、大版本依据、标签前缀确认、目标环境或新增来源；键名及结构取 schema。实际版本变化或目标机器失效后需要新建机器时，新建制作并用来源关联旧制作，不能把旧制作改成另一身份。
-- Web 执行上下文中已有的 run_id、call_id、task_id 按 schema 的 source 原样保存；它们与 production_id 分别维护。续作追加当前来源，保持制作身份。没有 Web 上下文时留空。调用标识由 Web 提供，不从会话事件序号拼接，也不复用上一回合标识。
-- 软件别名只使用 deploy.config.yaml 中已确认的统一映射，原始输入与来源保留。实际版本及环境字段未知时如实记录。目标环境来自用户要求、解析后的 ECS 规格/基础镜像或明确目标机的只读探测，不来自 agent 宿主机。
+所有文件位于 `deploy/<软件标识>/<版本>/`。`deploy.config.yaml` 集中配置软件别名、版本规则及文件名；统一入口解析 `{{software}}`、`{{version}}`，返回的 paths 原样交给各阶段。
 
-## 阶段修订及交接
+- 同软件同版本只保留当前文件：重跑阶段覆盖该阶段指南、报告和当前状态，手动总结覆盖 `<software>-summary.md`。阶段文件、总结和所需附件同处版本目录，不新建制作、修订或失败归档目录。
+- 软件和版本是目录定位依据。续作明确软件、版本及目标机器；有多个软件/版本或机器关联不清时先确认，不能靠最近修改的目录替换输入。
+- 原始软件输入与版本串保留；别名只使用配置中已确认的映射。请求版本、目录名及 `latest` 占位不等于已核实的实际版本。实际版本及大版本依据在官方资料和目标机检查后更新。
+- 现有 `run_id`、`task_id` 在可用时沿用其会话、任务语义；没有 Web 上下文时留空。`instance_id`、`image_id`、`job_id` 继续指对应云资源和操作，不派生额外持久身份。
 
-编排先调用：
+## 阶段输入与当前状态
 
-```bash
-python scripts/deploy_record.py begin-stage --production-id <id> --stage <本阶段> --guide-revision <已提交指南修订> --mode <本轮模式> --data <本轮关联JSON文件>
-```
+用 `paths --software <软件> --version <版本>` 解析固定路径，`show` 读取当前状态，`update --data <JSON文件>` 保存已确认版本、目标环境及机器；均显式带 `--software`、`--version`，具体字段读 schema。开始阶段用 `begin-stage --software <软件> --version <版本> --stage <阶段> --mode <本次模式>` 清理当前阶段与下游旧结果并取得 paths；它不创建独立修订。guide 必须先选择并读完适用总结及必要配置，再 begin-stage 覆盖指南。阶段重新开始会清除旧 summary 并使旧上架结果失效，避免新内容沿用旧成功状态；首次完整制作的 guide 使用 initial，清旧机器、云动作和版本身份后重新写入本次明确输入；原机纠错的 guide 使用 remediation，保留当前机器及 cloud，后续阶段开始不清这些身份，供补救与状态查询。直接调用阶段遵守相同步骤。
 
-guide 首轮无需 guide-revision；其补救修订可把前轮关联放入 data。pipeline 可以明确关联本轮失败 guide，只作执行收尾；它不能绕过后续阶段的指南通过门禁。data 的 inputs 及其他允许字段按 `--help` 和 schema 填写。编排把返回的 **production_id、revision_id、mode、guide_revision、paths、inputs** 原样传给阶段 agent；已经分配的修订不再 begin。直接调用阶段时由该 agent 分配本轮修订，guide 可先初始化新制作。
+使用 `paths` 读取当前软件/版本的指南和结果，使用 `paths` 写当前文件。重跑后旧的通过状态不能冒充本次执行：进入下阶段前核对当前状态、目标机器、实际版本与本次结果。需要重新执行的检查实际运行，不能只凭同名旧文件存在判成功。
 
-- `paths` 是本轮输出；`inputs` 是明确已提交的上游指南及相关安装、验证。使用返回路径原文，不按软件/版本自行拼路径，不从输出目录搜同名旧文件。编排可明确传 inputs 的安装与验证修订；archive 必须绑定当前通过的验证及它描述的安装。
-- guide 为每轮指南写两份独立文件；下游读取本轮已提交 guide 的 install_file / verify_file。报告、meta、配置和脚本写本阶段独立修订，已提交修订保持不变。
-- 补救 guide 的 execution_scope 结构取 schema，内容须包括可核对前置状态、实际命令、保留/跳过项、复验要求和系统更新开关。install 核对原机身份与前置状态，只执行该范围；前置状态不成立则停止反馈。原机补救没有默认系统更新、重建 ECS 或重复云操作。
-- `set-machine --production-id <id> --data <JSON文件>` 保存机器。已知 alias、instance_id、认证方式及来源持续保留；本轮未取得的字段不写空覆盖。取得 ECS id 后立即落盘，失败仍保留；密码、私钥及 token 不进入 JSON 或正文。
+首次安装和原机补救显式区分。补救指南写明可核对的前置状态、实际命令、保留/跳过步骤、复验要求及系统更新是否确需执行；install 只执行明确范围，前置状态不符则停止反馈，不自行改成完整安装。已有 alias、instance_id、认证方式持续传递；本轮未取得的字段不会把已知值写空。新建部署 ECS 保留 `--no-auto-terminate`。
 
-各阶段开始前读输入，成功或失败收尾都写必要输出和证据，再提交：
+阶段结束后写当前报告，并调用：
 
 ```bash
-python scripts/deploy_record.py commit-stage --production-id <id> --revision-id <本轮修订> --data <实际结果JSON文件>
+python scripts/deploy_record.py commit-stage --software <软件> --version <版本> --stage <阶段> --data <实际结果JSON文件>
 ```
 
-JSON 使用 schema.stage 样例的正式字段和允许取值。实际执行命令写入 commands（实际 command、exit_code、脱敏输出），同时保存 evidence；补救 install 的 commands 只承载 execution_scope.commands 中实际执行的命令，前置只读探测另存 evidence。实际环境由 install 记录，实测版本由 verify 记录，镜像与云操作由 archive 记录。不能把目标版本抄成实测版本或把旧轮结果写成本轮执行。
+JSON 字段及状态取值读 schema。报告记录本次真实结果，失败在当前报告和会话中如实说明，不额外创建失败档案、备份或总结。保留必要的当前机器/云操作状态，避免重试时重复创建资源；这不构成历史修订留存要求。
 
-成功提交需具备本阶段全部必需产物；失败无法生成正常产物时，写返回的 `paths.stage_result_file` 作为本轮失败报告，保留原始现象与证据，未执行步骤在正文和 gaps 明确说明。`commit-stage` 拒绝时，修正本轮材料再提交；未提交草稿不作为下游通过证据。编排检查提交状态、当前 revision_id 及 required 输出路径，不能仅检查旧同名文件存在。
+## 有效步骤与必要材料
 
-## 稳定证据
+当前版本文档记录实际有效的非敏感命令、参数、配置、安装/启动脚本和结果。必要附件保存到版本目录内，后续同版本操作可覆盖；清理前先保留总结需要的有效内容。共享 alias 日志可供排障，但总结不能只引用滚动日志、远程临时路径或长对话记忆。
 
-本轮 `evidence_dir` 保存实际命令及结果、有效非敏感参数、必要配置、安装/启动脚本和云返回。共享 alias 日志只作补充；远程路径、临时文件或会滚动的日志不能作为唯一证据。清理前先保存会被删除的材料。每取得云镜像或任务 id 立即写本轮操作证据。中断恢复先用 `stages --production-id <id> --include-drafts` 发现同制作的草稿；archive 的 inputs.previous_archives 也包含这些修订标识。读取对应固定 paths 下的本轮操作证据，查询云状态，明确区分已执行、仍在进行和未完成步骤，再接续尚未完成部分。草稿仅作状态发现与恢复来源，不作已提交或通过证据。
+用户建议和 agent 实际执行分开，未执行建议不写成有效步骤。秘密值只记参数名及获取方式，其余有效内容应具体可查。缺失材料、未执行检查和未知原因如实说明。失败不要求专门收集或归档过程材料；纠错后整理最终有效步骤即可。
 
-已有固定材料可引用其已提交修订路径；需要复制时使用入口 `snapshot`（先查看其 `--help`）或将脱敏内容写到当前 evidence_dir。evidence 传相对项目根的真实文件路径，保留来源、配置原路径与采集时间；提交校验引用并固定内容。秘密值只记参数名和获取方式，保留其余实际有效内容。用户建议与 agent 实际执行分开记录，未知原因、未执行验证、材料缺口明确说明。
+当前 state.cloud 只保存一个当前云动作，字段取 schema.cloud。收到云任务身份后立即通过 update 的 cloud 保存动作、instance_id、image_id、job_id 和状态；不追加历史。归档开始前与中断恢复先读取 state.cloud，再用对应 skill 查询云状态。进行中操作先查询，已完成操作不重复提交；内容整改需要新镜像时更新当前镜像和结果。中断状态不明则停止调查，不将重试直接等同于新云操作。
 
-每阶段报告头写制作、当前指南及本轮修订标识；正文列执行/验证范围、固定证据和缺口。阶段回复返回标识、路径、真实结论及提交状态，便于下一阶段准确交接。
+## 复用与手动总结
 
-## 基准与总结
+guide 将已核实实际版本、大版本依据、规则、标签前缀确认和**目标环境**按 schema 写入 JSON，先调用 `select-baseline --software <软件> --version <版本> --data <JSON文件>`，读取所选当前总结及必要材料后再开始 guide 阶段。筛选不依赖即将重置的当前状态；随后通过 update 保存查询中的已核实目标字段与 selection.selected 作为当前 baseline。版本比较、环境匹配和当前总结候选校验由统一模块执行。优先当前同版本适用总结，其次同大版本内低于目标的最高可用版本；已知不兼容、关键环境未知或版本不可比较时按目标版本官方资料生成。agent 宿主环境不能替代目标环境。
 
-guide 在核实身份与目标环境后调用 `select-baseline --production-id <id>`，读取返回的选择及排除原因。版本比较、环境匹配、提交完整性与候选资格由记录模块统一校验；agent 不另做字符串/mtime 排序。读取所选已提交总结和证据，再适配本次目标版本与环境；无候选、关键环境未知或版本不可可靠比较时查目标版本官方资料。
-
-手动总结使用独立 deploy-summary skill。流水线仍只有 guide → install → verify → archive；pipeline-result 只记本轮执行及索引，上架由用户反馈，成功打包不能替代人工上架。总结仅整理本地持久证据和文档，不调用远程或云操作，不自动触发阶段或创建部署任务。
+总结由用户手动调用 deploy-summary，只整理当前有效步骤、版本差异、安装详情和人工反馈；通过 `save-summary --software <软件> --version <版本> --data <JSON文件>` 将含 body 正文的 JSON 原子覆盖到同目录 `<software>-summary.md` 与当前状态的 summary。总结无需 begin-stage。总结不派发四阶段、不运行远程或云操作、不产生部署阶段事件或任务。打包完成不等于上架；只有用户明确反馈最终 image_id 已上架，且当前总结及所需材料完整、适用验证确已执行，才可作为成功复用候选。

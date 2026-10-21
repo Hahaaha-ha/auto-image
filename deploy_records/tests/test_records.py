@@ -1,4 +1,4 @@
-"""External-contract checks for production isolation, evidence, revisions and reuse."""
+"""Current-version overwrite and reuse behavior through the public local interface."""
 
 from copy import deepcopy
 import json
@@ -9,360 +9,279 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from deploy_records import RecordError, RecordStore, compare_versions, describe_contract
-from deploy_records.contract import SUMMARY_SECTIONS
+from deploy_records import RecordError, VersionStore, compare_versions, describe_contract
+from deploy_records.contract import STAGE_FILES, SUMMARY_SECTIONS
+
+ENV = {"os": "ubuntu", "os_version": "24.04", "architecture": "aarch64", "installation_method": "official-binary",
+       "sources": ["resolved target image"], "base_image": "ubuntu-24-arm", "dependencies": {"libc": "2.39"}}
 
 
-ENV = {"os": "ubuntu", "os_version": "24.04", "architecture": "aarch64", "base_image": "ubuntu-image",
-       "installation_method": "official-binary", "dependencies": {"libc": "2.39"}, "sources": ["target image metadata"]}
-
-
-class RecordTests(unittest.TestCase):
+class VersionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        self.store = RecordStore(self.root)
+        self.store = VersionStore(self.root)
 
-    def production(self, version="1.3.0", *, software="demo", **kwargs):
-        return self.store.create(software, version, actual_version=version, major_source="https://example.test/releases", target_environment=ENV, **kwargs)
+    def identify(self, version="1.3.0", software="demo", **kwargs):
+        rule = None if software == "postgresql" else "numeric"
+        return self.store.update(software, version, actual_version=version, major_source="official release policy", major_rule=rule, target_environment=ENV, **kwargs)
 
-    def stage(self, production, kind, guide=None, *, status="passed", mode="initial", extra=None):
-        revision = self.store.begin_stage(production["production_id"], kind, guide_revision=guide, mode=mode)
-        paths = revision["paths"]
-        for key, relative in paths.items():
-            if key.endswith("_file") and key != "revision_file":
-                (self.root / relative).write_text("> 验证契约: exit-code-v1\n\n## 检查\n" if key == "verify_file" else "actual execution evidence\n", encoding="utf-8")
-        evidence_file = self.root / paths["evidence_dir"] / "commands.log"
-        evidence_file.write_text("demo --version\n1.3.0\n", encoding="utf-8")
-        data = {"status": status, "source": "controlled execution", "evidence": [str(evidence_file.relative_to(self.root))],
-                "commands": [{"command": "demo --version", "exit_code": 0, "stdout": production["version"]["actual"], "stderr": ""}], "gaps": []}
-        if kind == "install":
+    def stage(self, stage, version="1.3.0", software="demo", mode="initial", status="passed", extra=None):
+        state = self.store.begin_stage(software, version, stage, mode=mode)
+        if stage == "guide" and mode == "initial":
+            state = self.identify(version, software)
+        for key in STAGE_FILES[stage]:
+            target = self.root / state["paths"][key]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(state["machine"]) if key == "install_meta_file" else "> 验证契约: exit-code-v1\n\n## 检查\n" if key == "verify_file" else f"current {stage} for {version}\n", encoding="utf-8")
+        data = {"status": status, "source": "actual controlled command", "commands": [{"command": "demo --version", "exit_code": 0, "stdout": "VERIFY_PASS: " + version, "stderr": ""}], "gaps": []}
+        if stage == "install":
             data["environment"] = ENV
-        if kind == "verify":
-            data["actual_version"] = production["version"]["actual"]
-            data["commands"][0]["stdout"] = "VERIFY_PASS: actual version " + production["version"]["actual"]
-        if kind == "archive":
-            data["images"] = [{"image_id": "img-" + production["production_id"], "status": "available"}]
+        if stage == "verify":
+            data["actual_version"] = version
+        if stage == "archive":
+            data["images"] = [{"image_id": "image-" + version}]
         data.update(extra or {})
-        return self.store.commit_stage(production["production_id"], revision["revision_id"], data)
+        return self.store.commit_stage(software, version, stage, data)
 
-    def completed(self, version="1.3.0", **kwargs):
-        production = self.production(version, **kwargs)
-        pid = production["production_id"]
-        self.store.set_machine(pid, {"server_alias": "demo-" + pid, "instance_id": "ecs-" + pid, "auth_method": "key_pair"})
-        guide = self.stage(production, "guide")
-        stages = {"guide": guide}
-        for kind in ("install", "verify", "archive", "pipeline"):
-            stages[kind] = self.stage(production, kind, guide["revision_id"])
-        return self.store.get(pid), stages
+    def completed(self, version="1.3.0", software="demo"):
+        self.stage("guide", version, software)
+        self.store.update(software, version, machine={"server_alias": "target", "instance_id": "ecs-one", "auth_method": "key_pair"})
+        for stage in ("install", "verify", "archive", "pipeline"):
+            self.stage(stage, version, software)
+        return self.store.load(software, version)
 
-    def summary(self, production, stages=None, *, listed=True, gaps=None):
-        draft = self.store.begin_summary(production["production_id"])
-        body = self.root / draft["paths"]["summary_file"]
-        body.write_text("# 版本总结\n\n" + "\n\n".join(f"## {section}\n\n实际内容和缺口" for section in SUMMARY_SECTIONS), encoding="utf-8")
+    def summary(self, version="1.3.0", software="demo", listed=True, body_label="latest summary"):
         data = deepcopy(describe_contract()["summary"])
-        data["source"] = "user explicitly requested summary"
-        data["gaps"] = gaps or []
-        data["review"] = {"sections_checked": list(SUMMARY_SECTIONS), "notes": "checked actual execution, configuration and version"}
-        if stages:
-            evidence = [stages["install"]["paths"]["install_result_file"], stages["verify"]["paths"]["verify_result_file"]]
-            data["stage_revisions"] = {kind: value["revision_id"] for kind, value in stages.items()}
-            data["evidence"] = evidence
-            for value in data["coverage"].values():
-                value.update(state="recorded", reason="actual commands are preserved", evidence=evidence)
-            for value in data["materials"]:
-                value.update(state="not_applicable", reason="no extra configuration or scripts required")
-            data["effective_steps"] = [{"description": "install and run demo", "evidence": evidence}]
-            image = stages["archive"]["data"]["images"][0]["image_id"]
-            data["final_image_id"] = image
-            if listed:
-                data["listing"] = {"status": "listed", "image_id": image, "source": "user", "feedback": "the specified image is listed", "feedback_at": "2026-10-21T09:00:00+08:00"}
-        return self.store.commit_summary(production["production_id"], draft["revision_id"], data)
+        data["body"] = "# Current summary\n\n" + "\n\n".join(f"## {section}\n\n{body_label}" for section in SUMMARY_SECTIONS)
+        data["source"] = "manual user request"
+        data["evidence"] = [self.store.paths(software, version)["install_file"], self.store.paths(software, version)["verify_result_file"]]
+        data["final_image_id"] = "image-" + version
+        if listed:
+            data["listing"].update(status="listed", image_id="image-" + version, feedback="specified image is listed", feedback_at="2026-10-22T09:00:00+08:00")
+        return self.store.save_summary(software, version, data)
 
-    def test_unique_identity_persistent_sources_and_machine_survive_resume(self):
-        first = self.production(source={"call_id": "call-one", "run_id": "session"})
-        second = self.production(source={"call_id": "call-two", "run_id": "session"})
-        self.assertNotEqual(first["production_id"], second["production_id"])
-        pid = first["production_id"]
-        self.store.set_machine(pid, {"instance_id": "ecs-one", "server_alias": "alias-one", "auth_method": "key_pair"})
-        self.store.set_machine(pid, {"instance_id": None, "server_alias": "alias-one", "auth_method": None})
-        self.store.update(pid, source={"call_id": "call-three", "run_id": "another-session"})
-        resumed = RecordStore(self.root).list_productions(call_id="call-three")
-        self.assertEqual(resumed[0]["machine"]["instance_id"], "ecs-one")
-        self.assertEqual(resumed[0]["machine"]["auth_method"], "key_pair")
-        with self.assertRaises(RecordError):
-            self.store.set_machine(pid, {"instance_id": "different-ecs"})
+    def select(self, version="1.3.0", software="demo", **kwargs):
+        rule = kwargs.pop("major_rule", None if software == "postgresql" else "numeric")
+        return self.store.select_baseline(software, version, actual_version=version, major_source="official release policy", major_rule=rule, target_environment=ENV, **kwargs)
 
-    def test_no_history_and_unknown_target_use_official_docs(self):
-        production = self.production()
-        baseline = self.store.select_baseline(production["production_id"])
-        self.assertIsNone(baseline["selected"])
-        previous, stages = self.completed("1.2.3")
-        self.summary(previous, stages)
-        unknown = self.store.create("demo", "1.3.0", actual_version="1.3.0", major_source="official versioning")
-        report = self.store.select_baseline(unknown["production_id"])
-        self.assertIsNone(report["selected"])
-        self.assertEqual(report["excluded"][0]["reason"], "target_environment_unknown")
+    def test_flat_paths_have_no_generated_identity_or_nested_directories(self):
+        state = self.completed()
+        self.summary()
+        paths = state["paths"]
+        self.assertTrue(all(Path(relative).parent.as_posix() == paths["output_dir"] for key, relative in paths.items() if key != "output_dir"))
+        self.assertEqual(paths["summary_file"], "deploy/demo/1.3.0/demo-summary.md")
+        self.assertFalse(any(part in {"runs", "stages", "summaries"} for path in self.root.rglob("*") for part in path.parts))
+        content = json.dumps(state)
+        self.assertNotIn("production_id", content)
+        self.assertNotIn("revision_id", content)
+        self.assertNotIn("call_id", content)
 
-    def test_eligible_summary_and_numeric_lower_version_selection(self):
+    def test_summary_overwrites_current_body_and_metadata(self):
+        self.completed()
+        first = self.summary(body_label="old body")
+        second = self.summary(body_label="new body")
+        self.assertEqual(first["summary_file"], second["summary_file"])
+        text = (self.root / second["summary_file"]).read_text()
+        self.assertIn("new body", text)
+        self.assertNotIn("old body", text)
+        self.assertEqual(len(list(self.root.rglob("*-summary.md"))), 1)
+
+    def test_new_same_version_install_discards_old_success_and_machine(self):
+        self.completed()
+        self.summary()
+        self.assertTrue(self.select()["selected"])
+        state = self.store.begin_stage("demo", "1.3.0", "guide")
+        self.assertFalse(state["stages"])
+        self.assertFalse(state["machine"])
+        self.assertIsNone(state["summary"])
+        self.assertIsNone(state["version"]["actual"])
+        self.assertFalse((self.root / state["paths"]["summary_file"]).exists())
+        self.assertFalse((self.root / state["paths"]["install_meta_file"]).exists())
+        self.assertIsNone(self.select()["selected"])
+
+    def test_begin_guide_preserves_selected_baseline_and_target_environment(self):
+        self.identify("1.3.0")
+        baseline = {"selected": {"actual_version": "1.2.3", "summary_file": "deploy/demo/1.2.3/demo-summary.md"}, "reason": "highest_lower_same_major"}
+        self.store.update("demo", "1.3.0", baseline=baseline, target_environment=ENV)
+        state = self.store.begin_stage("demo", "1.3.0", "guide", mode="initial")
+        self.assertEqual(state["baseline"], baseline)
+        self.assertEqual(state["target_environment"], ENV)
+
+    def test_pipeline_restart_invalidates_current_summary(self):
+        self.completed()
+        self.summary()
+        self.assertTrue(self.store.load("demo", "1.3.0")["summary"])
+        state = self.store.begin_stage("demo", "1.3.0", "pipeline")
+        self.assertIsNone(state["summary"])
+        self.assertFalse((self.root / state["paths"]["summary_file"]).exists())
+
+    def test_failure_replaces_current_status_without_history_or_special_report(self):
+        self.completed()
+        self.summary()
+        self.store.begin_stage("demo", "1.3.0", "install")
+        state = self.store.commit_stage("demo", "1.3.0", "install", {"status": "failed", "source": "network timeout"})
+        self.assertEqual(state["stages"]["install"]["status"], "failed")
+        self.assertNotIn("verify", state["stages"])
+        self.assertNotIn("archive", state["stages"])
+        self.assertIsNone(self.select()["selected"])
+
+    def test_stage_restart_clears_downstream_files_and_old_issues(self):
+        state = self.completed()
+        for key in ("install_issues_file", "verify_issues_file", "archive_issues_file"):
+            (self.root / state["paths"][key]).write_text("outdated issue")
+        self.store.begin_stage("demo", "1.3.0", "verify")
+        self.assertTrue((self.root / state["paths"]["install_result_file"]).exists())
+        self.assertFalse((self.root / state["paths"]["verify_result_file"]).exists())
+        self.assertFalse((self.root / state["paths"]["archive_result_file"]).exists())
+        self.assertFalse((self.root / state["paths"]["verify_issues_file"]).exists())
+
+    def test_current_cloud_operation_survives_archive_restart(self):
+        self.completed()
+        operation = {"action": "create-image", "instance_id": "ecs-one", "image_id": "image-pending", "job_id": "job-pending", "status": "running"}
+        self.store.update("demo", "1.3.0", cloud=operation)
+        state = self.store.begin_stage("demo", "1.3.0", "archive")
+        self.assertEqual(state["cloud"], operation)
+        self.assertNotIn("archive", state["stages"])
+        self.store.update("demo", "1.3.0", cloud={"action": "change-os", "instance_id": "ecs-one", "image_id": "image-pending", "status": "submitted"})
+        self.assertNotIn("job_id", self.store.load("demo", "1.3.0")["cloud"])
+
+    def test_no_history_and_unlisted_summary_use_official_docs(self):
+        self.assertIsNone(self.select()["selected"])
+        self.completed("1.2.3")
+        self.summary("1.2.3", listed=False)
+        self.assertIsNone(self.select()["selected"])
+
+    def test_same_version_first_then_highest_numeric_lower_same_major(self):
         for version in ("1.9.0", "1.10.0", "1.20.0", "2.0.0"):
-            production, stages = self.completed(version)
-            summary = self.summary(production, stages)
-            self.assertEqual(self.store.candidate_report(summary), {"eligible": True, "reasons": []})
-        target = self.production("1.11.0")
-        baseline = self.store.select_baseline(target["production_id"])
-        self.assertEqual(baseline["selected"]["actual_version"], "1.10.0")
-        self.assertEqual(baseline["reason"], "highest_lower_same_major")
-        self.assertIsNone(self.store.select_baseline(self.production("3.0.0")["production_id"])["selected"])
-        self.assertIsNone(self.store.select_baseline(self.production("1.1.0")["production_id"])["selected"])
+            self.completed(version)
+            self.summary(version)
+        self.assertEqual(self.select("1.11.0")["selected"]["actual_version"], "1.10.0")
+        self.assertEqual(self.select("1.9.0")["reason"], "same_version")
+        self.assertIsNone(self.select("1.1.0")["selected"])
+        self.assertIsNone(self.select("3.0.0")["selected"])
 
-    def test_same_version_latest_valid_commit_ignores_failed_new_attempt_and_draft(self):
-        production, stages = self.completed()
-        first = self.summary(production, stages)
-        second = self.summary(production, stages)
-        unfinished = self.summary(production, stages, gaps=["missing final configuration"])
-        self.store.begin_summary(production["production_id"])
-        target = self.production()
-        chosen = self.store.select_baseline(target["production_id"])["selected"]
-        self.assertEqual(chosen["summary_revision"], second["revision_id"])
-        self.assertGreater(second["commit_sequence"], first["commit_sequence"])
-        self.assertFalse(self.store.candidate_report(unfinished)["eligible"])
+    def test_postgresql_major_policy_and_unknown_rule(self):
+        self.completed("9.5.25", "postgresql")
+        self.summary("9.5.25", "postgresql")
+        self.assertTrue(self.select("9.5.26", "postgresql")["selected"])
+        self.assertIsNone(self.select("9.6.24", "postgresql")["selected"])
+        self.assertIsNone(self.select("9.5.26", "postgresql", major_rule="unknown")["selected"])
 
-    def test_pending_summary_is_committable_but_never_reusable(self):
-        production = self.production()
-        summary = self.summary(production)
-        self.assertEqual(summary["state"], "committed")
-        self.assertFalse(self.store.candidate_report(summary)["eligible"])
-        self.assertFalse(self.store.select_baseline(self.production()["production_id"])["selected"])
-        production, stages = self.completed()
-        summary = self.summary(production, stages, listed=False)
-        self.assertFalse(self.store.candidate_report(summary)["eligible"])
-
-    def test_revisions_do_not_overwrite_and_tampered_evidence_excludes_candidate(self):
-        production, stages = self.completed()
-        summary = self.summary(production, stages)
-        with self.assertRaises(RecordError):
-            self.store.commit_summary(production["production_id"], summary["revision_id"], summary["data"])
-        (self.root / stages["install"]["paths"]["install_result_file"]).write_text("tampered", encoding="utf-8")
-        self.assertFalse(self.store.candidate_report(summary)["eligible"])
-        self.assertIsNone(self.store.select_baseline(self.production()["production_id"])["selected"])
-
-    def test_missing_attachment_and_only_success_boolean_do_not_qualify(self):
-        production = self.production()
-        draft = self.store.begin_summary(production["production_id"])
-        with self.assertRaises(RecordError):
-            self.store.commit_summary(production["production_id"], draft["revision_id"], {"complete": True, "listing": {"status": "listed"}})
-        production, stages = self.completed()
-        summary = self.summary(production, stages)
-        (self.root / stages["verify"]["paths"]["verify_result_file"]).unlink()
-        self.assertFalse(self.store.candidate_report(summary)["eligible"])
-
-    def test_latest_directory_uses_verified_identity_and_aliases_are_explicit(self):
-        (self.root / "deploy.config.yaml").write_text("software_aliases:\n  demo-alias:\n    id: demo\n    source: https://official.test/demo\n", encoding="utf-8")
-        self.store = RecordStore(self.root)
-        production, stages = self.completed("1.2.3")
-        summary = self.summary(production, stages)
-        alias = self.store.create("demo-alias", "latest", actual_version="1.3.0", major_source="official", target_environment=ENV)
-        self.assertEqual(alias["software"]["id"], "demo")
-        self.assertEqual(self.store.select_baseline(alias["production_id"])["selected"]["summary_revision"], summary["revision_id"])
-        self.assertNotEqual(self.store.software_identity("demo.other")["id"], "demo")
-        self.assertEqual(self.store.software_identity("demo-alias")["original_directory"], "demo-alias")
-
-    def test_versions_are_conservative(self):
+    def test_version_comparison_remains_conservative(self):
         self.assertEqual(compare_versions("1.10.0", "1.9.0")["comparison"], 1)
-        for left, right in (("1.3", "1.3.0"), ("1.3.0-rc1", "1.3.0"), ("latest", "1.3.0"), ("v1.2.3", "1.3.0")):
-            self.assertIsNone(compare_versions(left, right)["comparison"])
+        for value in ("1.3.0-rc1", "1.3", "latest", "v1.2.3"):
+            self.assertIsNone(compare_versions(value, "1.3.0")["comparison"])
         self.assertEqual(compare_versions("v1.2.3", "1.3.0", left_tag_confirmed=True)["comparison"], -1)
 
-    def test_environment_mismatch_stops_reuse_but_dependency_differences_are_recorded(self):
-        production, stages = self.completed("1.2.3")
-        self.summary(production, stages)
-        target = self.production()
-        self.store.select_baseline(target["production_id"])
-        changed = {**ENV, "architecture": "x86_64"}
-        self.assertFalse(self.store.check_environment(target["production_id"], changed)["compatible"])
+    def test_target_environment_unknown_or_different_excludes_baseline(self):
+        self.completed("1.2.3")
+        self.summary("1.2.3")
+        for environment in ({}, {**ENV, "architecture": "x86_64"}):
+            result = self.store.select_baseline("demo", "1.3.0", actual_version="1.3.0", major_source="official", target_environment=environment)
+            self.assertIsNone(result["selected"])
+        self.identify()
+        self.store.update("demo", "1.3.0", baseline=self.select()["selected"])
+        self.assertFalse(self.store.check_environment("demo", "1.3.0", {**ENV, "architecture": "x86_64"})["compatible"])
+        self.assertTrue(self.store.check_environment("demo", "1.3.0", {**ENV, "base_image": "new base"})["compatible"])
+
+    def test_existing_machine_and_auth_survive_remediation(self):
+        self.completed()
+        state = self.store.begin_stage("demo", "1.3.0", "guide", mode="remediation")
+        self.assertEqual(state["machine"]["instance_id"], "ecs-one")
+        scope = {"preconditions": ["already installed"], "commands": ["demo --version"], "verification": ["demo --version"], "system_update": False}
+        for key in STAGE_FILES["guide"]:
+            (self.root / state["paths"][key]).write_text("> 验证契约: exit-code-v1\n")
+        self.store.commit_stage("demo", "1.3.0", "guide", {"status": "passed", "execution_scope": scope})
+        self.store.update("demo", "1.3.0", machine={"server_alias": "target", "instance_id": None, "auth_method": None})
         with self.assertRaises(RecordError):
-            self.stage(target, "install", self.stage(target, "guide")["revision_id"], extra={"environment": changed})
-        changed = {**ENV, "dependencies": {"libc": "2.40"}, "base_image": "new-image"}
-        report = self.store.check_environment(target["production_id"], changed)
-        self.assertTrue(report["compatible"])
-        self.assertEqual(report["adaptations"], ["base_image", "dependencies"])
-        unknown = {**ENV, "incompatibilities": ["vendor prohibits this base image"]}
-        self.assertFalse(self.store.check_environment(target["production_id"], unknown)["compatible"])
+            self.store.begin_stage("demo", "1.3.0", "install", mode="initial")
+        state = self.stage("install", mode="remediation")
+        self.assertEqual(state["machine"]["auth_method"], "key_pair")
+        with self.assertRaisesRegex(RecordError, "scope"):
+            self.stage("install", mode="remediation", extra={"commands": [{"command": "apt-get update", "exit_code": 0}]})
 
-    def test_current_verification_gate_and_actual_version(self):
-        production = self.production()
-        guide = self.stage(production, "guide")
-        install = self.stage(production, "install", guide["revision_id"])
+    def test_actual_version_and_positive_verification_gate(self):
+        self.stage("guide")
+        self.stage("install")
+        with self.assertRaisesRegex(RecordError, "version"):
+            self.stage("verify", extra={"actual_version": "1.2.3"})
+        self.stage("verify", status="failed")
         with self.assertRaises(RecordError):
-            self.stage(production, "verify", guide["revision_id"], extra={"actual_version": "1.2.3"})
-        self.stage(production, "verify", guide["revision_id"], status="failed")
+            self.store.begin_stage("demo", "1.3.0", "archive")
+        with self.assertRaisesRegex(RecordError, "positive"):
+            self.stage("verify", extra={"commands": [{"command": "check", "exit_code": 0, "stdout": "empty"}]})
+
+    def test_summary_checks_image_listing_and_required_current_materials(self):
+        state = self.completed()
+        self.assertTrue(self.summary()["eligible"])
+        (self.root / state["paths"]["install_file"]).unlink()
+        self.assertFalse(self.store.candidate_report(self.store.load("demo", "1.3.0"))["eligible"])
+        state = self.completed()
+        self.summary()
+        state = self.store.load("demo", "1.3.0")
+        state["summary"]["listing"]["image_id"] = "different-image"
+        self.assertFalse(self.store.candidate_report(state)["eligible"])
+
+    def test_empty_summary_sections_and_missing_evidence_are_not_candidates(self):
+        self.completed()
+        data = deepcopy(describe_contract()["summary"])
+        data["body"] = "# x\n\n" + "\n\n".join(f"## {section}\n" for section in SUMMARY_SECTIONS)
+        data["source"] = "manual user request"
+        data["listing"].update(status="listed", image_id="image-1.3.0", feedback="listed", feedback_at="2026-10-22T09:00:00+08:00")
+        data["final_image_id"] = "image-1.3.0"
         with self.assertRaises(RecordError):
-            self.store.begin_stage(production["production_id"], "archive", guide_revision=guide["revision_id"])
-        self.stage(production, "verify", guide["revision_id"])
-        self.stage(production, "install", guide["revision_id"])
-        with self.assertRaises(RecordError):
-            self.store.begin_stage(production["production_id"], "archive", guide_revision=guide["revision_id"])
-        self.assertTrue((self.root / install["paths"]["install_result_file"]).exists())
+            self.store.save_summary("demo", "1.3.0", data)
 
-    def test_remediation_has_scope_and_preserves_machine_without_repeating_updates(self):
-        production, stages = self.completed()
-        scope = {"preconditions": ["demo already installed"], "commands": ["demo --version"],
-                 "preserve": ["instance"], "skip": ["system update"], "verification": ["demo --version"], "system_update": False}
-        guide = self.stage(production, "guide", mode="remediation", extra={"execution_scope": scope})
-        remedied = self.stage(production, "install", guide["revision_id"], mode="remediation")
-        self.assertEqual(remedied["mode"], "remediation")
-        self.assertEqual(self.store.get(production["production_id"])["machine"]["instance_id"], production["machine"]["instance_id"])
-        with self.assertRaises(RecordError):
-            self.stage(production, "install", guide["revision_id"], mode="remediation", extra={"commands": [{"command": "apt-get update", "exit_code": 0}]})
-        self.assertTrue((self.root / stages["install"]["paths"]["install_result_file"]).exists())
+    def test_summary_requires_manual_source(self):
+        self.completed()
+        data = deepcopy(describe_contract()["summary"])
+        data["body"] = "# x\n\n" + "\n\n".join(f"## {section}\n\ncurrent material" for section in SUMMARY_SECTIONS)
+        data["evidence"] = [self.store.paths("demo", "1.3.0")["install_file"]]
+        data.pop("source", None)
+        with self.assertRaisesRegex(RecordError, "source"):
+            self.store.save_summary("demo", "1.3.0", data)
 
-    def test_snapshots_are_redacted_stable_and_external_logs_are_rejected(self):
-        production = self.production()
-        draft = self.store.begin_stage(production["production_id"], "guide")
-        source = self.root / "private.conf"
-        source.write_text("PASSWORD=secret-one\napi_key: secret-two\ncurl --password secret-three\nport=8080\n", encoding="utf-8")
-        saved = self.store.snapshot(production["production_id"], draft["revision_id"], source, "service.conf")
-        text = (self.root / saved).read_text(encoding="utf-8")
-        for secret in ("secret-one", "secret-two", "secret-three"):
-            self.assertNotIn(secret, text)
-        self.assertIn("port=8080", text)
-        for key in ("install_file", "verify_file"):
-            (self.root / draft["paths"][key]).write_text("> 验证契约: exit-code-v1\n", encoding="utf-8")
-        with self.assertRaises(RecordError):
-            self.store.commit_stage(production["production_id"], draft["revision_id"], {"source": "test", "status": "passed", "evidence": ["private.conf"]})
-
-    def test_cli_initialization_and_version_comparison(self):
-        script = Path(__file__).resolve().parents[2] / "scripts" / "deploy_record.py"
-        result = subprocess.run([sys.executable, str(script), "--project-root", str(self.root), "create", "--software", "demo", "--version", "1.3.0"], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(json.loads(result.stdout)["production_id"].startswith("prod-"))
-
-    def test_failed_guide_and_pipeline_keep_their_own_reports(self):
-        production = self.production()
-        draft = self.store.begin_stage(production["production_id"], "guide")
-        (self.root / draft["paths"]["stage_result_file"]).write_text("official docs unavailable", encoding="utf-8")
-        guide = self.store.commit_stage(production["production_id"], draft["revision_id"], {"status": "failed", "source": "official documentation request", "gaps": ["documentation unavailable"]})
-        pipeline = self.stage(production, "pipeline", guide["revision_id"], status="failed")
-        self.assertEqual(pipeline["guide_revision"], guide["revision_id"])
-        with self.assertRaises(RecordError):
-            self.store.begin_stage(production["production_id"], "install", guide_revision=guide["revision_id"])
-
-    def test_latest_directory_candidate_uses_commit_order_across_directories(self):
-        production, stages = self.completed("1.2.3")
-        earlier = self.summary(production, stages)
-        latest = self.store.create("demo", "latest", actual_version="1.2.3", major_source="official", target_environment=ENV)
-        guide = self.stage(latest, "guide")
-        latest_stages = {"guide": guide}
-        for kind in ("install", "verify", "archive", "pipeline"):
-            latest_stages[kind] = self.stage(latest, kind, guide["revision_id"])
-        newer = self.summary(self.store.get(latest["production_id"]), latest_stages)
-        self.assertGreater(newer["commit_sequence"], earlier["commit_sequence"])
-        target = self.production("1.2.3")
-        self.assertEqual(self.store.select_baseline(target["production_id"])["selected"]["summary_revision"], newer["revision_id"])
-
-    def test_interrupted_summary_commit_preserves_previous_candidate(self):
-        production, stages = self.completed()
-        previous = self.summary(production, stages)
-        import deploy_records.store as store_module
-        atomic = store_module._atomic_json
-
-        def fail_revision(path, value):
-            if value.get("record_type") == "summary" and value.get("state") == "committed":
-                raise OSError("simulated interrupted final commit")
-            return atomic(path, value)
-
-        with patch.object(store_module, "_atomic_json", side_effect=fail_revision):
+    def test_interrupted_summary_overwrite_is_not_eligible(self):
+        self.completed()
+        self.summary()
+        import deploy_records.store as module
+        atomic = module._atomic
+        def fail_body(path, text):
+            if path.name.endswith("-summary.md"):
+                raise OSError("write interrupted")
+            atomic(path, text)
+        with patch.object(module, "_atomic", side_effect=fail_body):
             with self.assertRaises(OSError):
-                self.summary(production, stages)
-        chosen = self.store.select_baseline(self.production()["production_id"])["selected"]
-        self.assertEqual(chosen["summary_revision"], previous["revision_id"])
-        self.assertEqual(len(self.store.summaries(production_id=production["production_id"])), 1)
+                self.summary(body_label="replacement")
+        self.assertFalse(self.store.candidate_report(self.store.load("demo", "1.3.0"))["eligible"])
 
-    def test_remediation_cannot_fall_back_to_initial_mode(self):
-        production, _ = self.completed()
-        scope = {"preconditions": ["existing installation"], "commands": ["repair"], "preserve": [], "skip": [], "verification": ["check"], "system_update": False}
-        guide = self.stage(production, "guide", mode="remediation", extra={"execution_scope": scope})
-        with self.assertRaises(RecordError):
-            self.store.begin_stage(production["production_id"], "install", guide_revision=guide["revision_id"], mode="initial")
+    def test_verified_aliases_share_one_current_directory(self):
+        (self.root / "deploy.config.yaml").write_text("software_aliases:\n  demo-alias:\n    id: demo\n    source: https://official.test/project\n")
+        self.store = VersionStore(self.root)
+        self.assertEqual(self.store.paths("demo", "1.3.0"), self.store.paths("demo-alias", "1.3.0"))
+        self.assertNotEqual(self.store.paths("demo.other", "1.3.0"), self.store.paths("demo", "1.3.0"))
 
-    def test_redaction_keeps_non_secret_parameters(self):
-        production = self.production()
-        draft = self.store.begin_stage(production["production_id"], "guide")
-        source = self.root / "runtime.json"
-        source.write_text('{"password": "hidden-one", "task_id": "task-one", "disk_size": 100}\ncurl --disk-size 100 --token hidden-two\nAPP_PASSWORD=hidden-three\n', encoding="utf-8")
-        relative = self.store.snapshot(production["production_id"], draft["revision_id"], source, "config.txt")
-        text = (self.root / relative).read_text(encoding="utf-8")
+    def test_secrets_are_redacted_without_changing_non_secret_parameters(self):
+        state = self.identify()
+        self.store.commit_stage("demo", "1.3.0", "install", {"status": "failed", "commands": [{"command": "curl --token hidden-value --disk-size 100", "exit_code": 1, "stderr": 'password="hidden-other"'}]})
+        text = (self.root / state["paths"]["state_file"]).read_text()
         self.assertNotIn("hidden-", text)
-        self.assertIn('"task_id": "task-one"', text)
-        self.assertIn('"disk_size": 100', text)
         self.assertIn("--disk-size 100", text)
-        self.assertEqual(json.loads(text.splitlines()[0])["password"], "<redacted>")
+        json.loads(text)
 
-    def test_interrupted_archive_remains_discoverable_for_state_recovery(self):
-        production, stages = self.completed()
-        pending = self.store.begin_stage(production["production_id"], "archive", guide_revision=stages["guide"]["revision_id"])
-        (self.root / pending["paths"]["evidence_dir"] / "operation.json").write_text('{"job_id": "job-already-submitted"}', encoding="utf-8")
-        self.assertNotIn(pending["revision_id"], [item["revision_id"] for item in self.store.stages(production["production_id"])])
-        drafts = self.store.stages(production["production_id"], include_drafts=True)
-        self.assertIn(pending["revision_id"], [item["revision_id"] for item in drafts])
-        resumed = self.store.begin_stage(production["production_id"], "archive", guide_revision=stages["guide"]["revision_id"])
-        self.assertIn(pending["revision_id"], resumed["inputs"]["previous_archives"])
+    def test_machine_metadata_redacts_secret_fields(self):
+        self.store.update("demo", "1.3.0", machine={"server_alias": "target", "auth_method": "key_pair", "identity_evidence": "private_key=hidden-key"})
+        state = self.store.load("demo", "1.3.0")
+        meta = (self.root / state["paths"]["install_meta_file"]).read_text()
+        self.assertNotIn("hidden-key", meta)
 
-    def test_selected_baseline_is_accepted_as_stable_evidence(self):
-        previous, stages = self.completed("1.2.3")
-        baseline = self.summary(previous, stages)
-        target = self.production("1.3.0")
-        selected = self.store.select_baseline(target["production_id"])
-        self.assertEqual(selected["selected"]["summary_revision"], baseline["revision_id"])
-        guide = self.stage(target, "guide", extra={"evidence": [baseline["paths"]["summary_file"]]})
-        self.assertIn(baseline["paths"]["summary_file"], guide["manifest"])
-        other = self.production("1.4.0")
-        with self.assertRaises(RecordError):
-            self.stage(other, "guide", extra={"evidence": [baseline["paths"]["summary_file"]]})
-
-    def test_lost_baseline_does_not_block_current_failure_evidence(self):
-        previous, stages = self.completed("1.2.3")
-        baseline = self.summary(previous, stages)
-        target = self.production("1.3.0")
-        self.store.select_baseline(target["production_id"])
-        (self.root / baseline["paths"]["summary_file"]).unlink()
-        failure = self.stage(target, "guide", status="failed", extra={"gaps": ["selected baseline lost"]})
-        self.assertEqual(failure["state"], "committed")
-        with self.assertRaises(RecordError):
-            self.stage(target, "guide", status="failed", extra={"evidence": [baseline["paths"]["summary_file"]]})
-
-    def test_postgresql_legacy_two_segment_major_is_not_reused_across_majors(self):
-        previous, stages = self.completed("9.5.25", software="postgresql")
-        self.assertEqual(previous["version"]["major"], "9.5")
-        self.summary(previous, stages)
-        same_major = self.production("9.5.26", software="postgresql")
-        self.assertIsNotNone(self.store.select_baseline(same_major["production_id"])["selected"])
-        next_major = self.production("9.6.24", software="postgresql")
-        result = self.store.select_baseline(next_major["production_id"])
-        self.assertIsNone(result["selected"])
-        self.assertEqual(result["excluded"][0]["reason"], "major_version_differs")
-        modern = self.production("16.2", software="postgresql")
-        self.assertEqual(modern["version"]["major"], 16)
-
-    def test_unsupported_major_rule_is_recorded_and_excluded(self):
-        previous, stages = self.completed("1.2.3")
-        self.summary(previous, stages)
-        target = self.production("1.3.0", major_rule="unknown")
-        self.assertIsNone(target["version"]["major"])
-        target = self.store.update(target["production_id"], actual_version="1.3.0")
-        self.assertEqual(target["version"]["major_rule"], "unknown")
-        self.assertIsNotNone(target["version"]["major_source"])
-        self.assertIsNone(self.store.select_baseline(target["production_id"])["selected"])
-
-    def test_successful_install_requires_its_own_machine_snapshot(self):
-        production = self.production()
-        guide = self.stage(production, "guide")
-        draft = self.store.begin_stage(production["production_id"], "install", guide_revision=guide["revision_id"])
-        (self.root / draft["paths"]["install_result_file"]).write_text("actual installation result", encoding="utf-8")
-        with self.assertRaisesRegex(RecordError, "install_meta_file"):
-            self.store.commit_stage(production["production_id"], draft["revision_id"], {"status": "passed", "source": "controlled execution"})
+    def test_cli_exposes_only_software_and_version_identity(self):
+        script = Path(__file__).resolve().parents[2] / "scripts" / "deploy_record.py"
+        result = subprocess.run([sys.executable, str(script), "--project-root", str(self.root), "paths", "--software", "demo", "--version", "1.3.0"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["output_dir"], "deploy/demo/1.3.0")
 
 
 if __name__ == "__main__":

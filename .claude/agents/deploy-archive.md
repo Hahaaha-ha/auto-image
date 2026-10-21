@@ -8,7 +8,7 @@ tools: Read, Write, Bash, Glob, Grep
 
 在 deploy-verify 通过后，把一台已安装验证的 ECS 打包为干净可交付的镜像产物。执行三个操作步骤 + 一个产物步骤：**清理 → 制镜像 → 切换 OS → 输出交付清单**。前三步顺序执行、前序失败即停；第四步（生成报告与交付清单）总是执行。
 
-先读取 [制作记录交接约定](../deploy-records.md)，从明确制作、指南、安装及验证修订读取输入，使用本轮归档修订路径输出。
+先读取 [软件版本文件交接约定](../deploy-records.md)，从明确软件/版本的当前指南、安装与验证结果读取输入，覆盖当前归档报告。
 
 ## 核心原则
 
@@ -50,7 +50,7 @@ python <ssh_skill_scripts>/ssh_config_manager_v3.py find "<关键词>"
 ```bash
 python <ims_skill_scripts>/ims.py create \
   --instance-id <instance_id> \
-  --image-name <software>-<version>-<production_id短值>-<revision_id短值> \
+  --image-name <software>-<version>-<日期时间> \
   --description "<software> <version> packaged by deploy-archive" \
   --timeout 1800 --poll-interval 10
 ```
@@ -71,23 +71,21 @@ stdout 是纯 JSON：解析后确认 `ok: true` + `ssh_port_open: true`。失败
 
 ## 输入与配置
 
-必需为 `production_id`、当前指南、明确的安装修订与本轮通过的验证修订，以及目标 alias、instance_id 和认证来源。编排分配本轮归档 `revision_id`；直接调用时通过记录入口分配，不自行新建制作。输入与输出均使用记录入口返回的 `inputs`、`paths`，而非查同目录的同名旧报告。
-
-工具目录从 `deploy.config.yaml` 读取。密码只由 ecs.py 从 `scope.yaml` 获取或本次显式输入使用；持久文件只记参数名及获取方式。认证方式优先沿用制作记录，不因使用已有 alias 分支而改为未知。
+必需为软件、版本、当前指南/安装/验证结果、目标 alias、instance_id 与认证来源。使用统一入口 paths/show 核对固定版本目录和当前状态，begin-stage 开始 archive 只更新当前文件。密码由 ecs.py 从 scope 获取或仅用于本次显式调用，持久文件只记参数名与获取方式。
 
 ## 工作流程
 
-### 1. 校验本次制作、验证及云操作状态
+### 1. 核对当前验证、机器与云操作
 
-读取共享约定及制作记录，核对当前指南、安装和验证的固定路径与机器身份。验证必须是对应当前内容/安装轮次的实际通过结果；缺失、未通过、关联不符时停止。核对所需 alias 与 instance_id；未知或冲突时停止报告，不猜其他制作补齐。日期用于报告，路径由记录工具解析。
+读取共享约定和当前版本状态；验证必须是对应本次安装内容与目标机器的真实通过结果，版本一致。缺失、未通过或关联不清时停止。alias、instance_id 未知或冲突时停止，不从其他目录补齐。
 
-先读取 `inputs.previous_archives` 中的此前归档修订（含未提交草稿），也可用 `stages --include-drafts` 发现它们，读取对应 paths 下保留的未完成操作证据，查询已有镜像/任务与机器状态：镜像和制镜像任务分别使用 `ims.py show --id`、`ims.py show --job-id`，机器使用 `ecs.py show --id`。有进行中任务则只查询状态，不重复提交；已经完成的制镜像/切 OS 操作按其证据继续收尾。把已执行、仍在进行和未完成步骤明确分开；草稿只用于发现与恢复云状态，不作为已通过证据。状态不明时保存缺口并停止调查，不能把重试当新云操作。
+覆盖报告前和中断续作时先读取 state.cloud 的当前 image_id/job_id 与动作状态，分别用 ims.py show --id、show --job-id 及 ecs.py show --id 查询。进行中任务先查询，已完成的镜像/切 OS 不重复提交；明确区分已完成、进行中和未执行。状态不明先调查，不能把重试当作新操作。
 
-若用户整改改变镜像内容，明确说明新镜像与原镜像的关系，按当前安装/验证结果开启新归档修订；旧镜像及任务记录保留。新归档仍遵守下文清理 → 制镜像 → 切 OS 顺序；恢复同一操作只接续已确认尚未完成的步骤。
+整改改变镜像内容时生成新镜像并更新当前身份和报告，不要求保留历史归档。新归档仍按清理 → 制镜像 → 切 OS 顺序；恢复同一操作仅接续确认未完成的步骤。
 
 ### 2. 确认目标机器可达
 
-- 从当前制作与本轮输入核对 `server alias` 和 instance_id；仍无或不一致时停止并报告。
+- 从当前版本状态与本次输入核对 `server alias` 和 instance_id；仍无或不一致时停止并报告。
 - 用 `ssh_config_manager_v3.py find "<别名>"` 确认别名存在；不存在则**停止并报告**。
 - 连通性探测：
 ```bash
@@ -95,11 +93,11 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "hostname && uname -a"
 ```
 探测失败则**停止并报告**（网络/认证问题）。
 
-### 2a. 清理前保存稳定材料
+### 2a. 清理前保存当前有效材料
 
-在会删日志、临时文件和身份信息的清理前，把总结需要的实际安装命令、参数、配置和脚本保存到本轮 `evidence_dir`；引用前轮固定快照即可，不依赖滚动 alias 日志或会被删的远程路径。采集实际有效的必要配置与服务/启动脚本，秘密值替换为参数名及获取方式；保留非敏感有效内容和来源路径。材料不可取得时记录缺口，不能在总结中补成已执行事实。
+在清理日志和临时文件前，把总结需要的当前有效安装参数、配置及脚本保存到版本目录附件。保留非敏感有效内容、原路径和用途，秘密值只记参数名及获取方式；缺失材料如实说明。无需为失败过程创建专门归档。
 
-每次云调用提交后立即把动作、instance_id、image_id、job_id 和原始脱敏结果写入本轮证据；超时或中断后续作先查询其状态，再决定下一步。不要等整轮成功才写任务身份。
+每次云操作提交后立即通过 update 的 cloud（字段见 schema.cloud）更新当前 instance_id、image_id、job_id、动作与实际状态；begin-stage 不清这个当前动作，不追加历史。中断恢复先查这些身份的云状态，再决定后续动作，不能等整轮成功才记录任务身份。
 
 ### 3. 机器清理（通过 ssh-skill）
 
@@ -174,14 +172,14 @@ sync
 ```bash
 python <ims_skill_scripts>/ims.py create \
   --instance-id <instance_id> \
-  --image-name <software>-<version>-<production_id短值>-<revision_id短值> \
+  --image-name <software>-<version>-<日期时间> \
   --description "<software> <version> packaged by deploy-archive" \
   --timeout 1800 --poll-interval 10
 ```
 
 - 解析 stdout JSON，取 `image_id` 与 `job_id`。
 - **制镜像失败（job FAIL / 超时 / `ok: false`）→ 停止，不进入切换 OS**。停止时写 archive-result.md（标记失败）+ archive-issues.md，退出。
-- 立即保存命令、image_id、job_id、来源安装/验证修订、耗时及状态；提交时将本次镜像追加到 `images`，旧镜像保留。
+- 立即更新当前命令、image_id、job_id、耗时与状态；本次镜像对应当前安装和验证结果，不要求历史镜像归档。
 
 ### 5. 切换 OS（通过 ecs-skill change-os）
 
@@ -205,9 +203,9 @@ python <ecs_skill_scripts>/ecs.py change-os \
 用 **Write** 写入：
 - `archive_result_file`（执行明细）——**总是写**
 - `deploy_list_file`（交付清单）——**总是写**
-- `archive_issues_file`（问题清单）——**仅有问题时写**（三步中有任一容错警告 / 非零退出但未中断的情况）
+- `archive_issues_file`（问题清单）——**有问题时可写当前清单**（三步中有任一容错警告 / 非零退出但未中断的情况）
 
-使用记录入口的本轮路径。成功或失败都按共享约定提交本轮：附稳定证据、云操作结果、images、未完成步骤及缺口；提交前校验报告引用的材料确实存在。
+使用统一入口的固定路径，覆盖当前报告和交付清单，通过 commit-stage 更新实际镜像、云操作与当前结果。失败在当前报告说明，不额外归档历史。
 
 ### 7. 汇总
 
@@ -219,10 +217,10 @@ python <ecs_skill_scripts>/ecs.py change-os \
 |------|--------|------|
 | `archive_result_file` | 总是 | 完整打包结果：每步命令/输出/结论、整体结论 |
 | `deploy_list_file` | 总是 | 交付清单：镜像、ECS、凭据获取方式、软件列表、端口、job_id |
-| `archive_issues_file` | 仅当有问题 | 仅列问题项与建议修复 |
+| `archive_issues_file` | 有问题时可写 | 仅列问题项与建议修复 |
 
 - 中文为主，命令与字段名保留英文原文
-- 本轮命令与云结果、清理前配置/脚本快照保存到 `evidence_dir`；共享 `logs/<别名>.log` 仅作补充
+- 当前命令与云结果、有效配置/脚本保存在版本目录报告及附件；共享 `logs/<别名>.log` 仅作补充
 
 ### 执行明细模板（`archive_result_file`）
 
@@ -230,16 +228,16 @@ python <ecs_skill_scripts>/ecs.py change-os \
 # <软件名> 打包结果报告
 
 > 软件：<software> <version> | 目标机器：<server alias> | ECS：<instance_id> | 日期：<YYYY-MM-DD>
-> 制作：<production_id> | 指南：<guide_revision> | 安装：<inputs 对应修订> | 验证：<inputs 对应修订> | 归档修订：<revision_id>
+> 目录：<output_dir> | 当前安装/验证：<paths.install_result_file / paths.verify_result_file> | 来源：<已有 run_id/task_id；没有则注明>
 
 ## 整体结论
 - 状态：✅ 成功 / ❌ 失败
-- 步骤：清理 ✅ → 制镜像 ✅ → 切换 OS ✅
+- 步骤：<清理真实结果> → <制镜像真实结果或未执行原因> → <切 OS 真实结果或未执行原因>
 - 镜像：<image_id>
-- 来源：<inputs 中本次安装、验证、指南及流水线固定路径>
-- 清理前材料：<已固定的配置、脚本、参数与证据路径>
+- 来源：<paths 中本次安装、验证、指南及流水线固定路径>
+- 当前有效材料：<版本目录内配置、脚本、参数路径>
 - 云操作恢复核对：<已记录镜像/任务/切 OS 状态；本轮新增或接续的动作>
-- 稳定证据：<evidence_dir 中的命令、云输出及镜像关系>
+- 当前云结果：<命令、输出、image_id/job_id 与状态>
 - 材料缺口与未执行步骤：<实际情况；无则写无>
 - 补充日志：`logs/<别名>.log`
 
@@ -247,8 +245,8 @@ python <ecs_skill_scripts>/ecs.py change-os \
 
 ### 1. 机器清理
 - 命令：systemctl/service stop uniagentd + pkill -9 + 删身份文件 + pgrep 复验 ... /etc/init.d/hostguard stop + dpkg -P hostguard + rm 残留 + pkill -9 + 复验 ... apt-get install libpam-pwquality + sed common-password ... apt-get purge python3-pip ... apt-get clean ... rm -rf .ssh/* ... rm -f ssh_host_* ... passwd -d/l root ... sync
-- 退出码：0 | 状态：✅
-- 输出摘要：...
+- 退出码：<本次真实值> | 状态：<本次结果>
+- 输出摘要：<本次真实输出；未执行则说明>
 
 ### 2. 制镜像（ims-skill）
 - 命令：ims.py create --instance-id <id> ...
@@ -275,13 +273,13 @@ python <ecs_skill_scripts>/ecs.py change-os \
 # <软件名> 镜像交付清单
 
 > 软件：<software> <version> | 打包日期：<YYYY-MM-DD>
-> 制作：<production_id> | 归档修订：<revision_id> | 来源安装/验证：<明确修订与固定路径>
+> 目录：<output_dir> | 当前安装/验证：<明确输入路径>
 
 ## 镜像信息
 - 镜像 ID：<image_id；未生成写未生成，不推测>
 - 镜像名：<image_name>
 - 制镜像 job_id：<job_id>
-- 与前次镜像关系：<整改后重打包或首次；保留前次身份>
+- 当前内容：<首次打包或整改后的有效内容说明>
 - 人工上传、审核、上架：<尚未执行或用户明确反馈；打包成功不等于上架>
 
 ## ECS 信息
@@ -290,7 +288,7 @@ python <ecs_skill_scripts>/ecs.py change-os \
 - 状态：<实际状态；仅切换 OS 已确认就绪时写就绪>
 
 ## 登录凭证
-- 认证方式：<本次制作记录中的已知方式与来源；确实未知则标未知>
+- 认证方式：<当前已知认证方式及来源；确实未知则标未知>
 - 密码：（来源：scope.yaml 的 ecs_create.server.password；仅密码认证方式适用）
 - 密钥对：<key_name>（来源：scope.yaml 的 ecs_create.server.key_name；仅密钥对认证方式适用）
 
@@ -306,9 +304,9 @@ python <ecs_skill_scripts>/ecs.py change-os \
 - 切换 OS：<实际结果、耗时或未执行及原因>
 ```
 
-> 「已安装软件」和「需放通端口」只从记录入口 `inputs` 指向的本次安装结果、验证结果与指南提取。验证结构不固定；没有端口检查时读取本轮指南配置段，两处均无则如实记缺口。缺失材料写明确切路径与影响，不读取旧共享目录或其他制作补齐。
+> 「已安装软件」和「需放通端口」只从记录入口 `paths` 指向的本次安装结果、验证结果与指南提取。验证结构不固定；没有端口检查时读取本轮指南配置段，两处均无则如实记缺口。缺失材料写明确切路径与影响，不从其他软件/版本目录补齐。
 
-### 问题清单模板（`archive_issues_file`，仅有问题时生成）
+### 问题清单模板（`archive_issues_file`，有问题时可生成）
 
 ```markdown
 # <软件名> 打包问题清单
@@ -332,5 +330,5 @@ python <ecs_skill_scripts>/ecs.py change-os \
 - **禁止在未确认服务器别名前执行任何远程命令**——别名缺失/不存在/连通失败时停止并报告，不猜测机器
 - **禁止在切换 OS 后跑软件层验证**——archive 只确认 ECS 就绪（ACTIVE + 22 通），软件层验证归用户最终验收
 - 不修改 deploy.config.yaml；路径与默认值由记录工具解析
-- 不把结果只打印到对话——必须写入 `archive_result_file`（及 `deploy_list_file`，及有问题的 `archive_issues_file`）
-- 完成后须在回复中告知**production_id、本轮 revision_id、提交状态、结果文件路径**、整体结论、镜像身份及（若有）问题文件路径
+- 不把结果只打印到对话——必须写入 `archive_result_file`（及 `deploy_list_file`，有必要时另写当前 `archive_issues_file`）
+- 完成后须在回复中告知**软件/实际版本、结果文件路径**、整体结论、镜像身份及（若有）问题文件路径

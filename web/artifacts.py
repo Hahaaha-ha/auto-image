@@ -21,9 +21,12 @@ from pathlib import Path, PurePosixPath
 
 import yaml
 
-from deploy_records.contract import is_control_file
-
 from .normalize import ARCHIVE, BUILD, GUIDE, INSTALL, VERIFY
+
+
+def _is_internal_file(name):
+    """Hide atomic-write scratch and legacy record bookkeeping from artifact UI."""
+    return name in {".records.lock", ".commit-sequence.json"} or (name.startswith((".deploy-", ".record-")) and name.endswith(".tmp"))
 
 # deploy.config.yaml 的产物文件键 → 所属阶段（config 是文件名的唯一权威源，
 # 改名 / 加键只动 config：改名自动跟随，新键不在此映射即无徽标）
@@ -116,7 +119,7 @@ def browse(artifact_roots, file_stages):
             rel_dir = Path(dirpath).relative_to(root_path).as_posix()
             group_dir = f"{root_name}/{rel_dir}" if rel_dir != "." else root_name
             for name in filenames:
-                if is_control_file(name):
+                if _is_internal_file(name):
                     continue
                 try:
                     stat = os.stat(Path(dirpath) / name)
@@ -143,7 +146,7 @@ def resolve(artifact_roots, file_stages, rel_path):
     if not rel_path or Path(rel_path).is_absolute():
         return None  # 绝对路径与空串前置拒绝（Path / "/abs" 会整体替换根）
     parts = PurePosixPath(rel_path).parts
-    if ".." in parts or any(is_control_file(part) for part in parts):
+    if ".." in parts or any(_is_internal_file(part) for part in parts):
         return None  # 目录段夹带 .. 前置拒绝（resolve 兜底之外的显式语义）
     root_path = artifact_roots.get(parts[0])
     if root_path is None or len(parts) < 2:

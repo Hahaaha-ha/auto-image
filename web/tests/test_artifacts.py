@@ -371,7 +371,7 @@ async def test_zip_batches_selected_paths_across_roots():
             assert zf.read("deploy/dup/nginx-rpm-result.md").decode() == "另一个制作的同名产物"
 
 
-async def test_new_productions_and_legacy_files_browse_preview_and_zip():
+async def test_fixed_version_and_old_nested_artifacts_browse_preview_and_zip():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         deploy = root / "deploy"
@@ -412,26 +412,29 @@ async def test_zip_rejects_bad_requests():
             assert r.status_code == 404, r.text
 
 
-async def test_record_control_files_are_excluded_from_browse_read_and_exports():
+async def test_fixed_summary_and_state_are_readable_after_overwrite():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        control = ["deploy/.records.lock", "deploy/.commit-sequence.json", "deploy/demo/1.0.0/.record-interrupted.tmp"]
-        visible = "deploy/demo/1.0.0/runs/prod-a/stages/guide-a/evidence/config.json"
-        for relative in control + [visible]:
+        files = ["deploy/demo/1.0.0/demo-summary.md", "deploy/demo/1.0.0/demo-state.json"]
+        for relative in files:
             path = root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("retained material", encoding="utf-8")
+            path.write_text("first value", encoding="utf-8")
         async with await run_with_client(root) as client:
             groups = (await client.get("/api/artifacts")).json()["groups"]
             paths = [f"{group['dir']}/{file['name']}" for group in groups for file in group["files"]]
-            assert paths == [visible], paths
-            for relative in control:
-                assert (await client.get(f"/api/artifacts/file/{relative}")).status_code == 404
-                assert (await client.get(f"/api/artifacts/download/{relative}")).status_code == 404
-            response = await client.post("/api/artifacts/zip", json={"paths": control + [visible]})
+            assert sorted(paths) == sorted(files), paths
+            for relative in files:
+                response = await client.get(f"/api/artifacts/file/{relative}")
+                assert response.json()["content"] == "first value", response.text
+                (root / relative).write_text("latest value", encoding="utf-8")
+                response = await client.get(f"/api/artifacts/file/{relative}")
+                assert response.json()["content"] == "latest value", response.text
+            response = await client.post("/api/artifacts/zip", json={"paths": files})
             assert response.status_code == 200
             with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-                assert archive.namelist() == [visible]
+                assert archive.namelist() == files
+                assert all(archive.read(path) == b"latest value" for path in files)
 
 
 async def main():

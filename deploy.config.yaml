@@ -8,20 +8,16 @@
 #   {{version}}   软件版本号，如 1.25.3；无法确定时取 unknown_version
 # ============================================================
 # 路径由 python scripts/deploy_record.py 统一解析；output_dir 是版本根。
-# 新阶段写入 runs/<production_id>/stages/<revision_id>/，总结独立追加。
-# 下游使用入口返回的 inputs/paths，不能按同目录或修改时间猜输入。
+# 阶段、总结与附件直接写版本目录；同软件同版本覆盖当前文件。
+# 下游使用入口返回的 paths，不能把旧通过文件冒充本次结果。
 # ============================================================
 
 # 公共：输出根目录（指南与结果都放在此目录下，按软件/版本分子目录）
 output_dir: "deploy/{{software}}/{{version}}"
 
-records:
-  runs_dir: "runs"
-  stages_dir: "stages"
-  summaries_dir: "summaries"
-  production_file: "production.json"
-  revision_file: "revision.json"
-  summary_file: "summary.md"
+# 当前版本状态与手动总结；无制作/修订子目录。
+state_file: "{{software}}-state.json"
+summary_file: "{{software}}-summary.md"
 
 # 别名只维护有官方来源确认的关系；不通过删除标点合并产品。
 software_aliases:

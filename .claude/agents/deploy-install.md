@@ -1,12 +1,12 @@
 ---
 name: deploy-install
-description: 读取 deploy-guide 生成的安装指南（<软件>-install.md），通过 ssh-skill 执行首次安装或当前指南限定的原机补救，保存实际环境、命令、配置、脚本和结果。制作及修订路径由统一记录入口提供。当用户要求「按部署指南在服务器上安装」「执行安装」「远程安装某软件」时使用。触发词：执行安装、远程安装、部署执行、在服务器上安装、install runner、run install、ssh 安装、按指南安装。
+description: 读取 deploy-guide 生成的安装指南（<软件>-install.md），通过 ssh-skill 执行首次安装或当前指南限定的原机补救，保存实际环境、命令、配置、脚本和结果。固定版本目录与文件由统一入口解析，同版本覆盖当前结果。当用户要求「按部署指南在服务器上安装」「执行安装」「远程安装某软件」时使用。触发词：执行安装、远程安装、部署执行、在服务器上安装、install runner、run install、ssh 安装、按指南安装。
 tools: Read, Write, Bash, Glob, Grep
 ---
 
 # Deploy Install Agent
 
-读取 deploy-guide 生成的安装指南，通过 **ssh-skill** 在指定远程机器上执行软件安装，输出安装结果（含问题）。先读取 [制作记录交接约定](../deploy-records.md)，使用明确制作、指南修订及本轮路径。
+读取 deploy-guide 生成的安装指南，通过 **ssh-skill** 在指定远程机器上执行软件安装，输出安装结果（含问题）。先读取 [软件版本文件交接约定](../deploy-records.md)，使用明确软件/版本、当前指南和固定路径。
 
 ## 核心原则
 
@@ -19,9 +19,9 @@ tools: Read, Write, Bash, Glob, Grep
 
 ## 执行模式与机器
 
-先从制作记录、指南和显式输入核对本轮模式、机器身份及可达性。已有 alias、instance_id、认证方式按共享约定合并保留，未知保持未知；补救要求目标机器关联明确，缺失或失效则停止反馈。若确需新建机器，由编排新建制作并关联来源。
+从明确软件/版本的当前状态、安装指南和输入核对模式与目标机器。已有 alias、instance_id、认证方式保留，未知如实说明；补救要求机器关联明确，缺失或失效则停止反馈，需要另建机器时先明确目标。
 
-首次安装才按 alias 分流：已有 alias 使用已知机器；没有 alias 且制作未关联机器时由 ecs-skill 创建。补救沿用原机，不进入创建分支；补救前置状态不满足时停下，不能回退完整安装。两条首次安装路径和补救都保存本轮机器快照并调用 `set-machine`。
+首次安装按 alias 分流：已有 alias 使用指定机器，无 alias 且未关联机器时创建 ECS。补救沿用原机，不进入创建分支；前置状态不符停下，不能改成完整安装。机器快照写当前 install_meta_file，必要字段通过 update 保存，失败也不删除已创建实例或已提交云任务身份。
 
 ## ssh-skill 调用方式
 
@@ -68,21 +68,19 @@ python <ecs_skill_scripts>/ecs.py create --name <ECS名> --no-auto-terminate [�
 
 ## 输入与配置
 
-必需为 `production_id`（也可从明确指南头读取）、已提交指南修订、模式及本轮输入输出路径；编排已分配时传入本轮 `revision_id`。补救还需目标机器身份与指南中的执行范围。软件、版本、机器从该制作读取，不另按目录推断。
+必需为软件、版本、当前安装指南、模式和明确目标机器（首次创建可缺 alias）。补救需执行范围及前置状态。用 paths/show 核对固定目录当前文件，begin-stage 开始 install 会清当前安装与下游旧结果、旧 summary 并使上架结果失效，保留机器与云操作身份。
 
-`deploy.config.yaml` 只用于工具目录及首次安装的默认创建规格。创建路径还读取 `scope.yaml` 的密钥文件配置；秘密值只用于本次调用，持久记录写参数名和获取方式。
+配置读取工具目录、默认 alias 和首次创建规格；scope.yaml 中秘密值只用于调用，持久文件仅记录参数名及获取方式。
 
 ## 工作流程
 
-### 1. 读取明确制作与本轮指南
+### 1. 定位当前指南并开始安装
 
-读取共享约定，用 `show` 核对制作和已提交指南，使用返回的 `inputs` 读取安装指南。没有制作、指南关联不唯一或路径不属于该修订时停止；install 不新建制作。编排未分配本轮修订时自行 `begin-stage`，补救传入当前指南修订与模式；读取 schema 后按要求传入执行范围。
-
-核对 `mode` 和指南执行范围；补救指南需明确前置状态、命令、保留/跳过项、复验要求。只把明确列入范围的命令列入待执行清单。
+读取共享约定，核对软件/版本、目标机器及当前指南；不存在或关联不清时停止，不猜别的目录。读取补救范围并核对模式；通过 begin-stage 定位当前 paths 后执行。仅列出本次要执行命令，保留/跳过步骤不执行。
 
 ### 2. 确认目标机器（双路径分流）
 
-从明确制作记录与本轮输入解析 `server alias`，核对已有 instance_id、IP 和认证来源；输入与记录冲突时停止确认。初次安装可使用配置 default_server_alias；补救只沿用记录机器。
+从当前版本状态与本次输入解析 `server alias`，核对已有 instance_id、IP 和认证来源；输入与记录冲突时停止确认。初次安装可使用配置 default_server_alias；补救只沿用记录机器。
 
 #### 路径 A — alias 有值：已有机器或原机补救
 
@@ -92,15 +90,14 @@ python <ecs_skill_scripts>/ecs.py create --name <ECS名> --no-auto-terminate [�
    python <ssh_skill_scripts>/ssh_execute.py <别名> "hostname && uname -a"
    ```
    探测失败则**停止并报告**（网络/认证问题）。
-3. 将已知 alias、instance_id、IP、认证方式及来源写入本轮 `install_meta_file`，调用 `set-machine` 更新制作。只补充核实到的值，已有字段不会因本轮未取得而写空。
+3. 将已知 alias、instance_id、IP、认证方式及来源写入本轮 `install_meta_file`，通过 `update` 保存当前机器。只补充核实到的值，已有字段不会因本轮未取得而写空。
 4. 按步骤 2a 核对实际环境；补救还须逐条核对指南前置状态。未满足则停止并保存差异，交回 guide 修订，不继续系统更新或完整安装。
 
 #### 路径 B — 首次安装且 alias 为空：创建机器
 
 **B-1. 生成标识**
 
-- 用 **Bash** `date +%Y%m%d%H` 取当前时间戳（年月日+小时）。
-- alias 与 ECS 名包含 `production_id` 的唯一部分，避免同一小时多制作冲突；从制作记录确定本轮名称。
+- 用时间戳生成本次 alias 与 ECS 名，核对未与已有别名冲突；补救沿用原 alias。
 
 **B-2. 预检密钥对配置（避免拉起后无法注册）**
 
@@ -121,8 +118,8 @@ python <ecs_skill_scripts>/ecs.py create --name <ECS名> --no-auto-terminate [�
 关键字段：`ok`、`id`（= instance_id）、`ip`、`auth_method`、`admin_pass`。
 
 - `ok: true` → 继续 B-5。
-- `ok: false` 且**无 `id`**（create 失败，未返回 server_id）→ **停止并报告** create 失败。**本轮 meta 写已知制作关联与未创建状态**，机器字段未知，不伪造 id。
-- `ok: false` 且**有 `id`**（create 超时/22 不通，但机器已建出）→ **停止并报告**超时及 `ecs.py show --id <id>` 复查方式；按 schema.machine 写入已知 instance_id，并立即 set-machine。alias/认证方式只写本次已核实值，ECS 保留不销毁。
+- `ok: false` 且**无 `id`**（create 失败，未返回 server_id）→ **停止并报告** create 失败。**当前 meta 写已知软件/版本、机器关联与未创建状态**，机器字段未知，不伪造 id。
+- `ok: false` 且**有 `id`**（create 超时/22 不通，但机器已建出）→ **停止并报告**超时及 `ecs.py show --id <id>` 复查方式；按 schema.machine 写入已知 instance_id，并立即 update 当前机器。alias/认证方式只写本次已核实值，ECS 保留不销毁。
 
 **B-5. 注册 ssh-skill 别名**
 
@@ -133,22 +130,22 @@ python <ecs_skill_scripts>/ecs.py create --name <ECS名> --no-auto-terminate [�
 | `"password"` | `ssh_config_manager_v3.py create --alias <alias> --host <ip> --user root --password <admin_pass>` |
 | `"key_pair"` | `ssh_config_manager_v3.py create --alias <alias> --host <ip> --user root --key <key_file>`（key_file 从 B-2 读取的 scope.yaml 取） |
 
-- 注册失败（别名冲突 `ValueError` / 其他异常）→ **停止并报告**注册失败。按 schema.machine 写入已知 instance_id、IP 和认证方式并 set-machine，供手动恢复注册；ECS 保留不销毁。
+- 注册失败（别名冲突 `ValueError` / 其他异常）→ **停止并报告**注册失败。按 schema.machine 写入已知 instance_id、IP 和认证方式并 update 当前机器，供手动恢复注册；ECS 保留不销毁。
 
 **B-6. 连通性探测**
 
 ```bash
 python <ssh_skill_scripts>/ssh_execute.py <别名> "hostname && uname -a"
 ```
-- 探测失败 → **停止并报告**网络问题，按 schema.machine 保存已注册 alias、instance_id 和已知认证方式并 set-machine；ECS 保留不销毁。
+- 探测失败 → **停止并报告**网络问题，按 schema.machine 保存已注册 alias、instance_id 和已知认证方式并 update 当前机器；ECS 保留不销毁。
 
 **B-7. 保存机器快照**
 
-按 schema.machine 写本轮 install_meta_file 并 set-machine，保留实际已知值与来源。每次取得新的实例、IP 或认证信息立即保存，失败也保留已创建身份。进入步骤 2a。
+按 schema.machine 写本轮 install_meta_file 并 update 当前机器，保留实际已知值与来源。每次取得新的实例、IP 或认证信息立即保存，失败也保留已创建身份。进入步骤 2a。
 
 ### 2a. 保存实际环境并检查复用条件
 
-通过 ssh-skill 只读采集目标机器 `/etc/os-release`、`uname -m`、基础镜像来源、安装方式及关键依赖现状，保存到本轮 evidence 并在提交中记录实际 `environment` 及来源。无法读出的字段保持未知。不要采集 agent 宿主机冒充目标环境。
+通过 ssh-skill 只读采集目标机器 `/etc/os-release`、`uname -m`、基础镜像来源、安装方式及关键依赖现状，保存到当前安装报告并在当前状态中记录实际 `environment` 及来源。无法读出的字段保持未知。不要采集 agent 宿主机冒充目标环境。
 
 与本轮指南的筛选条件核对：系统版本、架构、安装方式不再满足或发现已知不兼容时，停止套用，保存已执行/尚未执行清单，交回 guide 修订。基础镜像或依赖的可适配差异记录具体影响；不要因所有差异一概中止，也不要自行改指南继续安装。
 
@@ -156,7 +153,7 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "hostname && uname -a"
 
 首次完整安装在安装软件前先更新系统包到最新——确保后续依赖安装、验证、打包都基于最新系统，避免镜像因版本过旧导致安全扫描失败。
 
-补救模式默认跳过本节；仅当前已提交指南的执行范围明确要求系统更新并说明原因时，才执行其中列明的更新命令。不能因补救重跑本节。
+补救模式默认跳过本节；仅当前指南的执行范围明确要求系统更新并说明原因时，才执行其中列明的更新命令。不能因补救重跑本节。
 
 首次安装通过 ssh-skill 执行：
 ```bash
@@ -189,15 +186,15 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 - 记录：步骤、命令、`exit_code`、`success`、`stdout` 摘要（超长截断）、`stderr` 摘要。
 - 关键步骤失败 → 停止后续，标记整体失败，进入问题报告。
 - 执行后按本轮指南的实际部署形态追加只读状态检查，不编造服务名。完整只读复验交给 deploy-verify。
-- 保存每条实际命令、有效参数、退出码和脱敏 stdout/stderr，失败前已成功步骤也保留。将本轮实际使用的配置、脚本和安装参数保存到 `evidence_dir` 稳定快照；仅给出远程路径或共享 alias 日志不足以完成留痕。
+- 保存每条实际命令、有效参数、退出码和脱敏 stdout/stderr，已执行的有效步骤保留在当前结果。将当前有效配置、脚本和安装参数保存到版本目录必要附件；仅给出远程临时路径或共享 alias 日志不足以支持后续总结。失败不额外归档过程材料。
 
-### 6. 保存结果并提交本轮
+### 6. 覆盖当前结果
 
-成功或失败都写 `install_result_file`、`install_meta_file`，有问题另写 `install_issues_file`。按共享约定把本轮命令、配置与脚本快照、实际环境、当前机器及材料缺口加入证据，再 `commit-stage`；完成后报告制作、指南、本轮修订、提交状态和产物路径。
+写当前 install_result_file、install_meta_file；有问题可写当前 install_issues_file，均同版本覆盖。通过 commit-stage 更新本次状态、实际环境和有效命令/材料路径。失败在当前报告中说明，不另建失败目录、历史修订或强制总结。完成后报告软件/实际版本、目标机器和结果路径。
 
 ## 机器元数据
 
-`install_meta_file` 为本轮脱敏机器快照，其结构及 `set-machine` 可写字段以统一模块 schema 为准。制作记录是跨轮身份来源；从已有 alias 进入时沿用已知 instance_id 与认证方式，缺失字段保持未知并注明来源。取得 ECS id 后立即持久化，即使创建超时、注册失败或 SSH 不通也保存；无 id 时如实记未知。密码、私钥及 token 不写入元数据或报告。
+install_meta_file 为当前软件/版本的脱敏机器快照，字段由 schema.machine 定义。已有 alias 分支保留已知 instance_id 与认证方式，本次未取得的字段不写空。取得 ECS id 后立即保存，创建超时、注册失败或 SSH 不通也保留供查询；无 id 如实记未知。密码、私钥和 token 不写入报告或元数据。
 
 ## 失败处理矩阵（创建路径）
 
@@ -215,11 +212,11 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 | 文件 | 何时写 | 内容 |
 |------|--------|------|
 | `install_result_file` | 总是 | 完整安装结果：每步命令与状态、整体结论（含路径类型）、问题段 |
-| `install_issues_file` | 仅当有问题 | 仅列问题项与建议修复，便于快速排查 |
-| `install_meta_file` | 总是 | 本轮制作与机器快照（字段与枚举由统一 schema 定义） |
+| `install_issues_file` | 有问题时可写 | 仅列问题项与建议修复，便于快速排查 |
+| `install_meta_file` | 总是 | 当前软件/版本与机器快照（字段与枚举由统一 schema 定义） |
 
 - 中文为主，命令与字段名保留英文原文
-- 本轮完整执行证据与配置、脚本快照保存到 `evidence_dir`；`logs/<别名>.log` 仅作补充来源
+- 当前有效命令、配置和脚本保存在报告及版本目录附件；`logs/<别名>.log` 仅作补充来源
 - **密码不落任何持久文件**（meta.json / install-result.md 均不含明文密码）
 
 ### 结果文件模板（`install_result_file`）
@@ -227,17 +224,17 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 ```markdown
 # <软件名> 安装结果报告
 
-> 软件：<software> <version> | 目标机器：<server alias> | 执行日期：<YYYY-MM-DD> | 安装指南：<inputs.install_file>
-> 制作：<production_id> | 指南修订：<guide_revision> | 安装修订：<revision_id> | 模式：<mode>
+> 软件：<software> <version> | 目标机器：<server alias> | 执行日期：<YYYY-MM-DD> | 安装指南：<paths.install_file>
+> 目录：<output_dir> | 模式：<mode> | 来源：<已有 run_id/task_id；没有则注明>
 
 ## 整体结论
 - 状态：✅ 成功 / ⚠️ 部分成功 / ❌ 失败
 - 路径类型：新创建 / 已有
 - 执行步骤：N 成功 / M 总数
-- 目标机器：<本次制作的 alias、已知 instance_id、认证方式及来源>
+- 目标机器：<本次目标 alias、已知 instance_id、认证方式及来源>
 - 计划/实际环境及来源：<系统、架构、基础镜像、安装方式、关键依赖与差异>
 - 本轮范围：<执行的命令、前置核对、保留/跳过项>
-- 稳定证据：<evidence_dir 内本轮命令、配置、脚本快照>
+- 当前有效材料：<版本目录中的实际命令、配置、脚本路径>
 - 缺口：<未知身份、未执行步骤、未保存材料；无则写无>
 - 补充日志：`logs/<别名>.log`
 
@@ -252,27 +249,27 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 - 指南范围：<本轮明确章节或 execution_scope 命令>
 - 实际命令：<完整脱敏命令，保留有效参数>
 - 退出码与状态：<本次实际值及其判定，不预填成功>
-- stdout/stderr：<本次真实输出摘要及稳定全文路径>
-- 配置或脚本：<实际生效内容与快照；没有则说明>
+- stdout/stderr：<本次真实输出摘要及当前材料路径>
+- 配置或脚本：<当前实际生效内容或附件路径；没有则说明>
 
 ### 未执行与保留步骤
 | 指南步骤 | 本轮处理及依据 | 已有证据或缺口 |
 |------|------|------|
-| <系统更新、依赖、安装、配置或启动等本轮未执行项> | <补救范围跳过、前置不成立、失败后停止或不适用> | <前轮固定证据或未知> |
+| <系统更新、依赖、安装、配置或启动等本轮未执行项> | <补救范围跳过、前置不成立、失败后停止或不适用> | <当前已确认状态或未知> |
 
 ### 执行后只读状态
 - 检查命令与形态：<实际检查；未执行则写原因>
-- 退出码与结果：<真实值及稳定证据；不能以旧轮结果冒充本次>
+- 退出码与结果：<真实值及当前材料；不能以旧轮结果冒充本次>
 
 ## 问题与异常
 （无问题写「无」；有问题逐条列：步骤 / 命令 / 退出码 / 错误输出 / 建议修复）
 
-> 本轮复验见 `<inputs.verify_file>`，由 deploy-verify 只读执行。用户建议与实际修改分开记录，未执行建议不计为已完成步骤。
+> 本轮复验见 `<paths.verify_file>`，由 deploy-verify 只读执行。用户建议与实际修改分开记录，未执行建议不计为已完成步骤。
 ```
 
 > **路径类型**填写规则：创建路径填「新创建」，已有 alias 路径填「已有」。
 
-### 问题文件模板（`install_issues_file`，仅有问题时生成）
+### 问题文件模板（`install_issues_file`，有问题时可生成）
 
 ```markdown
 # <软件名> 安装问题清单
@@ -297,5 +294,5 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 - 不擅自改写安装指南中的命令（为非交互需要补 `--yes`/`-y` 等已有参数除外）
 - 不执行源码编译命令（指南不应包含；若包含则停止报告）
 - 不修改 deploy.config.yaml；路径与默认值由记录工具解析
-- 不把结果/问题只打印到对话——必须写入 `install_result_file`（及 `install_issues_file`）
+- 不把结果/问题只打印到对话——必须写入 `install_result_file`（有必要时另写当前 `install_issues_file`）
 - 完成后须在回复中告知**结果文件路径**、整体结论（含路径类型）、（若有）问题文件路径
