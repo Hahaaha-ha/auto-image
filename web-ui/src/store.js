@@ -1218,6 +1218,21 @@ let artifactRefreshId = 0
 let artifactRequestId = 0
 const artifactRequests = new Map()
 
+function cacheBinaryArtifact(relPath, entry) {
+  artifactRequests.set(relPath, ++artifactRequestId)
+  const cut = relPath.lastIndexOf('/')
+  const data = {
+    dir: cut > 0 ? relPath.slice(0, cut) : '',
+    name: entry.name,
+    stage: entry.stage ?? null,
+    size: entry.size ?? null,
+    binary: true,
+  }
+  if (JSON.stringify(state.artifactCache[relPath]) !== JSON.stringify(data)) {
+    set({ artifactCache: { ...state.artifactCache, [relPath]: data } })
+  }
+}
+
 async function readArtifactContent(relPath, epoch) {
   const requestId = ++artifactRequestId
   artifactRequests.set(relPath, requestId)
@@ -1252,7 +1267,10 @@ export async function refreshArtifacts() {
         }
         return
       }
-      if (entry.binary) return
+      if (entry.binary) {
+        cacheBinaryArtifact(tab.relPath, entry)
+        return
+      }
       try { await readArtifactContent(tab.relPath, epoch) } catch { /* 下个周期重试，保留可读正文。 */ }
     }))
   } catch {
@@ -1314,19 +1332,7 @@ export function clearDraft(runId) {
 export async function openArtifact(relPath, entry) {
   const epoch = identityEpoch
   if (entry?.binary) {
-    const cut = relPath.lastIndexOf('/')
-    set({
-      artifactCache: {
-        ...state.artifactCache,
-        [relPath]: {
-          dir: cut > 0 ? relPath.slice(0, cut) : '',
-          name: entry.name,
-          stage: entry.stage ?? null,
-          size: entry.size ?? null,
-          binary: true,
-        },
-      },
-    })
+    cacheBinaryArtifact(relPath, entry)
   } else {
     try {
       await readArtifactContent(relPath, epoch)

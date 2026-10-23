@@ -70,6 +70,36 @@ it('阶段清理移除文件后不再显示旧成功正文，同路径重建后�
   expect(store.getState().artifactCache[rel].missing).toBeUndefined()
 })
 
+it('二进制附件原位覆盖更新元信息，删除后同路径重建恢复下载视图', async () => {
+  const binaryRel = 'deploy/nginx/1.3.0/bundle.zip'
+  let binaryEntry = { name: 'bundle.zip', size: 15, stage: null, binary: true }
+  fetch.mockClear()
+  fetch.mockImplementation(async url => {
+    if (url === '/api/artifacts') return response({ groups: [{
+      dir: 'deploy/nginx/1.3.0', files: binaryEntry ? [binaryEntry] : [],
+    }] })
+    throw new Error(`二进制附件不应请求正文：${url}`)
+  })
+  store.closeTab(`file:${rel}`)
+  await store.openArtifact(binaryRel, binaryEntry)
+  const previous = store.getState().artifactCache[binaryRel]
+  await store.refreshArtifacts()
+  expect(store.getState().artifactCache[binaryRel]).toBe(previous)
+
+  binaryEntry = null
+  await store.refreshArtifacts()
+  expect(store.getState().artifactCache[binaryRel]).toEqual({ missing: true })
+  binaryEntry = { name: 'bundle.zip', size: 2700, stage: null, binary: true }
+  await store.refreshArtifacts()
+  expect(store.getState().artifactCache[binaryRel]).toEqual({
+    dir: 'deploy/nginx/1.3.0', name: 'bundle.zip', size: 2700, stage: null, binary: true,
+  })
+  binaryEntry = { ...binaryEntry, size: 1800 }
+  await store.refreshArtifacts()
+  expect(store.getState().artifactCache[binaryRel].size).toBe(1800)
+  expect(fetch.mock.calls.every(([url]) => !url.includes('/api/artifacts/file/'))).toBe(true)
+})
+
 it('后台读取失败保留原正文，换账号后迟到的读取不能恢复旧缓存', async () => {
   fetch.mockImplementationOnce(async () => response(listing))
     .mockImplementationOnce(async () => ({ ok: false, status: 503, json: async () => ({ detail: 'temporarily unavailable' }) }))

@@ -211,14 +211,15 @@ def test_missing_fixed_version_does_not_switch_to_other_directory():
         assert task["instance_id"] is None and not task["confirmed"], task
 
 
-def test_summary_state_and_attachments_do_not_confirm_task_identity():
+def test_summary_state_attachments_and_temporary_files_do_not_confirm_task_identity():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         now = time.time()
         for software, version in (("nginx", "1.3.0"), ("redis", "7.2")):
             directory = root / "deploy" / software / version
             directory.mkdir(parents=True)
-            for filename in (f"{software}-summary.md", f"{software}-state.json", "config.json", "manual.pdf"):
+            for filename in (f"{software}-summary.md", f"{software}-state.json", "config.json",
+                             "manual.pdf", f"{software}-install.md.tmp", ".deploy-summary.tmp"):
                 (directory / filename).write_text("supplemental material")
             old_guide = directory / f"{software}-install.md"
             old_guide.write_text("old stage output")
@@ -244,6 +245,63 @@ def test_ambiguous_stage_outputs_are_not_selected_by_mtime():
         store.handle_event(stage_event("r1", "GUIDE", "deploy-guide", time.time()))
         task = store.list()[0]
         assert task["software"] is None and task["version"] is None and not task["confirmed"], task
+
+
+def test_unique_stage_directory_replaces_alias_and_requested_version_placeholders():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        directory = root / "deploy/nodejs/20.18.1"
+        directory.mkdir(parents=True)
+        (directory / "nodejs-install.md").write_text("current stage output")
+        (directory / "nodejs-install-meta.json").write_text(json.dumps({"instance_id": "i-node"}))
+        store = make_store(root / "task", {"deploy": root / "deploy"})
+        now = time.time()
+        store.handle_event(ev("r1", "user.message", {"text": "部署 Node.js 20"}, now))
+        store.handle_event(stage_event("r1", "INSTALL", "deploy-install", now + 1))
+        task = store.list()[0]
+        assert task["confirmed"] and (task["software"], task["version"]) == ("nodejs", "20.18.1"), task
+        assert task["instance_id"] == "i-node", task
+
+
+def test_guessed_environment_cannot_supply_machine_before_directory_confirmation():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        now = time.time()
+        old_directory = root / "deploy/Ubuntu/22.04"
+        old_directory.mkdir(parents=True)
+        old_meta = old_directory / "Ubuntu-install-meta.json"
+        old_meta.write_text(json.dumps({"instance_id": "i-unrelated", "server_alias": "unrelated"}))
+        os.utime(old_meta, (now - 1000, now - 1000))
+        directory = root / "deploy/nginx/1.25.3"
+        directory.mkdir(parents=True)
+        (directory / "nginx-install.md").write_text("current stage output")
+        (directory / "nginx-install-meta.json").write_text(json.dumps({
+            "instance_id": "i-nginx", "server_alias": "nginx-target",
+        }))
+        store = make_store(root / "task", {"deploy": root / "deploy"})
+        store.handle_event(ev("r1", "user.message", {"text": "在 Ubuntu 22.04 上部署 nginx 1.25.3"}, now))
+        store.handle_event(stage_event("r1", "INSTALL", "deploy-install", now + 1))
+        task = store.list()[0]
+        assert (task["software"], task["version"], task["instance_id"], task["server_alias"]) == (
+            "nginx", "1.25.3", "i-nginx", "nginx-target"), task
+
+
+def test_ambiguous_stage_directories_do_not_use_raw_input_to_pick_a_machine():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        now = time.time()
+        for software in ("nginx", "redis"):
+            directory = root / "deploy" / software / "1.3.0"
+            directory.mkdir(parents=True)
+            (directory / f"{software}-install.md").write_text("current stage output")
+            (directory / f"{software}-install-meta.json").write_text(json.dumps({"instance_id": f"i-{software}"}))
+        store = make_store(root / "task", {"deploy": root / "deploy"})
+        store.handle_event(ev("r1", "user.message", {"text": "部署 nginx 1.3.0"}, now))
+        store.handle_event(stage_event("r1", "INSTALL", "deploy-install", now + 1))
+        store.handle_event(ev("r1", "turn.completed", {"result": "执行完成"}, now + 2))
+        task = store.list()[0]
+        assert not task["confirmed"] and task["instance_id"] is None and task["server_alias"] is None, task
+        assert task["status"] == "DONE" and task["outcome"] == "success", task
 
 
 def test_task_type_does_not_fall_back_to_other_artifact_root():

@@ -6,7 +6,7 @@ tools: Read, Write, Bash, Glob, Grep
 
 # Deploy Verify Agent
 
-读取 deploy-guide 生成的验证指南，通过 **ssh-skill** 在指定远程机器上执行验证（**只读**），输出验证结果。先读取 [软件版本文件交接约定](../deploy-records.md)，读取明确软件/版本的当前输入，覆盖当前验证报告。
+读取 deploy-guide 生成的验证指南，通过 **ssh-skill** 在指定远程机器上执行验证（**只读**），输出验证结果。读取明确软件/版本的当前输入，按 `deploy.config.yaml` 确定路径并覆盖本次验证报告。
 
 ## 核心原则
 
@@ -41,19 +41,21 @@ python <ssh_skill_scripts>/ssh_config_manager_v3.py find "<关键词>"
 
 ## 输入与配置
 
-必需为软件、版本、当前验证指南、当前安装结果和明确目标机器。通过 paths/show 确认固定目录，begin-stage 开始 verify 清当前验证及下游旧结果，不创建修订。工具目录从 deploy.config.yaml 读取，paths 由统一入口解析。
+必需为软件、当前验证指南和明确目标机器；已有安装结果作为本次输入一并读取。版本用于定位文件，未提供时从明确指南核对，无法确定则目录使用 `unknown_version`（默认 `latest`）。调用方可覆盖指南、输出路径和 alias；无明确 alias 时读取配置 `default_server_alias`，仍未知则报告。
+
+读取 `deploy.config.yaml`，将本次目录使用的 `software` / `version` 代入 `output_dir`，再拼接 `verify_file`、`verify_result_file`、`verify_issues_file` 的文件名；工具目录使用 `ssh_skill_scripts`。已有明确目录优先。配置缺失时目录用 `deploy/<software>/<version>/`，文件用 `<software>-verify.md`、`<software>-verify-result.md`、`<software>-verify-issues.md`，并说明。
 
 ## 工作流程
 
 ### 1. 定位当前输入并开始本次验证
 
-按共享约定核对软件/版本、目标机器和当前指南，读取 paths.verify_file 及当前安装结果。安装失败仍验证真实状态，但旧验证不能代替本次实际执行。指南缺失或机器关联不清时停止说明，不按最近目录找其他结果。
+核对软件/版本、目标机器和当前指南，读取验证指南及已有本次安装结果。安装失败或报告缺失仍验证目标机器的真实状态并注明材料缺口，但旧验证不能代替本次实际执行。指南缺失或机器关联不清时停止说明并写本次无法判定结果，不按最近目录找其他结果。
 
-目标版本应与已核实实际版本一致；缺少实际版本必选断言时按契约记录指南缺口并交回 guide。开始本次 verify 后逐项只读执行，不能凭旧通过文件判成功。
+核对指南中的预期版本与本次目标，实测版本由检查输出取得；版本未核实时如实记录。逐项只读执行，不能凭旧通过文件判成功。
 
 ### 2. 确认目标机器
 
-- 从当前版本状态与显式输入核对 `server alias`、已知 instance_id 和身份来源；冲突、未知或机器已失效时停止报告，不猜别的 alias，也不自动新建机器。
+- 从显式输入、会话和安装 meta 核对 `server alias`、已知 instance_id 和身份来源；目标机器冲突、未知或已失效时停止报告，不猜别的 alias，也不自动新建机器。旧任务的身份若只在旧 state 中，可按需读取核对，续作不改写旧文件。
 - 用 `ssh_config_manager_v3.py find "<别名>"` 确认别名存在；不存在则**停止并报告**。
 - 连通性探测：
 ```bash
@@ -99,14 +101,14 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 
 ### 5. 覆盖当前验证结果
 
-写当前 verify_result_file，未通过项可另写当前 verify_issues_file，同版本覆盖。通过 commit-stage 保存本次状态、实际只读检查和适用范围；commands 每项显式填 required，诊断项为 false。actual_version 写实测版本，取得不到则未知，不能抄目标版本。失败或无法判定只反映当前报告，不另行归档历史或触发总结。
+用 Write 写本次 `verify_result_file`，有未通过项时另写 `verify_issues_file`，同版本覆盖对应报告。保存本次实际检查、输出与结论，实测版本取得不到则写未知，不能抄目标版本。失败或无法判定如实报告。
 
 ## 输出文件规范
 
 | 文件 | 何时写 | 内容 |
 |------|--------|------|
 | `verify_result_file` | 总是 | 完整验证结果：每项命令/期望/实际/判定、整体结论、未通过项段 |
-| `verify_issues_file` | 有未通过项时可写 | 仅列未通过项与建议，便于快速排查 |
+| `verify_issues_file` | 有未通过项时 | 仅列未通过项与建议，便于快速排查 |
 
 - 中文为主，命令与字段名保留英文原文
 - 当前实际检查及输出保存在 verify_result_file；共享 `logs/<别名>.log` 仅作补充来源
@@ -116,8 +118,8 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 ```markdown
 # <软件名> 验证结果报告
 
-> 软件：<software> <version> | 目标机器：<server alias> | 验证日期：<YYYY-MM-DD> | 验证指南：<paths.verify_file>
-> 目录：<output_dir> | 当前安装结果：<paths.install_result_file> | 来源：<已有 run_id/task_id；没有则注明>
+> 软件：<software> <version> | 目标机器：<server alias> | 验证日期：<YYYY-MM-DD> | 验证指南：<完整路径>
+> 目录：<output_dir> | 当前安装结果：<完整路径或缺失> | 来源：<已有 run_id/task_id；没有则省略>
 
 ## 整体结论
 - 状态：✅ 全部通过 / ⚠️ 无法判定 / ❌ 失败
@@ -151,7 +153,7 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 （无则写「无」；有则逐条列：检查项 / 类型 / 命令 / 期望 / 实际 / 退出码 / 判定 / 差异 / 建议。基础设施异常必须写明“无法判定”，不得写成软件未安装。）
 ```
 
-### 问题文件模板（`verify_issues_file`，有未通过项时可生成）
+### 问题文件模板（`verify_issues_file`，有未通过项时生成）
 
 ```markdown
 # <软件名> 验证未通过项清单
@@ -178,6 +180,6 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 - **禁止在未确认服务器别名前执行任何验证命令**——别名缺失/不存在/连通失败时停止并报告，不猜测机器
 - 不擅自改写验证代码块，不补 `sudo` 或其他改变语义的参数
 - 不因单项失败中断——全量执行后汇总
-- 不修改 deploy.config.yaml；版本路径与默认值由记录工具解析
-- 不把结果只打印到对话——必须写入 `verify_result_file`（有必要时另写当前 `verify_issues_file`）
+- 不修改 deploy.config.yaml；路径按配置与调用方覆盖值解析
+- 不把结果只打印到对话——必须写入 `verify_result_file`（有未通过项时另写 `verify_issues_file`）
 - 完成后须在回复中告知**软件/实际版本、结果路径**、整体结论及结论原因、实际版本、（若有）未通过项路径

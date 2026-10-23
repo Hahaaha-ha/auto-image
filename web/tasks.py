@@ -6,9 +6,9 @@ RPM：guide→build→verify→archive）。识别信号是 stage.changed 事件
 rpm-check / hce-rpm-check 是 skill 不是子 agent，天然不产生任务。
 
 数据来源与局限（如实）：
-- 软件名/版本：回合指令文本或任务表单确定已知字段，只从匹配的固定
-  版本目录读取阶段产物。未知字段仅在存在唯一的近期阶段产物目录时
-  补齐；总结、状态和普通附件的修改时间不参与确认。
+- 软件名/版本：回合指令文本启发式提供占位，任务表单和确认后的目录
+  提供已知字段。未确认时仅用同类型下唯一的近期阶段产物目录修正，
+  不要求目录名与原始输入相等；总结、附件和临时文件不参与确认。
 - token：回合收尾事件的 usage（CLI 的 Result 累计值；resume 会话可能
   为全程累计而非本回合增量，按键取 max 幂等合并）。进行中任务为
   null（前端显示 —）。
@@ -333,10 +333,10 @@ class TaskStore:
     # ---- 产物确认（软件/版本/机器）----
 
     def _maybe_confirm(self, task):
-        """先读明确版本的机器快照，仅用匹配的阶段产物补齐未知身份。"""
-        if task["type"] == "image" and task["software"] and task["version"]:
-            self._read_install_meta(task)
+        """先确认产物目录，再读机器快照；原始指令中的占位不作为机器身份。"""
         if task["confirmed"] and task["software"] and task["version"]:
+            if task["type"] == "image":
+                self._read_install_meta(task)
             return
         found = self._scan_candidate(task)
         if found is not None:
@@ -345,23 +345,18 @@ class TaskStore:
             task["version"] = version
             task["confirmed"] = True
             task["name"] = _task_name(task)
-        if task["type"] == "image" and task["software"] and task["version"]:
+        if task["type"] == "image" and task["confirmed"] and task["software"] and task["version"]:
             self._read_install_meta(task)
 
     def _scan_candidate(self, task):
-        """只扫描同类型根下真实阶段产物；已知软件/版本不被其他目录替换。"""
+        """只扫描同类型根下真实阶段产物；多个近期目录时保留未确认状态。"""
         root_name = "rpm" if task["type"] == "rpm" else "deploy"
         root = self._roots.get(root_name)
         if root is None or not root.is_dir():
             return None
         candidates = []
-        hint = str(task["software"] or "").lower()
         for sw_dir in _iterdirs(root):
-            if hint and sw_dir.name.lower() != hint:
-                continue
             for ver_dir in _iterdirs(sw_dir):
-                if task["version"] and ver_dir.name != task["version"]:
-                    continue
                 if root_name == "deploy":
                     names = {pattern.replace("{{software}}", sw_dir.name).replace("{{version}}", ver_dir.name)
                              for pattern in self._deploy_patterns}
