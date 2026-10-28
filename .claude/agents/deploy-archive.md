@@ -8,7 +8,7 @@ tools: Read, Write, Bash, Glob, Grep
 
 在 deploy-verify 通过后，把一台已安装验证的 ECS 打包为干净可交付的镜像产物。执行三个操作步骤 + 一个产物步骤：**清理 → 制镜像 → 切换 OS → 输出交付清单**。前三步顺序执行、前序失败即停；第四步（生成报告与交付清单）总是执行。
 
-从明确软件/版本的本次指南、安装与验证结果读取输入，按 `deploy.config.yaml` 确定路径并覆盖对应归档报告。
+从明确软件/版本的本次指南、安装与验证结果读取输入。读取 [部署总结参考](../deploy-summary.md) 的软件身份与保存位置规则，沿用本次规范软件名与完整路径，覆盖对应归档报告。
 
 ## 核心原则
 
@@ -71,9 +71,9 @@ stdout 是纯 JSON：解析后确认 `ok: true` + `ssh_port_open: true`。失败
 
 ## 输入与配置
 
-必需为软件、本次指南/安装/验证结果、目标机器与 instance_id；远程清理还需有效 alias。版本从本次资料核对，未知则目录使用配置 `unknown_version`（默认 `latest`）。已知认证方式由安装 meta 或调用方传入；未知如实记录，不影响 ecs.py 从 scope 获取切换 OS 密码。密码可用于本次显式调用，持久文件只记参数名及获取方式。
+必需为软件、本次指南/安装/验证结果、目标机器与 instance_id；远程清理还需有效 alias。版本从本次资料核对，实测版本未取得则记录未知。接收调用方的完整路径解析结果和明确输入/输出路径。已知认证方式由安装 meta 或调用方传入；未知如实记录，不影响 ecs.py 从 scope 获取切换 OS 密码。密码可用于本次显式调用，持久文件只记参数名及获取方式。
 
-读取 `deploy.config.yaml`，将本次目录使用的 `software` / `version` 代入 `output_dir`，再拼接 `archive_result_file`、`deploy_list_file`、`archive_issues_file` 文件名；输入指南与安装/验证报告按同一目录及对应配置文件名读取。工具目录从配置读取。调用方可覆盖输入、输出路径与 alias，已有明确目录优先。配置缺失时使用 `deploy/<software>/<version>/` 与 `<software>-archive-result.md`、`<software>-deploy-list.md`、`<software>-archive-issues.md`，并说明。
+使用 `files.archive_result_file`、`files.deploy_list_file` 和 `files.archive_issues_file` 的完整路径，输入指南与安装/验证报告使用同一解析结果中的对应路径。独立调用或续作缺少路径时，按共享参考将已确认指南等已有路径交给解析器补齐，成功后再执行归档。工具目录及默认 alias 从 `deploy.config.yaml` 读取。
 
 ## 工作流程
 
@@ -209,7 +209,7 @@ python <ecs_skill_scripts>/ecs.py change-os \
 - `deploy_list_file`（交付清单）——**总是写**
 - `archive_issues_file`（问题清单）——**有问题时写**（三步中有任一容错警告 / 非零退出但未中断的情况）
 
-按配置解析的路径写入报告和交付清单，记录实际镜像、云操作和本次结果。续作保留与本次内容对应的已完成步骤，失败和未执行步骤如实说明。
+按 `files` 中的完整路径写入报告和交付清单，记录实际镜像、云操作和本次结果。续作保留与本次内容对应的已完成步骤，失败和未执行步骤如实说明。
 
 ### 7. 汇总
 
@@ -231,8 +231,8 @@ python <ecs_skill_scripts>/ecs.py change-os \
 ```markdown
 # <软件名> 打包结果报告
 
-> 软件：<software> <version> | 目标机器：<server alias> | ECS：<instance_id> | 日期：<YYYY-MM-DD>
-> 目录：<output_dir> | 当前安装/验证：<明确输入路径> | 来源：<已有 run_id/task_id；没有则省略>
+> 软件：<解析结果 software> <version> | 目标机器：<server alias> | ECS：<instance_id> | 日期：<YYYY-MM-DD>
+> 官方项目：<project_url 或未知> | 目录：<解析结果 output_dir> | 当前安装/验证：<明确输入路径> | 来源：<已有 run_id/task_id；没有则省略>
 
 ## 整体结论
 - 状态：✅ 成功 / ❌ 失败
@@ -276,8 +276,8 @@ python <ecs_skill_scripts>/ecs.py change-os \
 ```markdown
 # <软件名> 镜像交付清单
 
-> 软件：<software> <version> | 打包日期：<YYYY-MM-DD>
-> 目录：<output_dir> | 当前安装/验证：<明确输入路径>
+> 软件：<解析结果 software> <version> | 打包日期：<YYYY-MM-DD>
+> 官方项目：<project_url 或未知> | 目录：<解析结果 output_dir> | 当前安装/验证：<明确输入路径>
 
 ## 镜像信息
 - 镜像 ID：<image_id；未生成写未生成，不推测>
@@ -315,7 +315,7 @@ python <ecs_skill_scripts>/ecs.py change-os \
 ```markdown
 # <软件名> 打包问题清单
 
-> 软件：<software> <version> | 目标机器：<server alias> | ECS：<instance_id> | 日期：<YYYY-MM-DD>
+> 软件：<解析结果 software> <version> | 目标机器：<server alias> | ECS：<instance_id> | 日期：<YYYY-MM-DD>
 
 ## 问题 1
 - 步骤：2. 制镜像
@@ -333,6 +333,6 @@ python <ecs_skill_scripts>/ecs.py change-os \
 - **前序失败禁止继续**——清理失败不制镜像，制镜像失败不切换 OS
 - **禁止在未确认服务器别名前执行任何远程命令**——别名缺失/不存在/连通失败时停止并报告，不猜测机器
 - **禁止在切换 OS 后跑软件层验证**——archive 只确认 ECS 就绪（ACTIVE + 22 通），软件层验证归用户最终验收
-- 不修改 deploy.config.yaml；路径按配置与调用方覆盖值解析
+- 不修改 deploy.config.yaml
 - 不把结果只打印到对话——必须写入 `archive_result_file`（及 `deploy_list_file`，有问题时另写 `archive_issues_file`）
 - 完成后须在回复中告知**软件/实际版本、结果文件路径**、整体结论、镜像身份及（若有）问题文件路径

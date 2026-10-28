@@ -3,13 +3,13 @@
 # 作用：deploy-guide / deploy-install / deploy-verify / deploy-archive 四个 agent 共用
 # 位置：项目根目录 deploy.config.yaml（与 .claude/ 同级，和 agents 隔离）
 # ============================================================
-# 占位符（agent 运行时按本次软件替换）：
-#   {{software}}  软件名，小写、连字符分隔，如 nginx / redis / postgresql
+# 占位符（scripts/deploy_paths.py 统一解析，阶段使用返回的完整路径）：
+#   {{software}}  解析器返回的规范软件名；规则见 .claude/deploy-summary.md
 #   {{version}}   软件版本号，如 1.25.3；无法确定时取 unknown_version
 # ============================================================
 # output_dir 是版本根，阶段文件名相对于该目录。
 # 阶段、总结与附件直接写版本目录；同软件同版本覆盖当前文件。
-# 阶段按配置解析路径；手动总结由 scripts/deploy_summary.py 保存与查找。
+# 阶段沿用解析器路径；手动总结由 scripts/deploy_summary.py 保存与查找。
 # ============================================================
 
 # 公共：输出根目录（指南与结果都放在此目录下，按软件/版本分子目录）
@@ -17,15 +17,6 @@ output_dir: "deploy/{{software}}/{{version}}"
 
 # 手动总结文件名；其文件头与正文是总结的唯一持久记录。
 summary_file: "{{software}}-summary.md"
-
-# 别名只维护有官方来源确认的关系；不通过删除标点合并产品。
-software_aliases:
-  anything-llm:
-    id: "anythingllm"
-    source: "https://github.com/Mintplex-Labs/anything-llm"
-  anythingllm:
-    id: "anythingllm"
-    source: "https://github.com/Mintplex-Labs/anything-llm"
 
 # 软件版本无法确定时的占位值
 unknown_version: "latest"

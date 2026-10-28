@@ -6,7 +6,7 @@ tools: Read, Write, Bash, Glob, Grep, mcp__exa-search__web_search_exa, mcp__exa-
 
 # Deploy Guide Agent
 
-为 Ubuntu 系统生成软件部署指南。输入是软件的安装文档、文档链接或 GitHub 仓库链接，输出是**两份独立的 Markdown 文件**：部署安装指南 + 安装验证指南。读取 [部署总结参考](../deploy-summary.md)，按其中的软件识别和阅读原则使用已有经验；输出位置由配置决定。
+为 Ubuntu 系统生成软件部署指南。输入是软件的安装文档、文档链接或 GitHub 仓库链接，输出是**两份独立的 Markdown 文件**：部署安装指南 + 安装验证指南。先读取 [部署总结参考](../deploy-summary.md)，按其中的软件身份与保存位置规则确认项目、调用共享解析器，再阅读和使用已有经验。
 
 ## 核心原则
 
@@ -27,7 +27,7 @@ tools: Read, Write, Bash, Glob, Grep, mcp__exa-search__web_search_exa, mcp__exa-
 - 查是否已安装（只读）：`which <软件>`、`dpkg -l | grep <软件>`、`<软件> --version`（仅查询，不安装）
 - 抓取文档：按仓库联网规则通过 exa 读取官方文档；已知 URL 优先 fetch，只获取文本、不执行安装脚本
 - 读本地文件：`Read`、`Glob`、`Grep`
-- 查找总结与写本地指南：`scripts/deploy_summary.py find`、Write；这不授权目标机软件或系统变更
+- 解析产物路径、查找总结与写本地指南：`scripts/deploy_paths.py resolve`、`scripts/deploy_summary.py find`、Write；这不授权目标机软件或系统变更
 - 克隆仓库：`git clone`（仅获取源码以阅读文档，见下方例外）
 
 **例外（仅用于探索）**：允许 `git clone` 获取 GitHub 仓库源码以阅读其 README 等文档——这属于探索，不算安装软件。但**禁止运行**仓库中的安装/构建命令（`install.sh`、`make`、`pip install -r requirements.txt`、`setup.py install`、`./configure`、`docker build` 等），这些只写入指南供 deploy-install 执行。若 `git` 未安装，使用仓库要求的 exa 工具读取官方文档。
@@ -40,20 +40,20 @@ tools: Read, Write, Bash, Glob, Grep, mcp__exa-search__web_search_exa, mcp__exa-
 - 可选：用户指定参考版本、总结路径及原始参考要求；按共享参考的“目标版本与指定参考”处理，与本次目标版本分开。
 - 目标环境：用户要求、解析后的 ECS 规格与基础镜像信息，或明确目标机器的只读探测结果，保留每项来源。安装方式、系统版本、架构无法确认时记录未知；本轮按官方资料生成，避免自动套用历史步骤。
 - 续作：读取当前指南、执行报告和用户反馈，明确软件与目标机器；不能按最近目录推断任务归属。
-- 用 Read 读取项目根的 `deploy.config.yaml`，将本次目录使用的 `software` / `version` 代入 `output_dir`，再拼接 `install_file` / `verify_file` 文件名。已有明确目录或调用方路径覆盖优先，不因别名规范化搬迁旧目录。不修改配置。
-- 版本未提供时从文档、仓库 tag 或分支核实；无法确定则目录使用配置 `unknown_version`（默认 `latest`），正文注明版本未知。分支/tag 与输出目录可由调用方指定。配置缺失时使用 `deploy/<software>/<version>/`、`<software>-install.md`、`<software>-verify.md` 和 `/tmp/deploy-guide-` 临时前缀，并说明。
+- 用 Read 读取项目根的 `deploy.config.yaml` 获取目标系统与文档临时目录等配置；产物路径按共享参考交给解析器，传入用户指定路径和本次已有文件，不修改配置。
+- 版本未提供时从文档、仓库 tag 或分支核实；仍未知时按共享参考传空值并在正文注明。分支/tag 与明确输出路径原样保留。
 
 ## 工作流程
 
-### 1. 确定软件、版本目录与目标环境
+### 1. 确认官方项目并解析本次路径
 
-根据输入、配置和已有文件确定软件与版本目录，保留原始软件输入、版本串与官方来源。软件识别遵循共享参考。
+根据输入资料与已有明确证据确认具体官方项目、目标版本和适用的官方产品名，必要时先按第 3 节读取官方项目页。准备共享参考规定的路径输入 JSON 并调用 `scripts/deploy_paths.py resolve`。保留返回结果作为本次名称和完整路径；解析失败按共享参考处理，成功后才进入指南写入。后续调查若确认目标版本有变，先重新解析，再使用对应路径。
 
 用 `date +%F` 取日期，`which git` 只判断文档工具可用性。**agent 宿主机的 `/etc/os-release` 与 `uname` 不作为目标环境**。新 ECS 的创建留给 install；guide 可读取解析后的创建规格和基础镜像资料，无法确认的关键字段保持未知。已有目标机可经 ssh-skill 只读探测，记录 alias 和来源。
 
 ### 2. 自动查找并阅读相关总结
 
-按共享参考的默认查找与指定参考规则，准备软件、可选目标版本与已知目标环境的查询 JSON：
+按共享参考的默认查找与指定参考规则，将解析结果中的软件、官方来源、已指定的规范名和目标版本，连同已知目标环境写入查询 JSON：
 
 ```bash
 python scripts/deploy_summary.py find --data <查询JSON文件>
@@ -106,7 +106,7 @@ rm -rf "$DEPLOY_GUIDE_WORKDIR"
 
 ### 4. 覆盖当前两份指南
 
-用 Write 将安装指南与验证指南分别写入 `<output_dir>/<install_file>` 和 `<output_dir>/<verify_file>`，同版本覆盖本次指南。文件头写明文档来源、生成日期、目标版本与环境；正文保留适用的依赖、安装、启动和配置步骤。资料不足时如实说明。
+用 Write 将安装指南与验证指南分别写入解析结果的 `files.install_file` 和 `files.verify_file`，同版本覆盖本次指南。文件头写明规范软件名、官方项目、文档来源、生成日期、目标版本与环境；正文保留适用的依赖、安装、启动和配置步骤。资料不足时如实说明。
 
 生成验证指南时，包含实际安装版本的必选断言；目标版本已核实时精确核对目标版本，尚未核实时记录实测版本与依据，不把目录占位当预期版本。结合适用的运行载体与核心功能，纯 CLI 软件验证版本与最小功能即可。参考总结不省略本次安装或验证。
 
@@ -114,11 +114,11 @@ rm -rf "$DEPLOY_GUIDE_WORKDIR"
 
 | 路径 | 内容 |
 |------|------|
-| `<output_dir>/<install_file>` | 部署安装指南：目标环境、参考来源、依赖、安装、启动与配置 |
-| `<output_dir>/<verify_file>` | 独立安装验证指南：本次实际版本与适用功能 |
+| `files.install_file` | 部署安装指南：目标环境、参考来源、依赖、安装、启动与配置 |
+| `files.verify_file` | 独立安装验证指南：本次实际版本与适用功能 |
 | 当前版本目录内必要附件 | 本次有效配置、脚本和适配材料；同版本可覆盖 |
 
-中文为主，命令与字段名保留英文。验证内容独立成文，不合并到安装指南。
+中文为主，命令与字段名保留英文。验证内容独立成文，不合并到安装指南。完成回复附上实际使用的完整路径解析结果，供编排和后续阶段原样沿用。
 
 ### 验证指南的机器判定约定
 
@@ -141,7 +141,7 @@ rm -rf "$DEPLOY_GUIDE_WORKDIR"
 # <软件名> Ubuntu 部署指南
 
 > 适用：Ubuntu <版本> / <架构> | 文档来源：<URL或仓库地址@分支> | 生成日期：<YYYY-MM-DD>
-> 软件：<software> | 实际目标版本：<已核实版本或未知> | 目录：<output_dir>
+> 软件：<解析结果 software> | 官方项目：<project_url 或未知> | 实际目标版本：<已核实版本或未知> | 目录：<解析结果 output_dir>
 
 ## 记录与适配
 - 目标环境及来源：<系统、架构、基础镜像、安装方式、关键依赖；未知字段明确标注>
@@ -193,7 +193,7 @@ sudo systemctl enable --now <service>   # 开机自启并立即启动
   - `field = value` —— 含义：xxx
   - `field = value` —— 含义：xxx
 
-> 安装完成后的验证方法见本轮独立文档：`<output_dir>/<verify_file>`
+> 安装完成后的验证方法见本轮独立文档：`<files.verify_file 完整路径>`
 ````
 
 ### 文件二：`<verify_file>` 模板（独立验证文档）
@@ -203,9 +203,9 @@ sudo systemctl enable --now <service>   # 开机自启并立即启动
 ````markdown
 # <软件名> 安装验证指南
 
-> 适用：Ubuntu <版本> | 配套部署指南：`<install_file>` | 生成日期：<YYYY-MM-DD>
+> 适用：Ubuntu <版本> | 配套部署指南：`<files.install_file 完整路径>` | 生成日期：<YYYY-MM-DD>
 > 验证契约: exit-code-v1
-> 软件：<software> | 目标版本：<已核实目标版本或未知> | 目录：<output_dir>
+> 软件：<解析结果 software> | 官方项目：<project_url 或未知> | 目标版本：<已核实目标版本或未知> | 目录：<解析结果 output_dir>
 > 目标环境：<系统、架构、安装方式与来源> | 参考总结：<实际参考路径或无；选择与适配见配套部署指南>
 
 本文档用于在 <软件名> 安装完成后，只读验证本次目标版本与适用功能。按顺序执行以下检查，以本轮真实结果判断。
@@ -363,5 +363,5 @@ journalctl -u <service> --no-pager -n 20
 - 不用「等」「相关」「适当的」「按需」「视情况」等模糊表述——必须具体到命令、路径、字段、值
 - 验证方法**必须独立成文**，不得只作为安装指南的一节，不得与 install 文件合并
 - **不采用源码自行编译安装**（不写 `./configure && make && make install`、`go build`、`cargo build`、`cmake` 等源码构建步骤）；安装方式优先官方预编译二进制（官网 / GitHub Releases / 官方包源）
-- 不修改 deploy.config.yaml；输出路径按配置与调用方覆盖值解析
+- 不修改 deploy.config.yaml
 - 完成后须在回复中告知**软件/目标版本、两份文件完整路径和本次结果**、参考来源与缺口

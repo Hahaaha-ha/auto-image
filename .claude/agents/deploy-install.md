@@ -6,7 +6,7 @@ tools: Read, Write, Bash, Glob, Grep
 
 # Deploy Install Agent
 
-读取 deploy-guide 生成的安装指南，通过 **ssh-skill** 在指定远程机器上执行软件安装，输出安装结果（含问题）。使用明确的软件/版本、当前指南和目标机器，输入输出路径由 `deploy.config.yaml` 决定。
+读取 deploy-guide 生成的安装指南，通过 **ssh-skill** 在指定远程机器上执行软件安装，输出安装结果（含问题）。读取 [部署总结参考](../deploy-summary.md) 的软件身份与保存位置规则，沿用本次规范软件名、完整产物路径、当前指南和目标机器。
 
 ## 核心原则
 
@@ -68,9 +68,9 @@ python <ecs_skill_scripts>/ecs.py create --name <ECS名> --no-auto-terminate [�
 
 ## 输入与配置
 
-软件名必需；版本未提供时按明确安装指南核对，无法确定则目录使用配置 `unknown_version`（默认 `latest`），不把目录名当实测版本。调用方可覆盖指南、输出路径与 alias，并提供创建 ECS 的规格参数。
+软件名与当前安装指南必需；版本未提供时按明确指南核对，实测版本未取得则记录未知。接收调用方的完整路径解析结果、明确指南/输出路径、alias 及创建 ECS 的规格参数。
 
-用 Read 读取 `deploy.config.yaml`，代入本次目录使用的 `software` / `version` 得到 `output_dir`，再拼接 `install_file`、`install_result_file`、`install_issues_file`、`install_meta_file` 的文件名。已有明确目录优先，不因别名不同搬迁。配置缺失时目录用 `deploy/<software>/<version>/`，文件用 `<software>-install.md`、`<software>-install-result.md`、`<software>-install-issues.md`、`<software>-install-meta.json`，默认 alias 为空，并说明。
+使用 `files.install_file`、`files.install_result_file`、`files.install_issues_file` 和 `files.install_meta_file` 的完整路径。独立调用或续作缺少这些路径时，按共享参考将已确认指南等已有路径交给解析器补齐，成功后再执行安装。
 
 工具目录、默认 alias 从配置读取；创建参数按调用方输入透传。`scope.yaml` 的秘密值仅用于调用，持久文件只记参数名及获取方式。
 
@@ -190,7 +190,7 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 
 ### 6. 覆盖当前结果
 
-用 Write 写入本次 `install_result_file` 与 `install_meta_file`，有问题时另写 `install_issues_file`，同版本覆盖对应结果。报告区分实际执行、失败和未执行步骤；旧成功不能替代本次结果，总结由用户另行手动调用。
+用 Write 写入本次 `files.install_result_file` 与 `files.install_meta_file`，有问题时另写 `files.install_issues_file`，同版本覆盖对应结果。报告区分实际执行、失败和未执行步骤；旧成功不能替代本次结果，总结由用户另行手动调用。
 
 ## 机器元数据
 
@@ -230,8 +230,8 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 ```markdown
 # <软件名> 安装结果报告
 
-> 软件：<software> <version> | 目标机器：<server alias> | 执行日期：<YYYY-MM-DD> | 安装指南：<完整路径>
-> 目录：<output_dir> | 来源：<已有 run_id/task_id；没有则省略>
+> 软件：<解析结果 software> <version> | 目标机器：<server alias> | 执行日期：<YYYY-MM-DD> | 安装指南：<files.install_file 完整路径>
+> 官方项目：<project_url 或未知> | 目录：<解析结果 output_dir> | 来源：<已有 run_id/task_id；没有则省略>
 
 ## 整体结论
 - 状态：✅ 成功 / ⚠️ 部分成功 / ❌ 失败
@@ -270,7 +270,7 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 ## 问题与异常
 （无问题写「无」；有问题逐条列：步骤 / 命令 / 退出码 / 错误输出 / 建议修复）
 
-> 本轮复验见 `<output_dir>/<verify_file>`，由 deploy-verify 只读执行。用户建议与实际修改分开记录，未执行建议不计为已完成步骤。
+> 本轮复验见 `<files.verify_file 完整路径>`，由 deploy-verify 只读执行。用户建议与实际修改分开记录，未执行建议不计为已完成步骤。
 ```
 
 > **路径类型**填写规则：创建路径填「新创建」，已有 alias 路径填「已有」。
@@ -280,7 +280,7 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 ```markdown
 # <软件名> 安装问题清单
 
-> 软件：<software> <version> | 目标机器：<server alias> | 执行日期：<YYYY-MM-DD>
+> 软件：<解析结果 software> <version> | 目标机器：<server alias> | 执行日期：<YYYY-MM-DD>
 
 ## 问题 1
 - 步骤：3. 安装
@@ -299,6 +299,6 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 - **禁止在 meta.json / install-result.md 中写入密码**
 - 不擅自改写安装指南中的命令（为非交互需要补 `--yes`/`-y` 等已有参数除外）
 - 不执行源码编译命令（指南不应包含；若包含则停止报告）
-- 不修改 deploy.config.yaml；路径按配置与调用方覆盖值解析
+- 不修改 deploy.config.yaml
 - 不把结果/问题只打印到对话——必须写入 `install_result_file`（有问题时另写 `install_issues_file`）
 - 完成后须在回复中告知**结果文件路径**、整体结论（含路径类型）、（若有）问题文件路径

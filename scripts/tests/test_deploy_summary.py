@@ -5,7 +5,6 @@ Run: python -m unittest discover -s scripts/tests -v
 
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
-import importlib.util
 import io
 import json
 from pathlib import Path
@@ -19,9 +18,9 @@ import yaml
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "deploy_summary.py"
-SPEC = importlib.util.spec_from_file_location("deploy_summary", SCRIPT)
-deploy_summary = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(deploy_summary)
+sys.path.insert(0, str(SCRIPT.parent))
+import deploy_summary
+
 
 
 class SummaryCliTest(unittest.TestCase):
@@ -34,10 +33,6 @@ class SummaryCliTest(unittest.TestCase):
             "summary_file": "{{software}}-summary.md",
             "install_result_file": "{{software}}-install-result.md",
             "install_meta_file": "{{software}}-install-meta.json",
-            "software_aliases": {
-                "anything-llm": {"id": "anythingllm", "source": "https://github.com/Mintplex-Labs/anything-llm"},
-                "anythingllm": {"id": "anythingllm", "source": "https://github.com/Mintplex-Labs/anything-llm"},
-            },
         }
         self.write_config()
 
@@ -160,15 +155,116 @@ class SummaryCliTest(unittest.TestCase):
         self.invoke("save", self.data(), success=False)
         self.assertEqual(stage.read_text(encoding="utf-8"), "installation result")
 
-    def test_alias_lookup_preserves_existing_directory_and_record_spelling(self):
-        data = self.data(software="anythingllm", path="deploy/anything-llm/1.0/anything-llm-summary.md")
+    def test_official_source_canonicalizes_new_summary_without_alias_config(self):
+        source = "https://github.com/Mintplex-Labs/anything-llm"
+        data = self.data(software="anythingllm", path="deploy/anything-llm/1.0/anything-llm-summary.md",
+                         project_url=source)
         saved = self.invoke("save", data)
         self.assertEqual(saved["path"], data["path"])
         self.assertFalse((self.root / "deploy/anythingllm").exists())
         for query in ("anythingllm", "anything-llm", "AnythingLLM"):
-            result = self.invoke("find", {"software": query})
+            result = self.invoke("find", {"software": query, "project_url": source})
             self.assertEqual([match["path"] for match in result["matches"]], [data["path"]])
-            self.assertEqual(result["matches"][0]["record"]["software"], "anythingllm")
+            self.assertEqual(result["matches"][0]["record"]["software"], "anything-llm")
+
+    def test_legacy_source_lookup_and_update_preserve_actual_path(self):
+        source = "https://github.com/Mintplex-Labs/anything-llm"
+        relative = "deploy/anythingllm/1.19.0/anything-llm-summary.md"
+        old = {"software": "anythingllm", "version": "1.19.0", "project_url": source}
+        self.raw(relative, "---\n" + yaml.safe_dump(old) + "---\nOld body")
+        result = self.invoke("find", {"software": "AnythingLLM", "project_url": source})
+        self.assertEqual(result["warnings"], [])
+        self.assertEqual(result["matches"][0]["record"], old)
+        self.assertEqual(result["matches"][0]["path"], relative)
+        saved = self.invoke("save", {**old, "path": relative, "body": "Updated body"})
+        self.assertEqual(saved["path"], relative)
+        self.assertEqual(saved["record"]["software"], "anything-llm")
+        self.assertFalse((self.root / "deploy/anything-llm").exists())
+
+    def test_same_name_different_source_is_not_found_or_overwritten(self):
+        original = self.data(project_url="https://nginx.org/")
+        self.invoke("save", original)
+        query = {"software": "nginx", "project_url": "https://example.org/nginx"}
+        self.assertEqual(self.invoke("find", query)["matches"], [])
+        file = self.root / original["path"]
+        before = file.read_bytes()
+        self.invoke("save", {**original, **query, "body": "Wrong product"}, success=False)
+        self.assertEqual(file.read_bytes(), before)
+
+    def test_first_summary_can_use_confirmed_existing_stage_directory(self):
+        self.config["install_file"] = "{{software}}-install.md"
+        self.write_config()
+        self.raw("deploy/anythingllm/1.19.0/anything-llm-install.md", "Existing guide")
+        data = self.data("1.19.0", software="AnythingLLM",
+                         path="deploy/anythingllm/1.19.0/anything-llm-summary.md",
+                         project_url="https://github.com/Mintplex-Labs/anything-llm")
+        saved = self.invoke("save", data)
+        self.assertEqual(saved["path"], data["path"])
+        self.assertEqual(saved["record"]["software"], "anything-llm")
+        found = self.invoke("find", {"software": "anything-llm"})
+        self.assertEqual(found["matches"][0]["path"], data["path"])
+
+    def test_first_summary_cannot_conflict_with_existing_stage_source(self):
+        self.config["install_file"] = "{{software}}-install.md"
+        self.write_config()
+        guide = self.raw("deploy/server/1.0/server-install.md",
+                         "# Guide\n\n> 官方项目：https://github.com/First/server\n")
+        data = self.data("1.0", directory="1.0", software="server", project_url="https://github.com/Second/server")
+        self.invoke("save", data, success=False)
+        self.assertFalse((self.root / data["path"]).exists())
+        self.assertIn("First/server", guide.read_text())
+
+    def test_updating_legacy_summary_keeps_known_identity_when_not_resupplied(self):
+        relative = "deploy/anythingllm/1.19.0/anythingllm-summary.md"
+        old = {"software": "anything-llm", "version": "1.19.0",
+               "project_url": "https://github.com/Mintplex-Labs/anything-llm"}
+        self.raw(relative, "---\n" + yaml.safe_dump(old) + "---\nOld body")
+        saved = self.invoke("save", self.data("1.19.0", software="anything-llm", path=relative))
+        self.assertEqual(saved["record"]["project_url"], old["project_url"])
+        found = self.invoke("find", {"software": "anything-llm"})
+        self.assertEqual(found["matches"][0]["path"], relative)
+
+    def test_component_override_is_inherited_before_identity_validation(self):
+        data = self.data("1.0", software="editor", canonical_name="editor",
+                         project_url="https://github.com/example/suite")
+        self.invoke("save", data)
+        update = {key: value for key, value in data.items() if key != "canonical_name"}
+        saved = self.invoke("save", {**update, "body": "Updated component"})
+        self.assertEqual(saved["record"]["canonical_name"], "editor")
+        self.assertEqual(saved["record"]["software"], "editor")
+
+    def test_component_sources_are_not_collapsed_to_repository(self):
+        self.invoke("save", self.data(software="component-a", canonical_name="component-a",
+                                     project_url="https://github.com/vendor/suite/tree/main/component-a"))
+        query = {"software": "component-a", "canonical_name": "component-b",
+                 "project_url": "https://github.com/vendor/suite/tree/main/component-b"}
+        self.assertEqual(self.invoke("find", query)["matches"], [])
+
+    def test_missing_source_does_not_guess_punctuation_alias(self):
+        self.invoke("save", self.data(software="new-app"))
+        self.assertEqual(self.invoke("find", {"software": "newapp"})["matches"], [])
+        self.assertEqual(len(self.invoke("find", {"software": "new-app"})["matches"]), 1)
+
+    def test_source_unknown_legacy_layout_supports_exact_lookup_and_update(self):
+        relative = "deploy/anything-llm/1.0/anythingllm-summary.md"
+        header = {"software": "anythingllm", "version": "1.0"}
+        self.raw(relative, "---\n" + yaml.safe_dump(header) + "---\nLegacy body")
+        found = self.invoke("find", {"software": "anythingllm"})
+        self.assertEqual(found["warnings"], [])
+        self.assertEqual(found["matches"][0]["path"], relative)
+        self.assertEqual(self.invoke("find", {"software": "anything-llm"})["matches"], [])
+        updated = self.invoke("save", {**header, "path": relative, "body": "Updated"})
+        self.assertEqual(updated["path"], relative)
+        self.assertNotIn("project_url", updated["record"])
+
+    def test_confirming_source_for_an_exact_legacy_name_can_normalize_its_header(self):
+        relative = "deploy/anythingllm/1.0/anythingllm-summary.md"
+        header = {"software": "anythingllm", "version": "1.0"}
+        self.raw(relative, "---\n" + yaml.safe_dump(header) + "---\nLegacy body")
+        saved = self.invoke("save", {**header, "path": relative, "body": "Confirmed source",
+                                     "project_url": "https://github.com/Mintplex-Labs/anything-llm"})
+        self.assertEqual(saved["record"]["software"], "anything-llm")
+        self.assertEqual(self.invoke("find", {"software": "anything-llm"})["matches"][0]["path"], relative)
 
     def test_punctuation_does_not_establish_product_identity(self):
         self.invoke("save", self.data(software="foo-bar"))
@@ -221,6 +317,14 @@ class SummaryCliTest(unittest.TestCase):
         self.assertTrue(all(warning["path"].startswith("deploy/nginx/") and warning["message"] for warning in result["warnings"]))
         self.assertTrue(all("record" not in warning for warning in result["warnings"]))
 
+    def test_invalid_source_with_canonical_override_does_not_hide_valid_summaries(self):
+        self.invoke("save", self.data())
+        bad = {"software": "nginx", "canonical_name": "nginx", "version": "1.0", "project_url": "not-a-url"}
+        self.raw("deploy/nginx/bad/nginx-summary.md", "---\n" + yaml.safe_dump(bad) + "---\nBody")
+        result = self.invoke("find", {"software": "nginx"})
+        self.assertEqual(len(result["matches"]), 1)
+        self.assertEqual(result["warnings"][0]["code"], "invalid_summary")
+
     def test_unquoted_timestamp_keeps_original_string(self):
         self.raw("deploy/nginx/1/nginx-summary.md", "---\nsoftware: nginx\nversion: '1'\nupdated_at: 2026-10-23T10:00:00+08:00\n---\nBody")
         result = self.invoke("find", {"software": "nginx"})
@@ -246,11 +350,14 @@ class SummaryCliTest(unittest.TestCase):
         after = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in paths}
         self.assertEqual(after, before)
 
-    def test_configured_filename_with_alias_and_special_version_is_findable(self):
+    def test_legacy_configured_filename_and_special_version_are_findable(self):
         self.config["summary_file"] = "{{software}}-{{version}}-summary.md"
         self.write_config()
         data = self.data("v1.2.0-rc1", software="anythingllm",
+                         project_url="https://github.com/Mintplex-Labs/anything-llm",
                          path="deploy/anything-llm/v1.2.0-rc1/anythingllm-v1.2.0-rc1-summary.md")
+        header = {key: value for key, value in data.items() if key not in ("path", "body")}
+        self.raw(data["path"], "---\n" + yaml.safe_dump(header) + "---\nLegacy summary")
         saved = self.invoke("save", data)
         result = self.invoke("find", {"software": "anything-llm", "version": "v1.2.0-rc1"})
         self.assertEqual(result["warnings"], [])

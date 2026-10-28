@@ -7,7 +7,7 @@ allowed-tools: Agent, Read, Write, Bash, Glob
 
 # Deploy 部署流水线
 
-完整部署依次派发 guide → install → verify → archive；输入输出按 `deploy.config.yaml` 的目录与文件名解析，同版本覆盖对应产物。guide 默认查找已有总结作为调查参考；总结由用户独立手动调用 deploy-summary，缺少总结不影响部署。
+完整部署依次派发 guide → install → verify → archive；软件名称与完整产物路径按 [部署总结参考](../../deploy-summary.md) 由共享解析器确定，同版本覆盖对应产物。guide 默认查找已有总结作为调查参考；总结由用户独立手动调用 deploy-summary，缺少总结不影响部署。
 
 ## 编排职责与门禁
 
@@ -34,15 +34,15 @@ allowed-tools: Agent, Read, Write, Bash, Glob
 
 ## 执行
 
-### 0. 定位当前版本文件
+### 0. 收集本次定位信息
 
-读取 `deploy.config.yaml`，用本次目录的 `software` / `version` 替换 `output_dir` 占位，再拼接各阶段文件名（配置值是相对该目录的 basename）。已有明确目录与调用方路径覆盖优先；软件别名不同不搬迁旧目录。版本未提供时先待定，由 guide 核对；无法确认则目录使用配置 `unknown_version`，实际版本仍记未知。把输入资料、路径、已知目标机器和来源显式传给阶段 agent。
+读取共享参考，保留用户原始软件名、目标版本、输入资料、明确指定的输出路径和本次已确认的现有文件；同时收集已知目标机器及来源。新部署把这些信息交给 guide 确认官方项目并解析路径，此时不按用户别名或参考总结目录预设输出目录。续作已持有解析结果时直接沿用，缺少文件路径时按共享参考补齐。
 
 ### 1. 生成或校正指南
 
-通过 Agent（subagent_type: deploy-guide）传入软件、目标版本（若有）、文档/链接、分支/tag（若有）、目标环境与来源及产物路径，并单独传入用户的参考要求（若有）。已有用户反馈和当前失败现象一并提供。
+通过 Agent（subagent_type: deploy-guide）传入原始软件名、目标版本（若有）、文档/链接、分支/tag（若有）、目标环境与来源，以及第 0 步收集的明确路径；同时要求返回完整路径解析结果。单独传入用户的参考要求（若有），已有用户反馈和当前失败现象一并提供。
 
-guide 按共享参考负责自动查找与阅读、官方资料调查及本次指南生成。结束后捕获其实际使用的 software/version 和完整路径，作为后续阶段固定参数。读取两份指南，并确认验证指南在首个二级标题前包含精确的 `> 验证契约: exit-code-v1`；任一缺失或标记错误即停止后续，不由编排执行验证代码块。
+guide 按共享参考负责官方项目确认、路径解析、自动查找与阅读及本次指南生成。结束后捕获其返回的 `software`、`project_url`、`canonical_name`（若有）、`version`、`output_dir` 和 `files`，原样传给后续阶段。读取 `files.install_file` 和 `files.verify_file`，并确认验证指南在首个二级标题前包含精确的 `> 验证契约: exit-code-v1`；路径解析未成功、指南缺失或标记错误即停止后续，不由编排执行验证代码块。
 
 ### 2. 执行安装
 
@@ -64,7 +64,7 @@ guide 按共享参考负责自动查找与阅读、官方资料调查及本次�
 
 ### 5. 覆盖当前流水线结果
 
-用 Write 写 `<output_dir>/<pipeline_result_file>`（文件名未配置时为 `<software>-pipeline-result.md`），记录本次四阶段结论、产物路径和未执行原因。中途失败仍写汇总，不让旧成功报告代替本次结果。
+用 Write 写已解析的 `files.pipeline_result_file`，记录本次四阶段结论、产物路径和未执行原因。中途失败仍写汇总，不让旧成功报告代替本次结果；尚未取得有效路径解析结果时在回复中说明失败，不另猜一个落盘目录。
 
 回复软件/实际版本、各阶段结论、当前镜像及汇总路径。pipeline-result 记录执行结果；用户可手动调用 deploy-summary 整理已有经验和人工反馈，部署流程不自动运行或更新总结。
 
@@ -73,8 +73,8 @@ guide 按共享参考负责自动查找与阅读、官方资料调查及本次�
 ```markdown
 # <软件名> 部署流水线结果
 
-> 软件：<software> | 请求/实际版本：<实际值或未知> | 日期：<日期>
-> 来源：<已有 run_id/task_id；无 Web 上下文则注明> | 目录：<output_dir>
+> 软件：<解析结果 software> | 官方项目：<project_url 或未知> | 请求/实际版本：<实际值或未知> | 日期：<日期>
+> 来源：<已有 run_id/task_id；无 Web 上下文则注明> | 目录：<解析结果 output_dir>
 
 ## 本次输入
 - 目标机器与来源：<alias、已知 instance_id、认证方式；秘密值省略>

@@ -6,7 +6,7 @@ tools: Read, Write, Bash, Glob, Grep
 
 # Deploy Verify Agent
 
-读取 deploy-guide 生成的验证指南，通过 **ssh-skill** 在指定远程机器上执行验证（**只读**），输出验证结果。读取明确软件/版本的当前输入，按 `deploy.config.yaml` 确定路径并覆盖本次验证报告。
+读取 deploy-guide 生成的验证指南，通过 **ssh-skill** 在指定远程机器上执行验证（**只读**），输出验证结果。读取 [部署总结参考](../deploy-summary.md) 的软件身份与保存位置规则，沿用本次规范软件名与完整路径，覆盖本次验证报告。
 
 ## 核心原则
 
@@ -41,9 +41,9 @@ python <ssh_skill_scripts>/ssh_config_manager_v3.py find "<关键词>"
 
 ## 输入与配置
 
-必需为软件、当前验证指南和明确目标机器；已有安装结果作为本次输入一并读取。版本用于定位文件，未提供时从明确指南核对，无法确定则目录使用 `unknown_version`（默认 `latest`）。调用方可覆盖指南、输出路径和 alias；无明确 alias 时读取配置 `default_server_alias`，仍未知则报告。
+必需为软件、当前验证指南和明确目标机器；已有安装结果作为本次输入一并读取。版本未提供时从明确指南核对，实测版本未取得则记录未知。接收调用方的完整路径解析结果、明确指南/输出路径和 alias；无明确 alias 时读取配置 `default_server_alias`，仍未知则报告。
 
-读取 `deploy.config.yaml`，将本次目录使用的 `software` / `version` 代入 `output_dir`，再拼接 `verify_file`、`verify_result_file`、`verify_issues_file` 的文件名；工具目录使用 `ssh_skill_scripts`。已有明确目录优先。配置缺失时目录用 `deploy/<software>/<version>/`，文件用 `<software>-verify.md`、`<software>-verify-result.md`、`<software>-verify-issues.md`，并说明。
+使用 `files.verify_file`、`files.verify_result_file` 和 `files.verify_issues_file` 的完整路径，本次安装材料使用同一解析结果中的对应路径。独立调用或续作缺少路径时，按共享参考将已确认指南等已有路径交给解析器补齐，成功后再执行验证。工具目录从 `deploy.config.yaml` 的 `ssh_skill_scripts` 读取。
 
 ## 工作流程
 
@@ -101,7 +101,7 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 
 ### 5. 覆盖当前验证结果
 
-用 Write 写本次 `verify_result_file`，有未通过项时另写 `verify_issues_file`，同版本覆盖对应报告。保存本次实际检查、输出与结论，实测版本取得不到则写未知，不能抄目标版本。失败或无法判定如实报告。
+用 Write 写本次 `files.verify_result_file`，有未通过项时另写 `files.verify_issues_file`，同版本覆盖对应报告。保存本次实际检查、输出与结论，实测版本取得不到则写未知，不能抄目标版本。失败或无法判定如实报告。
 
 ## 输出文件规范
 
@@ -118,8 +118,8 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 ```markdown
 # <软件名> 验证结果报告
 
-> 软件：<software> <version> | 目标机器：<server alias> | 验证日期：<YYYY-MM-DD> | 验证指南：<完整路径>
-> 目录：<output_dir> | 当前安装结果：<完整路径或缺失> | 来源：<已有 run_id/task_id；没有则省略>
+> 软件：<解析结果 software> <version> | 目标机器：<server alias> | 验证日期：<YYYY-MM-DD> | 验证指南：<files.verify_file 完整路径>
+> 官方项目：<project_url 或未知> | 目录：<解析结果 output_dir> | 当前安装结果：<完整路径或缺失> | 来源：<已有 run_id/task_id；没有则省略>
 
 ## 整体结论
 - 状态：✅ 全部通过 / ⚠️ 无法判定 / ❌ 失败
@@ -158,7 +158,7 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 ```markdown
 # <软件名> 验证未通过项清单
 
-> 软件：<software> <version> | 目标机器：<server alias> | 验证日期：<YYYY-MM-DD>
+> 软件：<解析结果 software> <version> | 目标机器：<server alias> | 验证日期：<YYYY-MM-DD>
 
 ## 未通过 1
 - 检查项：<检查项标题>
@@ -180,6 +180,6 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 - **禁止在未确认服务器别名前执行任何验证命令**——别名缺失/不存在/连通失败时停止并报告，不猜测机器
 - 不擅自改写验证代码块，不补 `sudo` 或其他改变语义的参数
 - 不因单项失败中断——全量执行后汇总
-- 不修改 deploy.config.yaml；路径按配置与调用方覆盖值解析
+- 不修改 deploy.config.yaml
 - 不把结果只打印到对话——必须写入 `verify_result_file`（有未通过项时另写 `verify_issues_file`）
 - 完成后须在回复中告知**软件/实际版本、结果路径**、整体结论及结论原因、实际版本、（若有）未通过项路径
