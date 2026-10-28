@@ -15,13 +15,15 @@ tools: Read, Write, Bash, Glob, Grep
 - **非交互执行**：远程命令必须非交互。假设目标用户已具备**免密 sudo**；若命令因 sudo 提密/交互提示卡住或失败，视为失败并报告。
 - **逐步记录、失败即停**：每步记录命令、退出码、stdout/stderr 摘要、成功/失败。关键步骤（依赖安装/安装/启动）失败 → 停止后续步骤，标记整体失败，进入问题报告。依赖检查失败不中断安装，但记为问题项。
 - **明确不空泛**：结果与问题必须具体到步骤、命令、退出码、错误输出、建议修复动作。
-- **永不销毁 ECS**：创建路径下无论哪一步失败，都不自动销毁 ECS——保留由人工处置。拉起一律带 `--no-auto-terminate`（部署机是交付物，不吃 ecs-skill 临时机默认的 24h 定时删除）。
+- **新建 ECS 按配置定时删除**：创建时按 B-2、B-3 传入保留时长。过程失败不立即销毁，也不取消已设置的删除安排。
 
 ## 双路径分流与机器续作
 
 目标机器以本次明确输入为准；续作可从会话、安装 meta 和报告核对已关联机器。同目录旧 meta 的存在不自动关联上次机器。已有 alias、instance_id、认证方式保留，未知如实说明；机器关联有冲突时先核对，不能按最近目录猜机器。
 
 已有 alias 使用指定机器；无 alias 且本次确实没有关联机器时创建 ECS。续作已有关联实例时先恢复别名或连接，不因 alias 暂缺重复创建。两条路径均写 `install_meta_file` 供编排层消费；已知字段不会因本次未取得而写空。旧任务的信息若只存在旧 state 文件，可按需读取并核对资源身份后带入本次 meta，旧文件保持原样，新部署无需这些文件。
+
+已有机器和同一实例续作沿用原安排，不套用当前配置补设期限、重新计时或自动延长。
 
 ## ssh-skill 调用方式
 
@@ -58,11 +60,9 @@ MSYS_NO_PATHCONV=1 python <ssh_skill_scripts>/ssh_upload.py <别名> "<本地路
 
 脚本路径默认 `.claude/skills/ecs-skill/scripts`（项目级；可由配置 `ecs_skill_scripts` 覆盖）。不确定时先 **Read** `.claude/skills/ecs-skill/SKILL.md`。
 
-拉起 ECS：
-```bash
-python <ecs_skill_scripts>/ecs.py create --name <ECS名> --no-auto-terminate [规格参数]
-```
-输出纯 JSON 到 stdout（进度/告警走 stderr）。关键输出字段：`ok`、`id`（server_id）、`ip`、`auth_method`（`"password"`/`"key_pair"`，仅 `ok: true` 时有值）、`admin_pass`（仅 `auth_method: "password"` 且 `ok: true` 时有值）、`auto_terminate_time`（定时删除时刻 UTC；`--no-auto-terminate` 时为 null）。
+创建命令见 B-3。输出纯 JSON 到 stdout（进度/告警走 stderr）。关键输出字段：`ok`、`id`（server_id）、`ip`、`auth_method`（`"password"`/`"key_pair"`，仅 `ok: true` 时有值）、`admin_pass`（仅 `auth_method: "password"` 且 `ok: true` 时有值）、`auto_terminate_time`（请求中的 UTC 定时删除时刻）。
+
+云端时间查询用于验收或排障，按需调用 `ecs.py show --id <id>`；查询结果及异常如实记录，不作为安装或归档的前置条件。
 
 > **Bash 超时**：ecs.py 最长 600s 轮询 + 60s 端口探测，Bash 工具超时须设为 **≥ 660000 毫秒**。
 
@@ -101,7 +101,23 @@ python <ecs_skill_scripts>/ecs.py create --name <ECS名> --no-auto-terminate [�
 
 - 用 `date +%Y%m%d%H%M%S` 生成时间戳，alias 为 `<software>-<时间戳>`，ECS 名为 `ecs-<software>-<时间戳>`，核对未与已有别名冲突。
 
-**B-2. 预检密钥对配置（避免拉起后无法注册）**
+**B-2. 预检保留时长与密钥对配置**
+
+在项目根执行以下命令，读取 `deploy.config.yaml` 的 `ecs_terminate_hours`；只在成功退出后取 stdout 数值作为 B-3 的小时数。配置缺失或类型错误时停止并报告；数值范围与非有限值由 ecs.py 在发送创建请求前校验：
+
+```bash
+python - <<'PY'
+from pathlib import Path
+import yaml
+
+hours = yaml.safe_load(Path("deploy.config.yaml").read_text(encoding="utf-8"))["ecs_terminate_hours"]
+if type(hours) not in (int, float):
+    raise SystemExit("ecs_terminate_hours 须为数字（小时）")
+print(hours)
+PY
+```
+
+该值显式传给 CLI，覆盖 scope 的通用默认；从构造建机请求时开始计时，沿用 ECS 脚本的 UTC 计算、分钟取整及下限缓冲。安装、验证、归档和等待输入都占用保留时间。创建前记录本次小时数与配置来源，后续配置修改只影响新建实例。
 
 - 用 **Read** 读 `scope.yaml`，取 `ecs_create.server.key_name` 和 `ecs_create.server.key_file`。
 - `key_name` 有值但 `key_file` 为空 → **停止并报告**（"scope.yaml 配了 key_name 但未配 key_file，无法注册密钥对认证的机器"）。此时未创建任何 ECS，无副作用。
@@ -109,19 +125,21 @@ python <ecs_skill_scripts>/ecs.py create --name <ECS名> --no-auto-terminate [�
 **B-3. 调 ecs-skill create 拉起 ECS**
 
 ```bash
-python <ecs_skill_scripts>/ecs.py create --name <ECS名> --no-auto-terminate [规格参数透传]
+python <ecs_skill_scripts>/ecs.py create --name <ECS名> --terminate-hours <B-2输出的小时数> [规格参数透传]
 ```
 - 调用方在 prompt 中给了规格参数（`--flavor`/`--image`/`--disk-type`/`--disk-size`/`--bandwidth` 等）时透传给 ecs.py。
+- 定时删除参数以 B-2 的配置值为准，规格参数不夹带关闭定时删除或第二个保留时长参数。
 - 密码/密钥不显式传，由 scope.yaml 裁决（ecs-skill 按 CLI > 环境变量 > scope 的优先级自动判定密钥对或密码方式）。
 - **Bash 工具超时设为 ≥ 660000 毫秒**（ecs.py 最长 600s 轮询 + 60s 端口探测）。
 
 **B-4. 解析 ecs.py create stdout JSON**
 
-关键字段：`ok`、`id`（= instance_id）、`ip`、`auth_method`、`admin_pass`。
+关键字段：`ok`、`id`（= instance_id）、`ip`、`auth_method`、`admin_pass`、`auto_terminate_time`。
 
-- `ok: true` → 立即把 instance_id、IP 和已知认证方式写入 meta，再继续 B-5。
+- 取得 `id` 时立即把 instance_id、IP、已知认证方式和回显的 `auto_terminate_time` 写入 meta；安装报告记录时间来源为创建请求回显，并保存日志路径。
+- `ok: true` → 进入 B-5。
 - `ok: false` 且**无 `id`**（create 失败，未返回 server_id）→ **停止并报告** create 失败，未取得实例身份写入安装报告。meta 只保存本次已确认的机器字段，未知为 null，不借用上次实例 id。
-- `ok: false` 且**有 `id`**（create 超时/22 不通，但机器已建出）→ **停止并报告**超时及 `ecs.py show --id <id>` 复查方式；立即将已知 instance_id 写入 meta。alias/认证方式只写本次已核实值，ECS 保留不销毁。
+- `ok: false` 且**有 `id`**（create 超时/22 不通，但机器已建出）→ 停止安装，保留已返回身份和时间，报告创建异常及 `ecs.py show --id <id>` 复查方式。
 
 **B-5. 注册 ssh-skill 别名**
 
@@ -132,14 +150,14 @@ python <ecs_skill_scripts>/ecs.py create --name <ECS名> --no-auto-terminate [�
 | `"password"` | `ssh_config_manager_v3.py create --alias <alias> --host <ip> --user root --password <admin_pass>` |
 | `"key_pair"` | `ssh_config_manager_v3.py create --alias <alias> --host <ip> --user root --key <key_file>`（key_file 从 B-2 读取的 scope.yaml 取） |
 
-- 注册失败（别名冲突 `ValueError` / 其他异常）→ **停止并报告**注册失败。meta 保留已知 instance_id、IP 和认证方式，供恢复注册；ECS 保留不销毁。注册成功后立即将实际 alias 写入 meta。
+- 注册失败（别名冲突 `ValueError` / 其他异常）→ **停止并报告**注册失败。meta 保留已知 instance_id、IP、认证方式和定时删除时间，供恢复注册；ECS 保留至既定期限。注册成功后立即将实际 alias 写入 meta。
 
 **B-6. 连通性探测**
 
 ```bash
 python <ssh_skill_scripts>/ssh_execute.py <别名> "hostname && uname -a"
 ```
-- 探测失败 → **停止并报告**网络问题，meta 保留已注册 alias、instance_id 和已知认证方式；ECS 保留不销毁。
+- 探测失败 → **停止并报告**网络问题，meta 保留已注册 alias、instance_id、已知认证方式和定时删除时间；ECS 保留至既定期限。
 
 **B-7. 保存机器快照**
 
@@ -197,21 +215,24 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 `install_meta_file` 是编排层消费的机器元数据，沿用扁平 JSON：
 
 ```json
-{"path": "<路径类型>", "server_alias": "<已注册别名或null>", "instance_id": "<已知id或null>", "auth_method": "<已知认证方式或null>", "ip": "<已知IP或null>"}
+{"path": "<路径类型>", "server_alias": null, "instance_id": null, "auth_method": null, "ip": null, "auto_terminate_time": null}
 ```
 
 `path` 在创建实例时为 `create`，使用已有机器时为 `existing`。未知值写 JSON 的 `null`，不是字符串；认证方式使用 ecs/ssh-skill 的实际结果。已有 alias 分支保留已知 instance_id 与认证方式，本次未取得不写空。取得 ECS id 后立即保存，创建超时、注册失败或 SSH 不通也保留供查询。软件/版本与身份来源写入同目录安装报告，密码、私钥和 token 不写入报告或元数据。
+
+`auto_terminate_time` 保存本次 `create` 回显的时间；已有机器沿用同一实例的记录，无记录则为 null，不按当前配置推算。报告注明时间及来源，创建请求回显不能写成已通过云端查询确认。按需查询过云端时，在报告记录实际结果和异常；查询失败不抹掉原有记录。其他实例的时间不能带入本次 meta。
 
 ## 失败处理矩阵（创建路径）
 
 | 失败点 | install 行为 | meta.json | ECS |
 |--------|-------------|-----------|-----|
+| 保留时长预检失败 | 停止，报告配置错误 | 不借用旧实例信息 | 未创建 |
 | ecs.py create 失败（无 server_id） | 停止，报告 create 失败 | 写已知关联，instance_id 未知 | 无机器或华为侧失败 |
-| ecs.py create 超时（有 server_id） | 停止，报告超时 + hint | 写 instance_id（alias=null） | 保留，可 `show --id` 复查 |
-| ssh-skill 注册失败 | 停止，报告注册失败 | 写 instance_id + ip（alias=null） | 保留 |
-| 连通性探测失败 | 停止，报告网络问题 | 写 instance_id + alias | 保留 |
+| ecs.py create 超时（有 server_id） | 停止，报告超时 + hint | 写 instance_id 及回显时间（alias=null） | 已设置的删除安排继续有效 |
+| ssh-skill 注册失败 | 停止，报告注册失败 | 写 instance_id + ip 及回显时间（alias=null） | 保留至既定期限 |
+| 连通性探测或安装失败 | 停止，报告具体问题 | 保留 instance_id + alias 及时间记录 | 保留至既定期限 |
 
-> 无论哪一步失败都不自动销毁 ECS——保留由人工处置。
+> 过程失败不立即销毁，也不取消定时删除；报告按已取得的时间来源说明结果。
 
 ## 输出文件规范
 
@@ -238,6 +259,8 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 - 路径类型：新创建 / 已有
 - 执行步骤：N 成功 / M 总数
 - 目标机器：<本次目标 alias、已知 instance_id、认证方式及来源>
+- 保留时长与来源：<本次建机使用的小时数及 deploy.config.yaml；已有机器写沿用原安排>
+- 定时删除时间：<记录的时刻及来源，注明时区；创建请求回显不写成云端查询确认，无记录写未知>
 - 计划/实际环境及来源：<系统、架构、基础镜像、安装方式、关键依赖与差异>
 - 本次操作：<执行的命令与未执行步骤>
 - 当前有效材料：<版本目录中的实际命令、配置、脚本路径>
@@ -295,7 +318,7 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 
 - **禁止直接使用 `ssh`/`scp`**——一律走 ssh-skill 脚本
 - **禁止在未确认服务器别名前执行任何安装命令**——别名缺失/不存在/连通失败时停止并报告，不猜测机器
-- **禁止自动销毁 ECS**——创建路径下无论哪一步失败都保留机器
+- **禁止因阶段失败立即删除或自动续期 ECS**——沿用原定时删除安排
 - **禁止在 meta.json / install-result.md 中写入密码**
 - 不擅自改写安装指南中的命令（为非交互需要补 `--yes`/`-y` 等已有参数除外）
 - 不执行源码编译命令（指南不应包含；若包含则停止报告）

@@ -12,7 +12,7 @@ keywords: 华为云, ecs, 拉起, 创建, 服务器, huawei, cloudserver, 就绪
 
 **默认带公网 EIP**：运行本 skill 的机器通常与新机不在同一 VPC，公网浮动 IP 是可达的唯一路径。本机恰好与新机同 VPC 时用 `--no-eip` 退回私网路径（省 EIP 费用与权限要求）；固定私网形态可写进 scope（`ecs_create.server.no_eip: true`），CLI 与 scope 任一为真即不注入 EIP。公网浮动 IP 是默认的可达路径。
 
-**默认 24h 定时删除**：新建机默认设置 `auto_terminate_time = 创建后 24h`，由华为侧到期自动删除，**系统盘随实例释放、EIP 因创建时带 `delete_on_termination=true` 一并释放**（定时删除路径只认创建时的该字段，事后不可补救；手动 `delete` 走 `delete_publicip=true` 强删，与此正交）。API 约束：仅按需实例、最短半小时、最长三年，系统每 5 分钟执行一次。`--terminate-hours <小时>` 覆盖时长，`--no-auto-terminate` 关闭（长期机）；到期前手动 `delete` 照常级联删除，不受影响。创建成功回显 `auto_terminate_time`（UTC）。新建 EIP 一律 `delete_on_termination=true`（本 skill 的 EIP 随机器走：手动 delete 走 `delete_publicip=true` 强删；长期机事后在控制台删机时 EIP 也会一并释放，如需保留 EIP 复用请在删机前先解绑）。
+**默认 24h 定时删除**：新建机从构造创建请求时起算，默认将 24h 后的 UTC 时刻写入 `auto_terminate_time`，由华为侧到期自动删除，**系统盘随实例释放、EIP 因创建时带 `delete_on_termination=true` 一并释放**（定时删除依赖 EIP 的随实例释放设置；手动 `delete` 走 `delete_publicip=true` 强删）。API 约束：仅按需实例、最短半小时、最长三年，系统每 5 分钟执行一次。`--terminate-hours <小时>` 覆盖时长，`--no-auto-terminate` 关闭（长期机）；到期前手动 `delete` 照常级联删除，不受影响。`create` 回显的 `auto_terminate_time` 是请求值；需要确认云端设置时，用 `show --id` 读取 `server.auto_terminate_time`。查询原样返回云端值，空值或缺字段不按默认时长推算。新建 EIP 一律 `delete_on_termination=true`（本 skill 的 EIP 随机器走：手动 delete 走 `delete_publicip=true` 强删；长期机事后在控制台删机时 EIP 也会一并释放，如需保留 EIP 复用请在删机前先解绑）。
 
 **职责边界**：只交付**一台**就绪机器并报告其可达 IP。**不**批量创建（无 `--count`）、**不**注册 ssh-skill 别名、**不**做 deploy 编排——本 skill 是被当脚本调用的纯 CLI，怎么串步骤是调用方的事。
 
@@ -46,7 +46,7 @@ python .claude/skills/ecs-skill/scripts/ecs.py create --disk-type GPSSD --disk-s
 # EIP 带宽覆盖（默认 5 Mbit/s）
 python .claude/skills/ecs-skill/scripts/ecs.py create --bandwidth 10
 
-# 定时删除：默认创建后 24h 华为侧自动删除（联删系统盘+EIP）；覆盖时长或关闭
+# 定时删除：默认从构造建机请求起 24h 华为侧自动删除（联删系统盘+EIP）；覆盖时长或关闭
 python .claude/skills/ecs-skill/scripts/ecs.py create --terminate-hours 4
 python .claude/skills/ecs-skill/scripts/ecs.py create --no-auto-terminate
 
@@ -126,8 +126,10 @@ python .claude/skills/ecs-skill/scripts/ecs.py delete --name web-01 --dry-run
 {"ok": true, ..., "ip": "192.168.0.52", "ip_type": "private"}
 // create 失败（超时/22 不通等）—— 仍输出 JSON，非零退出，机器保留不销毁
 {"ok": false, ..., "status": "BUILD", "ssh_port_open": false, "error": "...", "hint": "...", "log": "..."}
-// show
-{"ok": true, "action": "show", "server": {"id","name","status","ip","ip_type","flavor","image","ssh_port_open"}}
+// show（auto_terminate_time 为云端查询值；云端为空时保留空值，缺字段时为 null）
+{"ok": true, "action": "show", "server": {"id": "...", "name": "ecs-a1b2c3", "status": "ACTIVE",
+ "ip": "94.74.107.97", "ip_type": "floating", "flavor": "...", "image": "...",
+ "auto_terminate_time": "2026-09-21T10:30:00Z", "ssh_port_open": true}}
 // change-os 成功（系统盘镜像已替换，ACTIVE + 22 通）
 {"ok": true, "action": "change-os", "instance_id": "...", "image_id": "...",
  "status": "ACTIVE", "ip": "...", "ip_type": "floating", "ssh_port_open": true,

@@ -46,9 +46,9 @@ guide 按共享参考负责官方项目确认、路径解析、自动查找与�
 
 ### 2. 执行安装
 
-通过 Agent（subagent_type: deploy-install）传入当前软件/版本、指南路径、已知 alias/instance_id/认证方式和 ECS 创建规格。已有 alias 使用指定机器；无 alias 且没有关联实例时由 install 创建并注册，创建时保留 `--no-auto-terminate`。
+通过 Agent（subagent_type: deploy-install）传入当前软件/版本、指南路径、已知 alias/instance_id/认证方式和 ECS 创建规格，已有定时删除记录及来源一并传入。已有 alias 使用指定机器；无 alias 且没有关联实例时，由 install 读取 `deploy.config.yaml` 的 `ecs_terminate_hours`，显式传 `--terminate-hours` 创建并注册。已有机器和续作沿用原安排，配置变更不重置已创建实例的时间。
 
-结束后读取 `install_result_file` 与 `install_meta_file`，缓存 meta 中的 `server_alias`、`instance_id`、`path`、`auth_method`。后续 alias 以 install 实际使用并保存的值为准，尤其创建路径不可猜测。meta 缺失或某字段未知时，沿用本次已核对的调用方/会话机器信息，不把已知值写空；仍无 instance_id 则注明 archive 将跳过。安装失败仍派发 verify。
+结束后读取 `install_result_file` 与 `install_meta_file`，缓存 meta 中的 `server_alias`、`instance_id`、`path`、`auth_method`、`auto_terminate_time` 及报告中的时间来源。后续 alias 以 install 实际使用并保存的值为准，尤其创建路径不可猜测。meta 缺失或某字段未知时，沿用本次已核对的调用方/会话机器信息，不把已知值写空；仍无 instance_id 则注明 archive 将跳过。安装失败仍派发 verify 只读采证。
 
 ### 3. 只读验证
 
@@ -58,7 +58,7 @@ guide 按共享参考负责官方项目确认、路径解析、自动查找与�
 
 ### 4. 打包归档
 
-本次 verify 通过且 instance_id 明确时，通过 Agent（subagent_type: deploy-archive）传入本次指南/安装/验证路径、目标机器、认证方式与已有 image_id/job_id/动作结果；否则跳过并说明原因。创建路径 instance_id 由 install meta 自动提供，已有机器则沿用已核对信息，编排不猜测云资源身份。
+本次 verify 通过且 instance_id 明确时，通过 Agent（subagent_type: deploy-archive）传入本次指南/安装/验证路径、目标机器、认证方式、已有定时删除记录及来源与已有 image_id/job_id/动作结果；否则跳过并说明原因。创建路径 instance_id 由 install meta 自动提供，已有机器则沿用已核对信息，编排不猜测云资源身份。
 
 子 agent 遵循清理 → 制镜像 → 切 OS 顺序并输出交付清单；续作先核对已有云动作，进行中或已完成操作不重复提交。只剩云操作时不要求重新 SSH 清理。结束后读取 `archive_result_file`、`deploy_list_file` 与实际镜像身份。上传、审核和上架仍由用户完成。
 
@@ -78,6 +78,7 @@ guide 按共享参考负责官方项目确认、路径解析、自动查找与�
 
 ## 本次输入
 - 目标机器与来源：<alias、已知 instance_id、认证方式；秘密值省略>
+- 定时删除：<本次建机保留小时数及配置来源、记录的时刻及其时区和实际来源；未知如实记录，创建请求回显不写成云端确认>
 - 计划/实际环境：<系统、架构、基础镜像、安装方式及来源、差异和未知>
 - 参考要求：<用户指定版本/路径及约束；未指定写自动查找，用户排除历史则注明>
 - 参考总结：<guide 实际采用的版本、文件与调整；未采用或指定材料不可用时说明原因>

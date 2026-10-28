@@ -18,6 +18,7 @@ import sys
 import tempfile
 from argparse import Namespace
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import yaml
 
@@ -387,6 +388,34 @@ def dry_run_server(*flags):
     server = ((payload.get("request") or {}).get("body") or {}).get("server")
     assert isinstance(server, dict), f"输出应含 request.body.server，实得：{payload!r}"
     return server
+
+
+def test_show_preserves_cloud_auto_terminate_time():
+    """show 返回云端原值；即使 scope 有默认时长，也不推算缺失的删除时间。"""
+    cases = (
+        ({"auto_terminate_time": "2026-11-01T10:30:00Z"}, "2026-11-01T10:30:00Z"),
+        ({"auto_terminate_time": ""}, ""),
+        ({"auto_terminate_time": None}, None),
+        ({}, None),
+        ({"auto_terminate_time": "invalid-time"}, "invalid-time"),
+    )
+    scope = make_cli_scope()
+    scope["ecs_create"]["server"]["terminate_hours"] = 4
+    for fields, expected in cases:
+        server = SimpleNamespace(id="server-1", name="query-target", status="ACTIVE",
+                                 created="2026-10-01T08:00:00Z", **fields)
+        for target in (("--id", server.id), ("--name", server.name)):
+            client = SimpleNamespace(list_servers_details=lambda request: SimpleNamespace(servers=[server]))
+            with patch.object(ecs, "build_client", return_value=client):
+                code, payload = run_cli(scope, ["show", *target])
+            assert code == 0, f"show 应成功，实得 {code!r}: {payload!r}"
+            assert payload["ok"] is True and payload["action"] == "show"
+            summary = payload["server"]
+            assert "auto_terminate_time" in summary
+            assert summary["auto_terminate_time"] == expected, \
+                f"应原样返回云端值 {expected!r}，实得 {summary!r}"
+            assert summary["id"] == server.id and summary["status"] == "ACTIVE"
+            assert summary["ssh_port_open"] is False, "无可达 IP 时仍可查询云端删除时间"
 
 
 # ---- CLI 互斥：--terminate-hours vs --no-auto-terminate ----

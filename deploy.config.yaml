@@ -95,3 +95,5 @@ default_server_alias: ""                       # 默认目标机器别名；留�
 ssh_skill_scripts: ".claude/skills/ssh-skill/scripts"
 ims_skill_scripts: ".claude/skills/ims-skill/scripts"
 ecs_skill_scripts: ".claude/skills/ecs-skill/scripts"
+# deploy 新建 ECS 的保留小时数；从构造建机请求时起算，续作不重新计时
+ecs_terminate_hours: 24
