@@ -459,6 +459,19 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* markdown 渲染（marked 输出）：表格 / 代码块 / 验证契约 blockquote */
 .va-artifact-md { flex: 1; overflow: auto; padding: 16px 24px; font-size: 13.5px; line-height: 1.65; }
+.va-artifact-info {
+  margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--line);
+  color: var(--ink-2); font-size: 13px; overflow-wrap: anywhere;
+}
+.va-artifact-info summary { cursor: pointer; }
+.va-artifact-info summary:hover { color: var(--ink); }
+.va-artifact-environment { font-family: var(--mono); font-size: 12.5px; }
+.va-artifact-info dl {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 16px; margin: 12px 0 4px;
+}
+.va-artifact-info dd { margin: 0; color: var(--ink); font-family: var(--mono); font-size: 12.5px; }
+.va-artifact-info a { color: var(--accent); }
 .va-md h1, .va-md h2, .va-md h3 { border-bottom: 1px solid var(--line); padding-bottom: 4px; }
 .va-md pre {
   background: var(--surface-dim); border: 1px solid var(--line); border-radius: 8px;

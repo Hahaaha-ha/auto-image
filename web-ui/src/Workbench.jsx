@@ -390,13 +390,14 @@ export default function Workbench({ visible }) {
               </div>
             ) : activeTab.kind === 'obs' ? (
               <ArtifactView
+                key={tabKey(activeTab)}
                 artifact={s.obsCache[activeTab.key]}
                 onDownload={store.copyObsLink}
                 downloadLabel="⧉ 复制链接"
                 binaryLabel="⧉ 复制下载链接"
               />
             ) : activeTab.kind === 'file' ? (
-              <ArtifactView artifact={activeArtifact} onDownload={store.downloadArtifact} />
+              <ArtifactView key={tabKey(activeTab)} artifact={activeArtifact} onDownload={store.downloadArtifact} />
             ) : activeRun ? (
               <Stream key={activeRun.runId} run={activeRun} visible={visible} />
             ) : null}
