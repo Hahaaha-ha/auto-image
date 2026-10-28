@@ -69,6 +69,19 @@ class DeployPathsCliTest(unittest.TestCase):
         return {path.relative_to(self.root).as_posix(): (path.read_bytes(), path.stat().st_mtime_ns)
                 for path in self.root.rglob("*") if path.is_file()}
 
+    def assert_warning_for(self, result, relative, *details):
+        warnings = result.get("warnings")
+        self.assertIsInstance(warnings, list)
+        matching = [item for item in warnings if item["path"] == relative]
+        self.assertTrue(matching, warnings)
+        for item in matching:
+            self.assertIsInstance(item["code"], str)
+            self.assertTrue(item["code"])
+            self.assertIsInstance(item["message"], str)
+            self.assertTrue(item["message"])
+        for detail in details:
+            self.assertTrue(any(detail in item["message"] for item in matching), matching)
+
     def test_three_inputs_use_one_official_name_for_all_new_artifacts(self):
         for software in ("AnythingLLM", "anythingllm", "anything-llm"):
             with self.subTest(software=software):
@@ -148,36 +161,119 @@ class DeployPathsCliTest(unittest.TestCase):
         result = self.invoke(self.data(output_dir="deploy/anything-llm/1.19.0"))
         self.assertEqual(result["output_dir"], "deploy/anything-llm/1.19.0")
 
-    def test_different_owner_with_same_repository_name_cannot_overwrite(self):
-        self.summary("deploy/server/1.0/server-summary.md", "server", version="1.0",
-                     project_url="https://github.com/First/server")
+    def test_different_summary_source_returns_paths_and_evidence_for_confirmation(self):
+        relative = "deploy/server/1.0/server-summary.md"
+        previous_source = "https://github.com/first/server"
+        current_source = "https://github.com/second/server"
+        self.summary(relative, "server", version="1.0", project_url=previous_source)
         before = self.snapshot()
         for version in ("1.0", "2.0"):
             with self.subTest(version=version):
-                self.invoke(self.data("server", version, project_url="https://github.com/Second/server"), success=False)
+                result = self.invoke(self.data("server", version, project_url=current_source))
+                self.assertEqual(result["output_dir"], f"deploy/server/{version}")
+                self.assertEqual(result["project_url"], current_source)
+                self.assert_warning_for(result, relative, previous_source, current_source)
         self.assertEqual(self.snapshot(), before)
 
-    def test_explicit_directory_does_not_override_a_known_source_conflict(self):
-        self.summary("deploy/server/1.0/server-summary.md", "server", version="1.0",
-                     project_url="https://github.com/First/server")
-        self.invoke(self.data("server", "1.0", project_url="https://github.com/Second/server",
-                              output_dir="deploy/server/1.0"), success=False)
+    def test_explicit_directory_keeps_a_different_source_visible_for_confirmation(self):
+        relative = "deploy/server/1.0/server-summary.md"
+        previous_source = "https://github.com/first/server"
+        current_source = "https://github.com/second/server"
+        self.summary(relative, "server", version="1.0", project_url=previous_source)
+        before = self.snapshot()
+        result = self.invoke(self.data("server", "1.0", project_url=current_source,
+                                       output_dir="deploy/server/1.0"))
+        self.assertEqual(result["output_dir"], "deploy/server/1.0")
+        self.assert_warning_for(result, relative, previous_source, current_source)
+        self.assertEqual(self.snapshot(), before)
 
-    def test_stage_source_protects_software_directory_without_a_summary(self):
-        self.raw("deploy/server/1.0/server-install.md",
-                 "# Deployment guide\n\n> 软件：server | 官方项目：https://github.com/First/server | 目录：deploy/server/1.0\n")
+    def test_different_stage_source_returns_paths_and_evidence_for_confirmation(self):
+        relative = "deploy/server/1.0/server-install.md"
+        previous_source = "https://github.com/first/server"
+        current_source = "https://github.com/second/server"
+        self.raw(relative, f"# Deployment guide\n\n> 软件：server | 官方项目：{previous_source} | 目录：deploy/server/1.0\n")
+        before = self.snapshot()
         for version in ("1.0", "2.0"):
             with self.subTest(version=version):
-                self.invoke(self.data("server", version, project_url="https://github.com/Second/server"), success=False)
-        result = self.invoke(self.data("server", "1.0", project_url="https://github.com/First/server"))
+                result = self.invoke(self.data("server", version, project_url=current_source))
+                self.assertEqual(result["output_dir"], f"deploy/server/{version}")
+                self.assert_warning_for(result, relative, previous_source, current_source)
+        result = self.invoke(self.data("server", "1.0", project_url=previous_source))
         self.assertEqual(result["output_dir"], "deploy/server/1.0")
+        self.assertEqual(result.get("warnings"), [])
+        self.assertEqual(self.snapshot(), before)
 
-    def test_unknown_existing_stage_directory_requires_confirmed_paths(self):
+    def test_unknown_stage_source_returns_existing_path_and_warning(self):
         relative = "deploy/anything-llm/1.19.0/anything-llm-install.md"
         self.raw(relative, "Guide with no project identity")
-        self.invoke(self.data(), success=False)
-        result = self.invoke(self.data(files={"install_file": relative}))
+        before = self.snapshot()
+        result = self.invoke(self.data())
+        self.assertEqual(result["output_dir"], "deploy/anything-llm/1.19.0")
         self.assertEqual(result["files"]["install_file"], relative)
+        self.assert_warning_for(result, relative)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_unparseable_summary_does_not_block_a_confirmed_stage_path(self):
+        guide = "deploy/anything-llm/1.19.0/anything-llm-install.md"
+        summary = "deploy/anything-llm/1.19.0/anything-llm-summary.md"
+        self.raw(guide, f"# Guide\n\n> 官方项目：{ANYTHING_URL}\n")
+        for body in ("# Historical experience without front matter\n",
+                     "---\nsoftware: [unfinished\n---\n# Historical experience\n"):
+            with self.subTest(body=body):
+                self.raw(summary, body)
+                before = self.snapshot()
+                result = self.invoke(self.data(files={"install_file": guide}))
+                self.assertEqual(result["output_dir"], "deploy/anything-llm/1.19.0")
+                self.assertEqual(result["files"]["install_file"], guide)
+                self.assertEqual(result["files"]["summary_file"], summary)
+                self.assert_warning_for(result, summary)
+                self.assertEqual(self.snapshot(), before)
+
+    def test_unrelated_files_do_not_make_a_new_version_directory_ambiguous(self):
+        self.raw("deploy/anything-llm/1.19.0/.keep", "")
+        self.raw("deploy/anything-llm/1.19.0/notes.md", "Human notes")
+        before = self.snapshot()
+        result = self.invoke(self.data())
+        self.assertEqual(result["output_dir"], "deploy/anything-llm/1.19.0")
+        self.assertEqual(result["files"]["install_file"], "deploy/anything-llm/1.19.0/anything-llm-install.md")
+        self.assertEqual(result.get("warnings"), [])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_explicit_legacy_paths_with_missing_summary_source_remain_usable(self):
+        summary = "deploy/anythingllm/1.19.0/anythingllm-summary.md"
+        guide = "deploy/anythingllm/1.19.0/anythingllm-install.md"
+        self.summary(summary, "anythingllm", project_url=None)
+        self.raw(guide, f"# Guide\n\n> 官方项目：{ANYTHING_URL}\n")
+        before = self.snapshot()
+        data = self.data("anything-llm", files={"install_file": guide})
+        result = self.invoke(data)
+        self.assertEqual(result["software"], "anything-llm")
+        self.assertEqual(result["output_dir"], "deploy/anythingllm/1.19.0")
+        self.assertEqual(result["files"]["install_file"], guide)
+        self.assertEqual(result["files"]["summary_file"], summary)
+        self.assert_warning_for(result, summary)
+        found = subprocess.run(
+            [sys.executable, str(SCRIPT.with_name("deploy_summary.py")), "find", "--data", "-", "--root", str(self.root)],
+            input=json.dumps(self.data("anything-llm")), text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(found.returncode, 0, found.stderr)
+        self.assertEqual(found.stderr, "")
+        self.assertEqual(json.loads(found.stdout)["matches"], [])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_http_to_https_source_change_keeps_new_paths_and_records_for_confirmation(self):
+        relative = "deploy/server/1.0/server-install.md"
+        previous_source = "http://github.com/vendor/server"
+        current_source = "https://github.com/vendor/server"
+        self.raw(relative, f"# Guide\n\n> 官方项目：{previous_source}\n")
+        before = self.snapshot()
+        result = self.invoke(self.data("server", "2.0", project_url=current_source,
+                                       output_dir="deploy/server/2.0"))
+        self.assertEqual(result["output_dir"], "deploy/server/2.0")
+        self.assertEqual(result["project_url"], current_source)
+        self.assert_warning_for(result, relative, previous_source, current_source)
+        self.assertFalse((self.root / "deploy/server/2.0").exists())
+        self.assertEqual(self.snapshot(), before)
 
     def test_internal_symlink_cannot_redirect_output_to_another_version(self):
         self.summary("deploy/anything-llm/1.19.0/anything-llm-summary.md", "anything-llm")

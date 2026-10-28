@@ -218,8 +218,10 @@ OBS 配置修改先审计后执行；OBS 全局配置（凭据/桶/endpoint）�
 
 ## 当前版本产物与并行运行
 
-Ubuntu deploy 通过 `scripts/deploy_paths.py resolve` 按已确认官方项目统一名称与
-路径，新版本文件保存在 `deploy/<规范软件名>/<版本>/`；具体命名和续作规则见
+Ubuntu deploy 按已确认官方项目统一名称与路径，优先用
+`scripts/deploy_paths.py resolve` 辅助定位。历史材料警告由 agent 结合上下文判断；
+脚本异常时按配置和已有证据确认路径，继续当前阶段。新版本文件保存在
+`deploy/<规范软件名>/<版本>/`；具体命名、续作与路径纠正规则见
 [部署总结参考](../.claude/deploy-summary.md)。手动总结通过
 `scripts/deploy_summary.py save/find` 保存与查找 Markdown 文件头及正文；
 同软件同版本再次总结覆盖该总结，其他部署操作不会更新、删除或使总结失效。

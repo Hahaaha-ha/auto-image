@@ -8,7 +8,9 @@ component. A GitHub repository root supplies its lowercase repository name;
 canonical_name explicitly selects a confirmed product/component name instead.
 Other sources use canonical_name or software, preserving existing punctuation.
 files maps configured *_file keys to known paths within one version directory.
-Output: {software, project_url, version, output_dir, files, canonical_name?}.
+Output: {software, project_url, version, output_dir, files, warnings, canonical_name?}.
+Warnings contain {path, code, message}; historical metadata is advisory and may
+need investigation by the caller. Path safety and actual file collisions fail.
 Paths are project-relative; explicit paths may be absolute within the artifact
 root. Unknown version stays null; its directory uses configured unknown_version.
 Errors are JSON on stderr with exit status 1. Requires PyYAML.
@@ -245,7 +247,6 @@ class DeploymentPaths:
                 seen.add(path)
                 try:
                     record = read_record(path)
-                    self.path(path, record, existing=True)
                 except (OSError, UnicodeError) as exc:
                     warn(path, "unreadable_summary", exc)
                     continue
@@ -255,14 +256,16 @@ class DeploymentPaths:
                 records.append((path, record))
         return records, sorted(warnings, key=lambda item: item["path"])
 
-    def stage_sources(self):
+    def stage_sources(self, software_directory):
         """Read explicit official-project headers, including runs without a summary."""
         sources = []
         for directory, _, filenames in os.walk(self.base):
             parent = Path(directory)
             try:
-                _, version = self.directory_values(parent)
+                name, version = self.directory_values(parent)
             except ValueError:
+                continue
+            if name != software_directory:
                 continue
             for filename in filenames:
                 if not filename.endswith(".md") or not any(
@@ -287,24 +290,36 @@ class DeploymentPaths:
                     continue
         return sources
 
-    def check_directory_identity(self, directory, data, records=None, stage_sources=None):
-        """Keep both resolution and summary writes in the confirmed product namespace."""
+    def check_directory_identity(self, directory, data, records=None, stage_sources=None, *, writing=False):
+        """Report uncertain identity; protect actual writes when both sources conflict."""
         directory_name, _ = self.directory_values(directory)
         source = project_source(data.get("project_url"))
+        warnings = []
         if records is None:
             records = self.summaries()[0]
         if stage_sources is None:
-            stage_sources = self.stage_sources()
+            stage_sources = self.stage_sources(directory_name)
+
+        def report(path, recorded_source, detail):
+            message = (f"{detail}; recorded project_url={recorded_source or 'unknown'}, "
+                       f"requested project_url={source or 'unknown'}; "
+                       "read the existing material and use the current task context to confirm or correct the paths")
+            if writing and source and recorded_source:
+                raise ValueError(message)
+            warnings.append({"path": self.relative(path), "code": "identity_unconfirmed", "message": message})
+
         for path, record in records:
             other_name, _ = self.directory_values(path.parent)
             other_source = project_source(record.get("project_url"))
             if ((other_name == directory_name and source and other_source)
                     or path.parent == directory) and not same_software(record, data):
-                raise ValueError("output software directory belongs to a different official project or component")
+                report(path, other_source,
+                       f"Software identity differs: recorded={record['software']}, requested={data['software']}")
         for path, other_source in stage_sources:
             other_name, _ = self.directory_values(path.parent)
             if other_name == directory_name and source and other_source != source:
-                raise ValueError("output software directory belongs to a different official project in an existing stage")
+                report(path, other_source, "An existing stage records a different project URL")
+        return warnings
 
     def resolve(self, data):
         validate_record(data)
@@ -323,7 +338,7 @@ class DeploymentPaths:
             parents.add(self.safe_path(data["output_dir"]))
         if len(parents) > 1:
             raise ValueError("explicit files and output_dir must identify one version directory")
-        records, warnings = self.summaries()
+        records, summary_warnings = self.summaries()
         matches = [(path, record) for path, record in records if same_software(record, data)]
         candidates = {path.parent for path, record in matches
                       if (version is not None and record.get("version") == version)
@@ -339,15 +354,10 @@ class DeploymentPaths:
         if directory.exists() and not directory.is_dir():
             raise ValueError("output_dir must be a directory")
         directory_version = actual_directory_version
-        stage_sources = self.stage_sources()
-        self.check_directory_identity(directory, data, records, stage_sources)
-        relevant_warnings = [item for item in warnings if (self.root / item["path"]).parent == directory]
-        if relevant_warnings:
-            raise ValueError("cannot confirm existing version summary: " + relevant_warnings[0]["message"])
+        stage_sources = self.stage_sources(directory_name)
+        warnings = self.check_directory_identity(directory, data, records, stage_sources)
+        warnings.extend(item for item in summary_warnings if (self.root / item["path"]).parent == directory)
         local_records = [(path, record) for path, record in matches if path.parent == directory]
-        if (not parents and directory.is_dir() and any(directory.iterdir()) and not local_records
-                and not any(path.parent == directory for path, _ in stage_sources)):
-            raise ValueError("existing directory identity is unconfirmed; provide verified output_dir or known files")
         known_names = {software, directory_name}
         for _, record in local_records:
             known_names.add(record["software"].lower())
@@ -361,8 +371,11 @@ class DeploymentPaths:
                 known_names.add(name)
         if not files and len(local_records) == 1:
             prefix = self.filename_software("summary_file", local_records[0][0].name, directory_version) or software
+        existing_stages = []
         for key, template in self.filenames.items():
             if key in files:
+                if key != "summary_file" and files[key].is_file():
+                    existing_stages.append(files[key])
                 continue
             existing = []
             if directory.is_dir():
@@ -376,13 +389,19 @@ class DeploymentPaths:
                 raise ValueError(f"ambiguous existing {key}; provide its exact path in files")
             filename = template.replace("{{software}}", prefix).replace("{{version}}", directory_version)
             files[key] = existing[0] if existing else self.safe_path(directory / filename)
+            if existing and key != "summary_file":
+                existing_stages.append(existing[0])
         if len(set(files.values())) != len(files):
             raise ValueError("resolved artifact paths collide")
         if any(path.parent != directory for path in files.values()):
             raise ValueError("resolved artifact files must remain in the selected version directory")
+        if existing_stages and not local_records and not any(path.parent == directory for path, _ in stage_sources):
+            warnings.append({"path": self.relative(sorted(existing_stages)[0]), "code": "identity_unconfirmed",
+                             "message": "Existing stage files have no confirmed project metadata; use the current task context and read them before continuing"})
         result = {"software": software, "project_url": source, "version": version,
                   "output_dir": self.relative(directory),
-                  "files": {key: self.relative(path) for key, path in files.items()}}
+                  "files": {key: self.relative(path) for key, path in files.items()},
+                  "warnings": sorted(warnings, key=lambda item: (item["path"], item["code"]))}
         if data.get("canonical_name") is not None:
             result["canonical_name"] = software_identifier(data["canonical_name"])
         return result

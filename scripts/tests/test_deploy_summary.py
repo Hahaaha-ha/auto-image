@@ -257,6 +257,27 @@ class SummaryCliTest(unittest.TestCase):
         self.assertEqual(updated["path"], relative)
         self.assertNotIn("project_url", updated["record"])
 
+    def test_explicit_legacy_summary_can_use_current_confirmed_name_and_source(self):
+        relative = "deploy/anythingllm/1.0/anythingllm-summary.md"
+        header = {"software": "anythingllm", "version": "1.0"}
+        self.raw(relative, "---\n" + yaml.safe_dump(header) + "---\nLegacy body")
+        saved = self.invoke("save", self.data("1.0", software="anything-llm", path=relative,
+                                             project_url="https://github.com/Mintplex-Labs/anything-llm"))
+        self.assertEqual(saved["path"], relative)
+        self.assertEqual(saved["record"]["software"], "anything-llm")
+        self.assertTrue(any(item["path"] == relative for item in saved["warnings"]))
+        self.assertEqual(self.invoke("find", {"software": "anything-llm"})["matches"][0]["path"], relative)
+
+    def test_explicit_summary_update_can_repair_missing_or_broken_metadata(self):
+        data = self.data()
+        for previous in ("# Legacy summary without a header", "---\nsoftware: [\n---\nOld body"):
+            with self.subTest(previous=previous):
+                self.raw(data["path"], previous)
+                saved = self.invoke("save", data)
+                self.assertEqual(saved["path"], data["path"])
+                self.assertTrue(saved["warnings"])
+                self.assertEqual(self.invoke("find", {"software": data["software"]})["warnings"], [])
+
     def test_confirming_source_for_an_exact_legacy_name_can_normalize_its_header(self):
         relative = "deploy/anythingllm/1.0/anythingllm-summary.md"
         header = {"software": "anythingllm", "version": "1.0"}

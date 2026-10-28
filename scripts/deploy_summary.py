@@ -8,7 +8,7 @@ find input: {software, project_url?, canonical_name?, version?, os?, os_version?
 Optional header fields include project_url, canonical_name and the environment fields above;
 additional JSON fields are preserved. path/body are not copied into the header,
 and updated_at is generated with a timezone. Unknown facts may be null.
-save output: {path, record}; find output: {matches, warnings}. Each match contains
+save output: {path, record, warnings}; find output: {matches, warnings}. Each match contains
 path, the original record, version_match {relation, reason}, and environment
 {field: {recorded, target, relation}}. Version relations are same, older, newer,
 unknown, incomparable; environment relations are same, different, unknown.
@@ -44,25 +44,27 @@ def save(paths, data):
     if not isinstance(data.get("body"), str) or not data["body"].strip():
         raise ValueError("body must contain nonempty Markdown")
     path = paths.path(data.get("path"))
+    warnings = []
     record = {key: value for key, value in data.items() if key not in ("path", "body", "updated_at")}
     if "project_url" in record:
         record["project_url"] = project_source(record["project_url"])
     if path.exists():
-        previous = read_record(path)
-        paths.path(path, previous, existing=True)
+        try:
+            previous = read_record(path)
+        except (ValueError, UnicodeError, TypeError, RecursionError, yaml.YAMLError) as exc:
+            paths.path(path, record)
+            previous = {}
+            warnings.append({"path": paths.relative(path), "code": "invalid_summary", "message": str(exc)})
         for key in ("project_url", "canonical_name"):
             if key not in data and previous.get(key) is not None:
                 record[key] = previous[key]
-        if not same_software(previous, record):
-            raise ValueError("existing summary belongs to a different software project")
-        paths.path(path, record, existing=True)
     else:
         _, directory_version = paths.directory_values(path.parent)
         existing_stage = path.parent.is_dir() and any(
             file.is_file() and paths.filename_software(key, file.name, directory_version) is not None
             for file in path.parent.iterdir() for key in paths.filenames if key != "summary_file")
         paths.path(path, record, existing=bool(existing_stage and record.get("project_url")))
-    paths.check_directory_identity(path.parent, record)
+    warnings.extend(paths.check_directory_identity(path.parent, record, writing=True))
     record["software"] = canonical_software(record)
     record["updated_at"] = datetime.now(timezone.utc).isoformat()
     content = "---\n" + yaml.safe_dump(record, allow_unicode=True, sort_keys=False) + "---\n\n" + data["body"]
@@ -78,7 +80,7 @@ def save(paths, data):
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
-    return {"path": paths.relative(path), "record": record}
+    return {"path": paths.relative(path), "record": record, "warnings": warnings}
 
 
 def _numeric(version):

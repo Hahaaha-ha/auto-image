@@ -41,9 +41,9 @@ python <ssh_skill_scripts>/ssh_config_manager_v3.py find "<关键词>"
 
 ## 输入与配置
 
-必需为软件、当前验证指南和明确目标机器；已有安装结果作为本次输入一并读取。版本未提供时从明确指南核对，实测版本未取得则记录未知。接收调用方的完整路径解析结果、明确指南/输出路径和 alias；无明确 alias 时读取配置 `default_server_alias`，仍未知则报告。
+必需为软件、当前验证指南和明确目标机器；已有安装结果作为本次输入一并读取。版本未提供时从明确指南核对，实测版本未取得则记录未知。接收调用方确认的完整路径结果、明确指南/输出路径和 alias；无明确 alias 时读取配置 `default_server_alias`，仍未知则报告。
 
-使用 `files.verify_file`、`files.verify_result_file` 和 `files.verify_issues_file` 的完整路径，本次安装材料使用同一解析结果中的对应路径。独立调用或续作缺少路径时，按共享参考将已确认指南等已有路径交给解析器补齐，成功后再执行验证。工具目录从 `deploy.config.yaml` 的 `ssh_skill_scripts` 读取。
+使用 `files.verify_file`、`files.verify_result_file` 和 `files.verify_issues_file` 的完整路径，本次安装材料使用同一结果中的对应路径。独立调用或续作缺少路径、遇到解析警告或脚本异常时，按共享参考的“警告与路径纠正”确认路径并继续只读验证。工具目录从 `deploy.config.yaml` 的 `ssh_skill_scripts` 读取。
 
 ## 工作流程
 
@@ -118,8 +118,8 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 ```markdown
 # <软件名> 验证结果报告
 
-> 软件：<解析结果 software> <version> | 目标机器：<server alias> | 验证日期：<YYYY-MM-DD> | 验证指南：<files.verify_file 完整路径>
-> 官方项目：<project_url 或未知> | 目录：<解析结果 output_dir> | 当前安装结果：<完整路径或缺失> | 来源：<已有 run_id/task_id；没有则省略>
+> 软件：<本次确认 software> <version> | 目标机器：<server alias> | 验证日期：<YYYY-MM-DD> | 验证指南：<files.verify_file 完整路径>
+> 官方项目：<project_url 或未知> | 目录：<本次确认 output_dir> | 当前安装结果：<完整路径或缺失> | 来源：<已有 run_id/task_id；没有则省略>
 
 ## 整体结论
 - 状态：✅ 全部通过 / ⚠️ 无法判定 / ❌ 失败
@@ -131,6 +131,7 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 - 诊断项：D 项（不参与整体结论）
 - 实际安装版本：<实测值与对应检查项；无法取得时写未知和原因>
 - 验证范围：<已执行的目标版本、运行载体和适用功能；可选诊断单列>
+- 定位与调整：<本次名称/路径的确认依据与必要调整；无则省略>
 - 当前检查材料：<本次完整只读命令、真实输出及所在报告/附件路径>
 - 材料缺口：<缺失指南、环境或未执行项；无则写无>
 - 补充日志：`logs/<别名>.log`
@@ -158,7 +159,7 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 ```markdown
 # <软件名> 验证未通过项清单
 
-> 软件：<解析结果 software> <version> | 目标机器：<server alias> | 验证日期：<YYYY-MM-DD>
+> 软件：<本次确认 software> <version> | 目标机器：<server alias> | 验证日期：<YYYY-MM-DD>
 
 ## 未通过 1
 - 检查项：<检查项标题>
