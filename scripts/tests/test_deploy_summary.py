@@ -191,6 +191,51 @@ class SummaryCliTest(unittest.TestCase):
         self.invoke("save", {**original, **query, "body": "Wrong product"}, success=False)
         self.assertEqual(file.read_bytes(), before)
 
+    def test_sources_outside_target_directory_warn_without_blocking_summary_save(self):
+        self.config["install_file"] = "{{software}}-install.md"
+        self.write_config()
+        for material in ("summary", "install"):
+            for mode in ("new", "update"):
+                with self.subTest(material=material, mode=mode):
+                    software = f"example-{material}-{mode}"
+                    old_source = f"http://vendor.example/{software}"
+                    current_source = f"https://vendor.example/{software}"
+                    data = self.data("2.0", directory="2.0", software=software,
+                                     project_url=current_source)
+                    if mode == "update":
+                        self.invoke("save", data)
+                    relative = f"deploy/{software}/1.0/{software}-{material}.md"
+                    if material == "summary":
+                        header = {"software": software, "version": "2.0", "project_url": old_source}
+                        content = "---\n" + yaml.safe_dump(header) + "---\nHistorical notes"
+                    else:
+                        content = f"# Historical guide\n\n> 官方项目：{old_source}\n"
+                    old_file = self.raw(relative, content)
+                    before = (old_file.read_bytes(), old_file.stat().st_mtime_ns)
+
+                    saved = self.invoke("save", {**data, "body": "Current version notes"})
+
+                    self.assertEqual(saved["path"], data["path"])
+                    self.assertEqual(saved["record"]["project_url"], current_source)
+                    warning, = [item for item in saved["warnings"] if item["path"] == relative]
+                    self.assertIn(old_source, warning["message"])
+                    self.assertIn(current_source, warning["message"])
+                    self.assertIn("Current version notes", (self.root / saved["path"]).read_text())
+                    self.assertEqual((old_file.read_bytes(), old_file.stat().st_mtime_ns), before)
+                    found = self.invoke("find", {"software": software, "project_url": current_source})
+                    self.assertEqual([item["path"] for item in found["matches"]], [data["path"]])
+
+    def test_source_conflict_in_target_directory_is_not_relaxed_by_version_metadata(self):
+        self.config["install_file"] = "{{software}}-install.md"
+        self.write_config()
+        relative = "deploy/nginx/latest/nginx-install.md"
+        guide = self.raw(relative, "# Guide\n\n> 官方项目：http://nginx.org/\n")
+        before = guide.read_bytes()
+        data = self.data("2.0", directory="latest", project_url="https://nginx.org/")
+        self.invoke("save", data, success=False)
+        self.assertFalse((self.root / data["path"]).exists())
+        self.assertEqual(guide.read_bytes(), before)
+
     def test_first_summary_can_use_confirmed_existing_stage_directory(self):
         self.config["install_file"] = "{{software}}-install.md"
         self.write_config()

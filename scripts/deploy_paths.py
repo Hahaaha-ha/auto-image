@@ -291,7 +291,7 @@ class DeploymentPaths:
         return sources
 
     def check_directory_identity(self, directory, data, records=None, stage_sources=None, *, writing=False):
-        """Report uncertain identity; protect actual writes when both sources conflict."""
+        """Report identity differences; reject write conflicts in the target directory."""
         directory_name, _ = self.directory_values(directory)
         source = project_source(data.get("project_url"))
         warnings = []
@@ -304,7 +304,7 @@ class DeploymentPaths:
             message = (f"{detail}; recorded project_url={recorded_source or 'unknown'}, "
                        f"requested project_url={source or 'unknown'}; "
                        "read the existing material and use the current task context to confirm or correct the paths")
-            if writing and source and recorded_source:
+            if writing and path.parent == directory and source and recorded_source:
                 raise ValueError(message)
             warnings.append({"path": self.relative(path), "code": "identity_unconfirmed", "message": message})
 
