@@ -437,6 +437,31 @@ async def test_fixed_summary_and_state_are_readable_after_overwrite():
                 assert all(archive.read(path) == b"latest value" for path in files)
 
 
+async def test_summary_badge_follows_configured_filename():
+    for suffix in ("summary", "experience"):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "deploy.config.yaml"
+            config.write_text(DEPLOY_CONFIG_STUB + f'summary_file: "{{{{software}}}}-{suffix}.md"\n', encoding="utf-8")
+            name = f"nginx-{suffix}.md"
+            backup = f"{name}.v1"
+            directory = make_output_tree(root / "deploy", "nginx/1.25", (name, backup, "nginx-install.md"))
+            app = make_test_app(artifact_roots={"deploy": root / "deploy"}, deploy_config=config)
+            async with async_client(app) as client:
+                response = await client.get("/api/artifacts")
+                assert response.status_code == 200, response.text
+                files = {file["name"]: file for file in response.json()["groups"][0]["files"]}
+                assert files[name]["stage"] == "SUMMARY", files[name]
+                assert files[backup]["stage"] is None
+                assert files["nginx-install.md"]["stage"] == "GUIDE"
+                relative = f"deploy/nginx/1.25/{name}"
+                response = await client.get(f"/api/artifacts/file/{relative}")
+                assert response.status_code == 200, response.text
+                assert response.json()["stage"] == "SUMMARY"
+                response = await client.get(f"/api/artifacts/download/{relative}")
+                assert response.content == (directory / name).read_bytes()
+
+
 async def main():
     tests = [fn for name, fn in sorted(globals().items()) if name.startswith("test_")]
     for fn in tests:

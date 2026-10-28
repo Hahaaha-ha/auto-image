@@ -92,6 +92,9 @@ def load_file_stages(config_path):
         suffixes.append((pattern.replace("{{software}}", ""), stage))
     # 旧配置尚无 pipeline_result_file 时兼容既有命名。
     suffixes.append((data.get("pipeline_result_file", "{{software}}-pipeline-result.md").replace("{{software}}", ""), ARCHIVE))
+    # SUMMARY 只用于产物徽标，不加入任务扫描使用的阶段产物集合。
+    if summary_file := data.get("summary_file"):
+        suffixes.append((summary_file.replace("{{software}}", ""), "SUMMARY"))
     suffixes.extend(RPM_FILE_STAGES)
     return tuple(suffixes)
 
