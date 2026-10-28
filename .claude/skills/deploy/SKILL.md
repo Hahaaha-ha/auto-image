@@ -46,7 +46,7 @@ guide 按共享参考负责官方项目确认、路径定位、自动查找与�
 
 ### 2. 执行安装
 
-通过 Agent（subagent_type: deploy-install）传入当前软件/版本、指南路径、已知 alias/instance_id/认证方式和 ECS 创建规格，已有定时删除记录及来源一并传入。已有 alias 使用指定机器；无 alias 且没有关联实例时，由 install 读取 `deploy.config.yaml` 的 `ecs_terminate_hours`，显式传 `--terminate-hours` 创建并注册。已有机器和续作沿用原安排，配置变更不重置已创建实例的时间。
+通过 Agent（subagent_type: deploy-install）传入当前软件/版本、指南路径、已知 alias/instance_id/认证方式和 ECS 创建规格，已有定时删除记录及来源一并传入。已有 alias 使用指定机器；无 alias 且没有关联实例时，由 install 调用 ecs-skill 创建并注册，保留时长沿用 `scope.yaml` 的统一配置，编排不另传时长覆盖参数。已有机器和续作沿用原安排，配置变更不重置已创建实例的时间。
 
 结束后读取 `install_result_file` 与 `install_meta_file`，缓存 meta 中的 `server_alias`、`instance_id`、`path`、`auth_method`、`auto_terminate_time` 及报告中的时间来源。后续 alias 以 install 实际使用并保存的值为准，尤其创建路径不可猜测。meta 缺失或某字段未知时，沿用本次已核对的调用方/会话机器信息，不把已知值写空；仍无 instance_id 则注明 archive 将跳过。安装失败仍派发 verify 只读采证。
 

@@ -15,7 +15,7 @@ tools: Read, Write, Bash, Glob, Grep
 - **非交互执行**：远程命令必须非交互。假设目标用户已具备**免密 sudo**；若命令因 sudo 提密/交互提示卡住或失败，视为失败并报告。
 - **逐步记录、失败即停**：每步记录命令、退出码、stdout/stderr 摘要、成功/失败。关键步骤（依赖安装/安装/启动）失败 → 停止后续步骤，标记整体失败，进入问题报告。依赖检查失败不中断安装，但记为问题项。
 - **明确不空泛**：结果与问题必须具体到步骤、命令、退出码、错误输出、建议修复动作。
-- **新建 ECS 按配置定时删除**：创建时按 B-2、B-3 传入保留时长。过程失败不立即销毁，也不取消已设置的删除安排。
+- **新建 ECS 按统一配置定时删除**：创建时由 ecs-skill 读取保留时长，调用方式见 B-3。过程失败不立即销毁，也不取消已设置的删除安排。
 
 ## 双路径分流与机器续作
 
@@ -101,23 +101,7 @@ MSYS_NO_PATHCONV=1 python <ssh_skill_scripts>/ssh_upload.py <别名> "<本地路
 
 - 用 `date +%Y%m%d%H%M%S` 生成时间戳，alias 为 `<software>-<时间戳>`，ECS 名为 `ecs-<software>-<时间戳>`，核对未与已有别名冲突。
 
-**B-2. 预检保留时长与密钥对配置**
-
-在项目根执行以下命令，读取 `deploy.config.yaml` 的 `ecs_terminate_hours`；只在成功退出后取 stdout 数值作为 B-3 的小时数。配置缺失或类型错误时停止并报告；数值范围与非有限值由 ecs.py 在发送创建请求前校验：
-
-```bash
-python - <<'PY'
-from pathlib import Path
-import yaml
-
-hours = yaml.safe_load(Path("deploy.config.yaml").read_text(encoding="utf-8"))["ecs_terminate_hours"]
-if type(hours) not in (int, float):
-    raise SystemExit("ecs_terminate_hours 须为数字（小时）")
-print(hours)
-PY
-```
-
-该值显式传给 CLI，覆盖 scope 的通用默认；从构造建机请求时开始计时，沿用 ECS 脚本的 UTC 计算、分钟取整及下限缓冲。安装、验证、归档和等待输入都占用保留时间。创建前记录本次小时数与配置来源，后续配置修改只影响新建实例。
+**B-2. 预检密钥对配置**
 
 - 用 **Read** 读 `scope.yaml`，取 `ecs_create.server.key_name` 和 `ecs_create.server.key_file`。
 - `key_name` 有值但 `key_file` 为空 → **停止并报告**（"scope.yaml 配了 key_name 但未配 key_file，无法注册密钥对认证的机器"）。此时未创建任何 ECS，无副作用。
@@ -125,10 +109,10 @@ PY
 **B-3. 调 ecs-skill create 拉起 ECS**
 
 ```bash
-python <ecs_skill_scripts>/ecs.py create --name <ECS名> --terminate-hours <B-2输出的小时数> [规格参数透传]
+python <ecs_skill_scripts>/ecs.py create --name <ECS名> [规格参数透传]
 ```
 - 调用方在 prompt 中给了规格参数（`--flavor`/`--image`/`--disk-type`/`--disk-size`/`--bandwidth` 等）时透传给 ecs.py。
-- 定时删除参数以 B-2 的配置值为准，规格参数不夹带关闭定时删除或第二个保留时长参数。
+- 保留时长统一使用 `scope.yaml` 的 `ecs_create.server.terminate_hours`，由 ecs.py 读取并在创建请求前校验；deploy 不传 `--terminate-hours` 或 `--no-auto-terminate`。从构造建机请求时起算，沿用 ECS 脚本的 UTC 计算、分钟取整及下限缓冲，安装、验证、归档和等待输入都占用保留时间。报告记录本次使用的时长及来源；未配置时沿用 ecs-skill 的默认值。
 - 密码/密钥不显式传，由 scope.yaml 裁决（ecs-skill 按 CLI > 环境变量 > scope 的优先级自动判定密钥对或密码方式）。
 - **Bash 工具超时设为 ≥ 660000 毫秒**（ecs.py 最长 600s 轮询 + 60s 端口探测）。
 
@@ -226,7 +210,6 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 
 | 失败点 | install 行为 | meta.json | ECS |
 |--------|-------------|-----------|-----|
-| 保留时长预检失败 | 停止，报告配置错误 | 不借用旧实例信息 | 未创建 |
 | ecs.py create 失败（无 server_id） | 停止，报告 create 失败 | 写已知关联，instance_id 未知 | 无机器或华为侧失败 |
 | ecs.py create 超时（有 server_id） | 停止，报告超时 + hint | 写 instance_id 及回显时间（alias=null） | 已设置的删除安排继续有效 |
 | ssh-skill 注册失败 | 停止，报告注册失败 | 写 instance_id + ip 及回显时间（alias=null） | 保留至既定期限 |
@@ -259,7 +242,7 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 - 路径类型：新创建 / 已有
 - 执行步骤：N 成功 / M 总数
 - 目标机器：<本次目标 alias、已知 instance_id、认证方式及来源>
-- 保留时长与来源：<本次建机使用的小时数及 deploy.config.yaml；已有机器写沿用原安排>
+- 保留时长与来源：<本次建机使用的小时数，来源为 scope.yaml 的 ecs_create.server.terminate_hours 或 ecs-skill 默认值；已有机器写沿用原安排>
 - 定时删除时间：<记录的时刻及来源，注明时区；创建请求回显不写成云端查询确认，无记录写未知>
 - 计划/实际环境及来源：<系统、架构、基础镜像、安装方式、关键依赖与差异>
 - 定位与调整：<本次名称/路径的确认依据与必要调整；无则省略>
