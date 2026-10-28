@@ -71,11 +71,11 @@ stdout 是纯 JSON：解析后确认 `ok: true` + `ssh_port_open: true`。失败
 
 ## 输入与配置
 
-必需为软件、本次指南/安装/验证结果、目标机器与 instance_id；远程清理还需有效 alias。版本从本次资料核对，实测版本未取得则记录未知。接收调用方的完整路径解析结果和明确输入/输出路径。已知认证方式由安装 meta 或调用方传入；未知如实记录，不影响 ecs.py 从 scope 获取切换 OS 密码。密码可用于本次显式调用，持久文件只记参数名及获取方式。
+必需为软件、本次指南/安装/验证结果、目标机器与 instance_id；远程清理还需有效 alias。版本从本次资料核对，实测版本未取得则记录未知。接收调用方确认的完整路径结果和明确输入/输出路径。已知认证方式由安装 meta 或调用方传入；未知如实记录，不影响 ecs.py 从 scope 获取切换 OS 密码。密码可用于本次显式调用，持久文件只记参数名及获取方式。
 
 同一实例的定时删除记录及来源从调用方、安装 meta/报告读取。归档与切 OS 沿用原安排，不按当前配置重新计时或自动延长；结果和交付清单标明时区与实际来源，未知如实记录，创建请求回显不写成云端确认。云端时间查询用于验收或排障，不作为归档前提。
 
-使用 `files.archive_result_file`、`files.deploy_list_file` 和 `files.archive_issues_file` 的完整路径，输入指南与安装/验证报告使用同一解析结果中的对应路径。独立调用或续作缺少路径时，按共享参考将已确认指南等已有路径交给解析器补齐，成功后再执行归档。工具目录及默认 alias 从 `deploy.config.yaml` 读取。
+使用 `files.archive_result_file`、`files.deploy_list_file` 和 `files.archive_issues_file` 的完整路径，输入指南与安装/验证报告使用同一结果中的对应路径。独立调用或续作缺少路径、遇到解析警告或脚本异常时，按共享参考的“警告与路径纠正”确认路径，再按本阶段门禁执行。工具目录及默认 alias 从 `deploy.config.yaml` 读取。
 
 ## 工作流程
 
@@ -233,8 +233,8 @@ python <ecs_skill_scripts>/ecs.py change-os \
 ```markdown
 # <软件名> 打包结果报告
 
-> 软件：<解析结果 software> <version> | 目标机器：<server alias> | ECS：<instance_id> | 日期：<YYYY-MM-DD>
-> 官方项目：<project_url 或未知> | 目录：<解析结果 output_dir> | 当前安装/验证：<明确输入路径> | 来源：<已有 run_id/task_id；没有则省略>
+> 软件：<本次确认 software> <version> | 目标机器：<server alias> | ECS：<instance_id> | 日期：<YYYY-MM-DD>
+> 官方项目：<project_url 或未知> | 目录：<本次确认 output_dir> | 当前安装/验证：<明确输入路径> | 来源：<已有 run_id/task_id；没有则省略>
 
 ## 整体结论
 - 状态：✅ 成功 / ❌ 失败
@@ -242,6 +242,7 @@ python <ecs_skill_scripts>/ecs.py change-os \
 - 镜像：<image_id>
 - ECS 定时删除：<同一实例记录的时刻、时区及实际来源；未知如实记录，创建请求回显不写成云端确认>
 - 来源：<本次安装、验证、指南及已有流水线报告路径>
+- 定位与调整：<本次名称/路径的确认依据与必要调整；无则省略>
 - 当前有效材料：<版本目录内配置、脚本、参数路径>
 - 云操作恢复核对：<已记录镜像/任务/切 OS 状态；本轮新增或接续的动作>
 - 当前云结果：<命令、输出、image_id/job_id 与状态>
@@ -279,8 +280,8 @@ python <ecs_skill_scripts>/ecs.py change-os \
 ```markdown
 # <软件名> 镜像交付清单
 
-> 软件：<解析结果 software> <version> | 打包日期：<YYYY-MM-DD>
-> 官方项目：<project_url 或未知> | 目录：<解析结果 output_dir> | 当前安装/验证：<明确输入路径>
+> 软件：<本次确认 software> <version> | 打包日期：<YYYY-MM-DD>
+> 官方项目：<project_url 或未知> | 目录：<本次确认 output_dir> | 当前安装/验证：<明确输入路径>
 
 ## 镜像信息
 - 镜像 ID：<image_id；未生成写未生成，不推测>
@@ -319,7 +320,7 @@ python <ecs_skill_scripts>/ecs.py change-os \
 ```markdown
 # <软件名> 打包问题清单
 
-> 软件：<解析结果 software> <version> | 目标机器：<server alias> | ECS：<instance_id> | 日期：<YYYY-MM-DD>
+> 软件：<本次确认 software> <version> | 目标机器：<server alias> | ECS：<instance_id> | 日期：<YYYY-MM-DD>
 
 ## 问题 1
 - 步骤：2. 制镜像

@@ -68,9 +68,9 @@ MSYS_NO_PATHCONV=1 python <ssh_skill_scripts>/ssh_upload.py <别名> "<本地路
 
 ## 输入与配置
 
-软件名与当前安装指南必需；版本未提供时按明确指南核对，实测版本未取得则记录未知。接收调用方的完整路径解析结果、明确指南/输出路径、alias 及创建 ECS 的规格参数。
+软件名与当前安装指南必需；版本未提供时按明确指南核对，实测版本未取得则记录未知。接收调用方确认的完整路径结果、明确指南/输出路径、alias 及创建 ECS 的规格参数。
 
-使用 `files.install_file`、`files.install_result_file`、`files.install_issues_file` 和 `files.install_meta_file` 的完整路径。独立调用或续作缺少这些路径时，按共享参考将已确认指南等已有路径交给解析器补齐，成功后再执行安装。
+使用 `files.install_file`、`files.install_result_file`、`files.install_issues_file` 和 `files.install_meta_file` 的完整路径。独立调用或续作缺少路径、遇到解析警告或脚本异常时，按共享参考的“警告与路径纠正”确认路径并继续本阶段。
 
 工具目录、默认 alias 从配置读取；创建参数按调用方输入透传。`scope.yaml` 的秘密值仅用于调用，持久文件只记参数名及获取方式。
 
@@ -251,8 +251,8 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 ```markdown
 # <软件名> 安装结果报告
 
-> 软件：<解析结果 software> <version> | 目标机器：<server alias> | 执行日期：<YYYY-MM-DD> | 安装指南：<files.install_file 完整路径>
-> 官方项目：<project_url 或未知> | 目录：<解析结果 output_dir> | 来源：<已有 run_id/task_id；没有则省略>
+> 软件：<本次确认 software> <version> | 目标机器：<server alias> | 执行日期：<YYYY-MM-DD> | 安装指南：<files.install_file 完整路径>
+> 官方项目：<project_url 或未知> | 目录：<本次确认 output_dir> | 来源：<已有 run_id/task_id；没有则省略>
 
 ## 整体结论
 - 状态：✅ 成功 / ⚠️ 部分成功 / ❌ 失败
@@ -262,6 +262,7 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 - 保留时长与来源：<本次建机使用的小时数及 deploy.config.yaml；已有机器写沿用原安排>
 - 定时删除时间：<记录的时刻及来源，注明时区；创建请求回显不写成云端查询确认，无记录写未知>
 - 计划/实际环境及来源：<系统、架构、基础镜像、安装方式、关键依赖与差异>
+- 定位与调整：<本次名称/路径的确认依据与必要调整；无则省略>
 - 本次操作：<执行的命令与未执行步骤>
 - 当前有效材料：<版本目录中的实际命令、配置、脚本路径>
 - 缺口：<未知身份、未执行步骤、未保存材料；无则写无>
@@ -303,7 +304,7 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "<命令>" --timeout <秒>
 ```markdown
 # <软件名> 安装问题清单
 
-> 软件：<解析结果 software> <version> | 目标机器：<server alias> | 执行日期：<YYYY-MM-DD>
+> 软件：<本次确认 software> <version> | 目标机器：<server alias> | 执行日期：<YYYY-MM-DD>
 
 ## 问题 1
 - 步骤：3. 安装
