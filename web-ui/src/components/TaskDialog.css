@@ -2,73 +2,67 @@
 .va-modal.va-task-dialog {
   width: min(1020px, 100%); max-width: none; max-height: calc(100dvh - 48px);
   padding: 0; overflow: hidden; display: flex; flex-direction: column;
-  color: var(--ink); font-size: 14px; line-height: 1.55;
+  color: var(--ink);
 }
 .va-task-dialog-heading {
-  display: flex; align-items: flex-start; gap: 16px; padding: 20px 24px 16px;
+  display: flex; align-items: flex-start; gap: 8px; padding: 14px 16px 12px;
   border-bottom: 1px solid var(--line); flex-shrink: 0;
 }
 .va-task-dialog-heading > div { min-width: 0; flex: 1; }
-.va-task-dialog h2 { margin: 0; font-size: 20px; line-height: 1.4; }
-.va-task-dialog-heading p { margin: 4px 0 0; color: var(--ink-2); overflow-wrap: anywhere; }
-.va-task-dialog-status { flex-shrink: 0; padding-top: 5px; color: var(--ink-2); }
-.va-task-dialog .va-modal-close { position: static; flex-shrink: 0; padding: 4px 8px; }
+.va-task-dialog h2 { margin: 0; }
+.va-task-dialog-heading p { margin: 4px 0 0; font-size: 11px; color: var(--ink-3); overflow-wrap: anywhere; }
+.va-task-dialog-status { flex-shrink: 0; padding-top: 2px; color: var(--ink-2); }
+.va-task-dialog .va-modal-close { flex-shrink: 0; }
 .va-task-dialog-form { display: flex; flex-direction: column; min-height: 0; }
 .va-task-dialog-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); overflow: auto; min-height: 0; }
-.va-task-dialog-fields, .va-task-prompt { padding: 22px 24px; min-width: 0; }
+.va-task-dialog-fields, .va-task-prompt { padding: 14px 16px; min-width: 0; }
 .va-task-prompt { border-left: 1px solid var(--line); background: var(--surface-dim); }
-.va-task-dialog h3 { margin: 0 0 14px; font-size: 15px; line-height: 1.45; }
-.va-task-field { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
-.va-task-field > span:first-child { font-weight: 500; }
+.va-task-dialog h3 { margin: 0 0 10px; font-size: 12px; font-weight: 600; }
+.va-task-field { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.va-task-field > span:first-child { font-size: 12px; color: var(--ink-2); }
 .va-task-field .va-cfg-input, .va-task-field select, .va-task-field textarea {
   min-width: 0; width: 100%; box-sizing: border-box; border: 1px solid var(--line);
-  border-radius: 6px; background: var(--surface); color: var(--ink); padding: 8px 10px;
-  font: inherit; line-height: 1.45; caret-color: var(--accent);
+  border-radius: 6px; background: var(--surface); color: var(--ink); caret-color: var(--accent);
 }
-.va-task-field textarea { min-height: 104px; resize: vertical; }
+.va-task-field textarea { min-height: 88px; resize: vertical; font-family: var(--sans); line-height: 1.5; }
 .va-task-field input::placeholder, .va-task-field textarea::placeholder { color: var(--ink-3); opacity: 1; }
 .va-task-field input[aria-invalid="true"], .va-task-field textarea[aria-invalid="true"], .va-task-field select[aria-invalid="true"] { border-color: var(--bad); }
 .va-task-dialog :is(input, textarea, select, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .va-task-field :is(input, textarea, select):disabled { background: var(--surface-dim); color: var(--ink-2); }
-.va-task-radio-group { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 0; margin: 18px 0 0; border: 0; min-width: 0; }
+.va-task-radio-group { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 0; margin: 12px 0 0; border: 0; min-width: 0; }
 .va-task-radio-group:first-of-type { margin-top: 0; }
-.va-task-radio-group legend { margin-bottom: 6px; padding: 0; font-weight: 500; }
-.va-task-radio-group label { display: inline-flex; align-items: center; gap: 6px; }
+.va-task-radio-group legend { margin-bottom: 4px; padding: 0; font-size: 12px; color: var(--ink-2); }
+.va-task-radio-group label { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; }
 .va-task-radio-group input { margin: 0; accent-color: var(--accent); }
-.va-task-number-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.va-task-extra { margin-top: 24px; }
-.va-task-help { color: var(--ink-2); font-size: 12.5px; line-height: 1.6; margin: 8px 0 0; overflow-wrap: anywhere; }
-.va-task-prompt > .va-task-help { margin: -5px 0 16px; }
-.va-task-field-error { color: var(--bad); font-size: 12.5px; }
-.va-task-preview-placeholder { color: var(--ink-2); margin: 24px 0; }
+.va-task-number-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.va-task-extra { margin-top: 16px; }
+.va-task-help { color: var(--ink-2); font-size: 11px; line-height: 1.5; margin: 6px 0 0; overflow-wrap: anywhere; }
+.va-task-prompt > .va-task-help { margin: -4px 0 12px; }
+.va-task-field-error { color: var(--bad); font-size: 12px; }
+.va-task-preview-placeholder { color: var(--ink-2); margin: 16px 0; }
 .va-task-preview-error { color: var(--bad); overflow-wrap: anywhere; }
-.va-task-prompt-text { margin: 0; font: inherit; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; }
+.va-task-prompt-text { margin: 0; font: inherit; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .va-task-prompt-text::selection, .va-task-extra-value::selection { color: var(--ink); background: #dbeafe; }
 .va-task-parameters, .va-task-execution-info { margin: 0; }
-.va-task-parameters > div, .va-task-execution-info > div { display: grid; grid-template-columns: 98px minmax(0, 1fr); gap: 10px; margin-bottom: 12px; }
-.va-task-parameters dt, .va-task-execution-info dt { color: var(--ink-2); }
+.va-task-parameters > div, .va-task-execution-info > div { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 10px; margin-bottom: 8px; }
+.va-task-parameters dt, .va-task-execution-info dt { color: var(--ink-2); font-size: 12px; }
 .va-task-parameters dd, .va-task-execution-info dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.va-task-parameters + h3 { margin-top: 26px; }
+.va-task-parameters + h3 { margin-top: 16px; }
 .va-task-extra-value { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
-.va-task-execution-info { border-top: 1px solid var(--line); padding-top: 18px; margin-top: 24px; }
+.va-task-execution-info { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 16px; }
 .va-task-execution-info .va-task-help { display: block; }
-.va-task-dialog-footer { flex-shrink: 0; border-top: 1px solid var(--line); padding: 14px 24px; background: var(--surface); }
-.va-task-dialog-error { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; color: var(--bad); overflow-wrap: anywhere; }
-.va-task-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
-.va-task-dialog-actions button { min-height: 36px; padding: 6px 14px; font-size: 14px; }
-.va-task-dialog .va-cfg-save { background: var(--accent); color: white; border-color: var(--accent); }
+.va-task-dialog-footer { flex-shrink: 0; border-top: 1px solid var(--line); padding: 12px 16px; background: var(--surface); }
+.va-task-dialog-error { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--bad); font-size: 12px; overflow-wrap: anywhere; }
+.va-task-dialog .va-task-dialog-actions { flex-wrap: wrap; margin-top: 0; }
 .va-task-dialog .va-cfg-save:disabled { opacity: 0.6; }
 @media (max-width: 700px) {
   .va-task-overlay { padding: 0; }
   .va-modal.va-task-dialog { width: 100%; max-height: 100dvh; border-radius: 0; }
   .va-task-dialog-heading { padding: 16px; gap: 10px; }
-  .va-task-dialog h2 { font-size: 18px; }
-  .va-task-dialog-heading p { font-size: 12.5px; }
   .va-task-dialog-body { display: block; }
-  .va-task-dialog-fields, .va-task-prompt { padding: 20px 16px; }
+  .va-task-dialog-fields, .va-task-prompt { padding: 14px 16px; }
   .va-task-prompt { border-left: 0; border-top: 1px solid var(--line); }
   .va-task-dialog-footer { padding: 12px 16px max(12px, env(safe-area-inset-bottom)); }
   .va-task-dialog-actions button { min-height: 44px; }
-  .va-task-field .va-cfg-input, .va-task-field select, .va-task-field textarea { font-size: 16px; }
   .va-task-radio-group label { min-height: 32px; }
 }

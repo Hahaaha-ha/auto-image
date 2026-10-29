@@ -198,7 +198,7 @@ export default function TaskDialog({ task = null, onClose, onCreated, returnFocu
     <section className="va-modal va-task-dialog" ref={panelRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="task-dialog-title"
       onClick={event => event.stopPropagation()}>
       <header className="va-task-dialog-heading">
-        <div><h2 id="task-dialog-title">{title}</h2><p>{task ? task.name : '填写部署参数，可在创建后继续核对和修改。'}</p></div>
+        <div><h2 id="task-dialog-title" className="va-modal-title">{title}</h2><p>{task ? task.name : '填写部署参数，可在创建后继续核对和修改。'}</p></div>
         {task && <span className="va-task-dialog-status">{statusText(task)}</span>}
         <button type="button" className="va-modal-close" onClick={requestClose} disabled={busy} aria-label="关闭任务详情">✕</button>
       </header>
@@ -219,7 +219,7 @@ export default function TaskDialog({ task = null, onClose, onCreated, returnFocu
                 <div className="va-task-number-fields">{field('diskSize', '系统盘 GB', '默认配置')}{field('bandwidth', '带宽 Mbit/s', '默认配置')}</div>
                 {defaultError && <p className="va-task-help">默认配置未加载，可手动填写或留空使用默认值。</p>}
               </> : <label className="va-task-field"><span>选择实例</span>
-                <select ref={node => { fields.current.ecsInstance = node }} value={instanceKey(selected)} disabled={busy}
+                <select className="va-cfg-input" ref={node => { fields.current.ecsInstance = node }} value={instanceKey(selected)} disabled={busy}
                   onChange={event => change('ecsInstance', choices.find(item => instanceKey(item) === event.target.value) || null)}
                   aria-invalid={fieldProblem?.field === 'ecsInstance'} aria-describedby={fieldProblem?.field === 'ecsInstance' ? 'task-instance-error' : undefined}>
                   <option value="">请选择已有 ECS 实例</option>
@@ -232,8 +232,8 @@ export default function TaskDialog({ task = null, onClose, onCreated, returnFocu
                 {fieldProblem?.field === 'ecsInstance' && <span id="task-instance-error" className="va-task-field-error" role="alert">{fieldProblem.text}</span>}
               </label>}
               <label className="va-task-field va-task-extra"><span>补充要求</span>
-                <textarea ref={node => { fields.current.extraInstructions = node }} value={draft.extraInstructions} disabled={busy} rows={4}
-                  onChange={event => change('extraInstructions', event.target.value)} placeholder="例如：启用 TLS，并额外验证 /health 接口。"
+                <textarea className="va-cfg-input" ref={node => { fields.current.extraInstructions = node }} value={draft.extraInstructions} disabled={busy} rows={4}
+                  onChange={event => change('extraInstructions', event.target.value)} placeholder="例如：基于1.16.0版本"
                   aria-invalid={fieldProblem?.field === 'extraInstructions'} />
                 {fieldProblem?.field === 'extraInstructions' && <span className="va-task-field-error" role="alert">{fieldProblem.text}</span>}
               </label>
@@ -259,7 +259,7 @@ export default function TaskDialog({ task = null, onClose, onCreated, returnFocu
             <span>{problem?.text || actionError}</span>
             {problem?.conflict && <button type="button" onClick={showLatest} disabled={refreshing || busy}>{refreshing ? '刷新中…' : '查看最新任务'}</button>}
           </div>}
-          <div className="va-task-dialog-actions" key={mode}>
+          <div className="va-modal-actions va-task-dialog-actions" key={mode}>
             {editor ? <>
               <button type="button" onClick={mode === 'new' ? requestClose : cancelEditing} disabled={busy}>{mode === 'new' ? '取消' : '取消编辑'}</button>
               <button type="submit" className="va-cfg-save" disabled={busy}>{saving ? '保存中…' : mode === 'new' ? '创建任务' : '保存修改'}</button>
