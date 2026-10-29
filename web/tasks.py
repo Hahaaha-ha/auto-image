@@ -23,6 +23,7 @@ rpm-check / hce-rpm-check 是 skill 不是子 agent，天然不产生任务。
 """
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -147,7 +148,41 @@ def build_task_prompt(spec):
             machine = "目标机器：按需创建 ECS（规格用 scope 默认）。"
 
     doc = f"安装文档：{install_doc}。" if install_doc else "安装文档：无现成链接，请检索官方最新稳定版文档。"
-    return f"{head}{machine}{doc}"
+    prompt = f"{head}{machine}{doc}"
+    extra = str(spec.get("extra_instructions") or "").strip()
+    return f"{prompt}\n\n补充要求：\n{extra}" if extra else prompt
+
+
+def _manual_fields(spec):
+    """完整表单替换任务的请求字段与目标展示，不保留旧 ECS 模式的派生值。"""
+    software = str(spec.get("software") or "").strip()
+    version = str(spec.get("version") or "").strip() or None
+    ttype = spec.get("task_type") or "image"
+    fields = {
+        "type": ttype,
+        "software": software or None,
+        "version": version,
+        "confirmed": bool(software),
+        "server_alias": None,
+        "instance_id": None,
+        "spec": {
+            "software": software,
+            "version": version,
+            "task_type": ttype,
+            "ecs_mode": spec.get("ecs_mode") or "create",
+            "ecs_instance": spec.get("ecs_instance"),
+            "ecs_params": spec.get("ecs_params"),
+            "install_doc": str(spec.get("install_doc") or "").strip() or None,
+            "extra_instructions": str(spec.get("extra_instructions") or "").strip(),
+        },
+    }
+    if ttype == "image" and spec.get("ecs_mode") == "existing":
+        inst = spec.get("ecs_instance") or {}
+        fields["instance_id"] = str(inst.get("id") or "").strip() or None
+        name = str(inst.get("name") or "")
+        if name.startswith("ecs-") and len(name) > 4:
+            fields["server_alias"] = name[4:]
+    return fields
 
 
 class TaskStore:
@@ -172,9 +207,6 @@ class TaskStore:
 
     def create_manual(self, spec):
         """表单 spec → INIT 任务（待运行；点运行才建会话发指令）。"""
-        ttype = spec.get("task_type") or "image"
-        software = str(spec.get("software") or "").strip()
-        version = str(spec.get("version") or "").strip() or None
         now = time.time()
         task_id = ("task-"
                    + datetime.fromtimestamp(now).strftime("%Y%m%d%H%M%S")
@@ -183,42 +215,35 @@ class TaskStore:
             "task_id": task_id,
             "run_id": None,
             "origin": "manual",
-            "type": ttype,
             "status": "INIT",
             "outcome": None,
             "name": "",  # _task_name 填
-            "software": software or None,
-            "version": version,
-            "confirmed": bool(software),  # 手动任务的软件/版本来自表单，即权威
             "stages": [],
             "current_stage": None,
             "usage": None,
-            "server_alias": None,
-            "instance_id": None,
-            "spec": {
-                "software": software,
-                "version": version,
-                "task_type": ttype,
-                "ecs_mode": spec.get("ecs_mode") or "create",
-                "ecs_instance": spec.get("ecs_instance"),
-                "ecs_params": spec.get("ecs_params"),
-                "install_doc": str(spec.get("install_doc") or "").strip() or None,
-            },
             "turn_text": "",
             "created_at": now,
             "updated_at": now,
             "ended_at": None,
+            **_manual_fields(spec),
         }
-        if ttype == "image" and spec.get("ecs_mode") == "existing":
-            inst = spec.get("ecs_instance") or {}
-            task["instance_id"] = str(inst.get("id") or "").strip() or None
-            name = str(inst.get("name") or "")
-            if name.startswith("ecs-") and len(name) > 4:
-                task["server_alias"] = name[4:]
         task["name"] = _task_name(task)
+        self._save(task, strict=True)
         self._tasks[task_id] = task
-        self._save(task)
         return task
+
+    def update_manual(self, task_id, spec):
+        """完整替换待运行表单；先落盘再发布，失败时仍保留原来的共享任务。"""
+        task = self._tasks.get(task_id)
+        if task is None or task.get("status") != "INIT":
+            return None
+        updated = {**task, **_manual_fields(spec)}
+        # updated_at 同时供共享编辑检查使用，每次保存都必须获得新值。
+        updated["updated_at"] = max(time.time(), math.nextafter(task["updated_at"], math.inf))
+        updated["name"] = _task_name(updated)
+        self._save(updated, strict=True)
+        self._tasks[task_id] = updated
+        return updated
 
     def mark_running(self, task_id, run_id, prompt):
         """INIT → RUNNING：绑定会话并预登记观察者映射（先于 start_turn 调用，
@@ -415,8 +440,9 @@ class TaskStore:
         task["usage"] = {k: merged.get(k, 0) for k in USAGE_KEYS.values()}
         task["updated_at"] = max(task["updated_at"], task.get("ended_at") or 0)
 
-    def _save(self, task):
-        """原子落盘单任务 JSON（state.py 同款）；失败只记日志。"""
+    def _save(self, task, strict=False):
+        """原子落盘；手动保存向调用方报错，事件观察者仍只记日志。"""
+        tmp_path = None
         try:
             self._dir.mkdir(parents=True, exist_ok=True)
             fd_tmp, tmp_path = tempfile.mkstemp(dir=self._dir, prefix="task-", suffix=".tmp")
@@ -425,8 +451,16 @@ class TaskStore:
             target = self._dir / f"{task['task_id']}.json"
             os.replace(tmp_path, target)
         except OSError:
+            if strict:
+                raise
             logging.getLogger("web").warning("任务落盘失败（忽略）：%s",
                                              task.get("task_id"), exc_info=True)
+        finally:
+            if tmp_path is not None:
+                try:
+                    Path(tmp_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def recover(self):
         """启动恢复：加载 task/ 目录；RUNNING 一律按 interrupted 收尾。

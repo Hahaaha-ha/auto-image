@@ -50,6 +50,8 @@ const CONFLICT_HINT = {
   session_running: '源会话正在执行，回合结束后才能 Fork',
   parallel_limit_reached: '执行中回合已达并发上限，稍后再发',
   session_not_active: '会话已结束，不可再操作（可 Fork 后继续）',
+  task_changed: '任务已被其他用户修改，请查看最新内容后再操作',
+  task_not_pending: '任务已启动，无法再修改或重复启动',
 }
 
 const listeners = new Set()
@@ -139,6 +141,7 @@ let state = {
   ecs: { instances: [], region: null, error: null, loading: false, checking: false }, // ECS 实例清单（scope 顶层凭据绑定，尽力而为）
   ecsCreating: false,        // 建机请求进行中（分钟级长请求，对话框防重复提交）
   tasks: [],                 // 流水线任务（rpm-*/deploy-* 派发即建；服务端 task/ 目录持久化）
+  taskActions: {},            // 各任务的启动进度与错误，列表和详情共用
   sidePanel: readSidePanel(), // 侧栏面板选择（上提到 store：会话标签的任务 pill 要跨面板跳转）
   activeTaskId: null,        // 任务面板高亮行（openTask 跳转锚点）
 }
@@ -178,30 +181,38 @@ function makeTask(t) {
     serverAlias: t.server_alias,
     instanceId: t.instance_id,
     createdAt: t.created_at,
+    updatedAt: t.updated_at,
     endedAt: t.ended_at,
     turnText: t.turn_text,
     origin: t.origin,
     spec: t.spec
       ? {
+          software: t.spec.software,
+          version: t.spec.version,
+          taskType: t.spec.task_type,
           ecsMode: t.spec.ecs_mode,
           ecsInstance: t.spec.ecs_instance,
           ecsParams: t.spec.ecs_params,
           installDoc: t.spec.install_doc,
+          extraInstructions: t.spec.extra_instructions ?? '',
         }
       : null,
   }
 }
 
-// 任务清单刷新（阶段事件/摘要周期/启动驱动；尽力而为，失败静默——
-// 面板下一周期自愈）
+// 清单响应不能覆盖其后已经保存的任务，也不能倒退到更早一次轮询。
+let taskRefreshId = 0
 export async function refreshTasks() {
   const epoch = identityEpoch
+  const refreshId = ++taskRefreshId
   try {
     const resp = await fetch('/api/tasks')
     const data = await resp.json().catch(() => ({}))
-    if (epoch !== identityEpoch) return
+    if (epoch !== identityEpoch || refreshId !== taskRefreshId) return
     if (!resp.ok) return
-    set({ tasks: (data.tasks ?? []).map(makeTask) })
+    const tasks = (data.tasks ?? []).map(makeTask)
+    set({ tasks })
+    return tasks
   } catch {
     // 网络断等：静默
   }
@@ -213,31 +224,92 @@ export function openTask(taskId) {
   if (!state.tasks.length) refreshTasks()
 }
 
-// 手动建任务（「+ 新建任务」表单提交）：INIT 待运行态落服务端；返回任务
-// 供对话框收尾（失败抛错由对话框行内展示）
+function acceptTask(data) {
+  ++taskRefreshId
+  const task = makeTask(data)
+  const exists = state.tasks.some(item => item.taskId === task.taskId)
+  set({ tasks: exists
+    ? state.tasks.map(item => item.taskId === task.taskId ? task : item)
+    : [task, ...state.tasks] })
+  return task
+}
+
+// 保存成功立即采用返回的规范化任务，详情不等待下一次清单轮询。
 export async function createTask(spec) {
   const epoch = identityEpoch
-  const data = await postJson('/api/tasks', spec)
+  const data = await sendJson('/api/tasks', spec)
   if (epoch !== identityEpoch) return
-  refreshTasks()
-  return data
+  return acceptTask(data)
+}
+
+export async function previewTask(spec) {
+  const epoch = identityEpoch
+  const data = await sendJson('/api/tasks/preview', spec)
+  if (epoch === identityEpoch) return data.prompt
+}
+
+export async function updateTask(taskId, spec, expectedUpdatedAt) {
+  const epoch = identityEpoch
+  try {
+    const data = await sendJson(`/api/tasks/${encodeURIComponent(taskId)}`, {
+      spec, expected_updated_at: expectedUpdatedAt,
+    }, 'PUT')
+    if (epoch !== identityEpoch) return
+    return acceptTask(data)
+  } catch (error) {
+    if (epoch !== identityEpoch) return
+    if (error.status === 409) await refreshTasks()
+    if (epoch === identityEpoch) throw error
+  }
+}
+
+export function taskErrorMessage(error) {
+  if (CONFLICT_HINT[error.detail]) return CONFLICT_HINT[error.detail]
+  if (error.detail === 'task_save_failed') return '任务保存失败，请稍后重试；输入已保留'
+  if (error.status === 404) return '任务不存在，请刷新清单'
+  return typeof error.detail === 'string' ? error.detail : error.message || '请求失败，请重试'
+}
+
+function setTaskAction(taskId, action) {
+  set({ taskActions: { ...state.taskActions, [taskId]: action } })
+}
+
+export function clearTaskError(taskId) {
+  const action = state.taskActions[taskId]
+  if (action?.error) setTaskAction(taskId, { ...action, error: null })
 }
 
 // 运行 INIT 任务：服务端新建会话并发出按表单构造的部署指令——新会话
 // 本地落位（adoptNewRun，同新建会话路径）即自动跳到该会话标签页看
 // agent 执行（用户已确认此交互）
-export async function runTask(taskId) {
+export async function runTask(taskId, expectedUpdatedAt) {
+  if (state.taskActions[taskId]?.busy) return null
   const epoch = identityEpoch
-  const data = await postJson(`/api/tasks/${encodeURIComponent(taskId)}/run`, {})
-  if (epoch !== identityEpoch) return
-  adoptNewRun(makeRun({
-    runId: data.run_id,
-    status: data.status,
-    startedAt: Date.now(),
-  }))
-  refreshTasks()
-  ok(`任务已启动，已打开会话 ${data.run_id}`)
-  return data
+  const action = { busy: true, error: null }
+  setTaskAction(taskId, action)
+  set({ notice: null, submitError: null })
+  try {
+    const data = await sendJson(`/api/tasks/${encodeURIComponent(taskId)}/run`, {
+      expected_updated_at: expectedUpdatedAt,
+    })
+    if (epoch !== identityEpoch) return null
+    ++taskRefreshId
+    set({ tasks: state.tasks.map(task => task.taskId === taskId
+      ? { ...task, status: 'RUNNING', runId: data.run_id } : task) })
+    adoptNewRun(makeRun({ runId: data.run_id, status: data.status, startedAt: Date.now() }))
+    refreshTasks()
+    ok(`任务已启动，已打开会话 ${data.run_id}`)
+    return data
+  } catch (error) {
+    if (epoch !== identityEpoch) return null
+    setTaskAction(taskId, { busy: false, error: taskErrorMessage(error) })
+    if (error.status === 409) await refreshTasks()
+    return null
+  } finally {
+    if (epoch === identityEpoch && state.taskActions[taskId] === action) {
+      setTaskAction(taskId, { busy: false, error: null })
+    }
+  }
 }
 
 // runId → 进行中任务（会话标签 pill 用；一个 run 同时至多一个活动任务）
@@ -300,9 +372,9 @@ export function useControlRun() {
   return s.runs[controlRunId()] ?? null
 }
 
-async function postJson(url, body) {
+async function sendJson(url, body, method = 'POST') {
   const resp = await fetch(url, {
-    method: 'POST',
+    method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body ?? {}),
   })
@@ -462,7 +534,7 @@ function deauthed(reasonText) {
     userAccess: emptyUserAccess(), userReset: emptyUserReset(),
     runs: {}, order: [], capacity: null,
     tabs: [], activeKey: null, lastSessionKey: null,
-    tasks: [], activeTaskId: null,
+    tasks: [], activeTaskId: null, taskActions: {},
     drafts: {},
     artifacts: { groups: [] }, artifactCache: {}, artifactSel: {}, artifactZipping: false,
     obs: { objects: [], bucket: null, region: null, domain: null, error: null, loading: false },
@@ -1063,7 +1135,7 @@ function adoptNewRun(run) {
 export async function createRun() {
   const epoch = identityEpoch
   try {
-    const data = await postJson('/api/runs', {})
+    const data = await sendJson('/api/runs', {})
     if (epoch !== identityEpoch) return
     adoptNewRun(
       makeRun({
@@ -1086,7 +1158,7 @@ export async function cloneRun() {
   const src = state.runs[controlRunId()]
   if (!src) return
   try {
-    const data = await postJson(`/api/runs/${src.runId}/clone`, {})
+    const data = await sendJson(`/api/runs/${src.runId}/clone`, {})
     if (epoch !== identityEpoch) return
     adoptNewRun(
       makeRun({
@@ -1108,7 +1180,7 @@ export async function stop() {
   const run = state.runs[controlRunId()]
   if (!run || run.status !== RUNNING) return
   try {
-    await postJson(`/api/runs/${run.runId}/stop`, {})
+    await sendJson(`/api/runs/${run.runId}/stop`, {})
     if (epoch !== identityEpoch) return
   } catch (err) {
     if (epoch !== identityEpoch) return
@@ -1129,7 +1201,7 @@ export async function send(text) {
     return false
   }
   try {
-    const data = await postJson(`/api/runs/${run.runId}/messages`, { text: trimmed })
+    const data = await sendJson(`/api/runs/${run.runId}/messages`, { text: trimmed })
     if (epoch !== identityEpoch) return
     setRun(run.runId, { status: data.status })
     return true
@@ -1146,7 +1218,7 @@ export async function endRun() {
   const run = state.runs[controlRunId()]
   if (!run || !isOperable(run.status)) return
   try {
-    await postJson(`/api/runs/${run.runId}/end`, {})
+    await sendJson(`/api/runs/${run.runId}/end`, {})
     if (epoch !== identityEpoch) return
   } catch (err) {
     if (epoch !== identityEpoch) return
@@ -1671,7 +1743,7 @@ export async function checkEcs() {
   if (state.ecs.checking) return
   set({ ecs: { ...state.ecs, checking: true } })
   try {
-    const data = await postJson('/api/ecs/check', {})
+    const data = await sendJson('/api/ecs/check', {})
     if (epoch !== identityEpoch) return
     const byId = Object.fromEntries((data.instances ?? []).map((i) => [i.id, i]))
     set({
@@ -1702,7 +1774,7 @@ export async function createEcs(body) {
   if (state.ecsCreating) throw new Error('建机请求进行中')
   set({ ecsCreating: true })
   try {
-    const data = await postJson('/api/ecs/create', body)
+    const data = await sendJson('/api/ecs/create', body)
     if (epoch !== identityEpoch) return
     refreshEcs()
     return data

@@ -677,23 +677,26 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* 任务行：状态点 + 名称 + 阶段流转图 + 次行（类型/token/时间）+ 会话跳转 */
 .va-task-row {
-  display: flex; align-items: flex-start; gap: 6px;
+  display: flex; align-items: flex-start; flex-wrap: wrap; gap: 6px;
   padding: 6px 6px 6px 4px; margin: 0 2px;
   border-radius: 6px; border-bottom: 1px solid var(--line-2, #eaeef2);
 }
 .va-task-row:hover { background: var(--bg-2, #f6f8fa); }
 .va-task-row.on { background: var(--surface-dim, #eef1f4); }
-.va-task-main { min-width: 0; flex: 1; }
+.va-task-main { min-width: 0; flex: 1; cursor: pointer; border-radius: 4px; }
+.va-task-main:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.va-task-actions { flex-shrink: 0; }
+.va-task-row-error { flex-basis: 100%; margin-top: 0; }
 .va-task-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .va-task-name-text {
   font-size: 12.5px; font-weight: 500;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .va-task-outcome { flex-shrink: 0; font-size: 10px; color: var(--ink-3, #6e7781); }
-.va-task-outcome.o-success { color: var(--ok, #1a7f37); }
+.va-task-outcome.o-success { color: var(--ink-2, #57606a); }
 .va-task-outcome.o-failed { color: var(--bad, #cf222e); }
 .va-task-sub {
-  display: flex; align-items: baseline; gap: 8px; min-width: 0;
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; min-width: 0;
   margin-top: 2px; font-size: 11px; color: var(--ink-3, #6e7781);
 }
 .va-task-chip {
@@ -734,6 +737,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-flow-pill.done {
   color: var(--ok, #1a7f37); background: #dafbe1;
   border: 1px solid #abe4b8;
+}
+.va-flow-pill.halted {
+  color: var(--ink-2, #57606a); background: var(--bg-2, #f6f8fa);
+  border: 1px solid var(--line-1, #d0d7de);
 }
 
 /* ECS 实例运行态：跑任务的机器给动作色（点击跳任务），空闲弱化 */

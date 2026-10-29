@@ -53,6 +53,30 @@ OBS 配置修改先审计后执行；OBS 全局配置（凭据/桶/endpoint）�
 `max_parallel`，跨用户合计，不含他人 run id、标题、prompt、owner 或目标
 机器），前端标签栏「运行中 n/m」据此展示。
 
+## 共享任务与执行指令
+
+任务与产物、OBS 一样对所有已获业务访问资格的用户共享。所有用户均可
+创建、查看、编辑和启动待运行任务；启动者成为新会话的 owner。共享任务
+可以显示执行参数和原始指令，关联会话的内容与控制仍遵循会话 owner 权限。
+
+点击任务行打开详情。新建和编辑填写结构化表单及可选的多行“补充要求”，
+旁边展示完整执行指令预览。创建、预览、保存不会启动部署；只有“启动执行”
+才新建会话并发送指令。保存后进入只读详情，执行后显示实际发送的指令，
+不根据后来的默认配置重新生成。正常回合收尾标为“已完成”，不等于部署成功。
+
+任务接口沿用登录保护：
+
+- `GET /api/tasks`：完整共享清单及详情数据。
+- `POST /api/tasks`：原表单增加可选字符串 `extra_instructions`。
+- `POST /api/tasks/preview`：提交同一表单，返回 `{prompt}`，不持久化或执行。
+- `PUT /api/tasks/{id}`：提交 `{spec, expected_updated_at}`，仅更新待运行任务。
+- `POST /api/tasks/{id}/run`：面板携带 `expected_updated_at`；既有空体调用仍可用。
+
+编辑、启动遇到其他用户已修改的任务返回 `409 task_changed`，已启动任务
+返回 `409 task_not_pending`。界面保留未保存输入并提供查看最新内容的入口，
+不自动覆盖或重提。手动创建或编辑落盘失败返回 `503 task_save_failed`，
+原任务内容保留；事件观察者的持久化错误仍不会阻断部署回合。
+
 ## 角色与用户清单升级
 
 升级前停止 Web 服务，备份实际使用的用户清单（`WEB_USERS_PATH`，缺省项目根
@@ -284,6 +308,7 @@ python web/tests/test_sdk.py        # options 契约（身份、Fork、系统提
 python web/tests/test_recovery.py # 安全恢复（版本化簿记/legacy 迁移/受限恢复/落盘门/人工转移）
 python web/tests/test_state.py      # 身份映射、墓碑与 Fork 来源簿记
 python web/tests/test_tasks.py      # 任务面板与手动建任务端点
+python web/tests/test_task_editing.py  # 共享编辑、预览、启动冲突与保存失败
 python web/tests/test_title.py      # 标题生成（prompt/清洗/一次性会话/幂等/写回）
 python web/tests/test_transcript_times.py # transcript 时刻读取
 cd web-ui && npm test && npm run build    # 前端完整测试与生产构建

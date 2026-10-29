@@ -7,7 +7,7 @@ export const STAGE_LABEL = { GUIDE: '生成指南', INSTALL: '远程安装', VER
 
 // 任务（流水线跟踪）：类型/收尾中文与阶段顺序（阶段流转图按它排 pill）
 export const TASK_TYPE_LABEL = { image: '镜像', rpm: 'RPM' }
-export const TASK_OUTCOME_LABEL = { success: '成功', failed: '失败', stopped: '已停止', interrupted: '已中断' }
+export const TASK_OUTCOME_LABEL = { success: '已完成', failed: '执行异常', stopped: '已停止', interrupted: '已中断' }
 export function stageOrder(type) {
   return type === 'rpm'
     ? ['GUIDE', 'BUILD', 'VERIFY', 'ARCHIVE']
