@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import secrets
 import subprocess
@@ -96,6 +97,68 @@ REASON_CROSS_ORIGIN = "cross_origin"
 REASON_NOT_OWNER = "not_owner"
 REASON_NOT_ADMIN = "not_admin"
 UNKNOWN_ACTOR = "-"
+
+
+def _task_spec(body):
+    """新建、编辑与预览共用已有表单校验及规范化。"""
+    b = body or {}
+    spec = {}
+    software = b.get("software")
+    if not isinstance(software, str) or not software.strip() or len(software.strip()) > 64:
+        raise HTTPException(status_code=422, detail="software required (1-64 chars)")
+    spec["software"] = software.strip()
+    for field in ("version", "install_doc"):
+        val = b.get(field)
+        if val is not None:
+            if not isinstance(val, str) or len(val) > 512:
+                raise HTTPException(status_code=422, detail=f"invalid {field}")
+            spec[field] = val.strip()
+    task_type = b.get("task_type", "image")
+    if task_type not in ("image", "rpm"):
+        raise HTTPException(status_code=422, detail="task_type must be image|rpm")
+    spec["task_type"] = task_type
+    ecs_mode = b.get("ecs_mode", "create")
+    if ecs_mode not in ("existing", "create"):
+        raise HTTPException(status_code=422, detail="ecs_mode must be existing|create")
+    spec["ecs_mode"] = ecs_mode
+    if ecs_mode == "existing":
+        inst = b.get("ecs_instance")
+        if (not isinstance(inst, dict)
+                or not str(inst.get("name") or "").strip()
+                or not str(inst.get("ip") or "").strip()):
+            raise HTTPException(
+                status_code=422, detail="ecs_instance {name, ip} required for existing mode")
+        spec["ecs_instance"] = {
+            "id": str(inst.get("id") or "").strip() or None,
+            "name": str(inst["name"]).strip(),
+            "ip": str(inst["ip"]).strip(),
+        }
+    else:
+        params = b.get("ecs_params")
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            raise HTTPException(status_code=422, detail="ecs_params must be an object")
+        clean_params = {}
+        for field in ("image", "flavor", "name"):
+            val = params.get(field)
+            if val is not None:
+                if not isinstance(val, str) or not val.strip() or len(val.strip()) > 128:
+                    raise HTTPException(status_code=422, detail=f"invalid ecs_params.{field}")
+                clean_params[field] = val.strip()
+        for field, lo, hi in (("disk_size", 10, 1024), ("bandwidth", 1, 2000)):
+            val = params.get(field)
+            if val is not None:
+                if isinstance(val, bool) or not isinstance(val, int) or not lo <= val <= hi:
+                    raise HTTPException(
+                        status_code=422, detail=f"invalid ecs_params.{field} (int {lo}-{hi})")
+                clean_params[field] = val
+        spec["ecs_params"] = clean_params
+    extra = b.get("extra_instructions")
+    if extra is not None and not isinstance(extra, str):
+        raise HTTPException(status_code=422, detail="invalid extra_instructions")
+    spec["extra_instructions"] = (extra or "").strip()
+    return spec
 
 
 def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
@@ -346,7 +409,8 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     # 事件不进任务面（历史不是新事实）；重启前未收尾的任务在 recover 里按
     # interrupted 定格。观察者异常被 EventStore 吞掉，绝不影响回合执行。
     task_store = tasks_mod.TaskStore(
-        Path(task_dir) if task_dir is not None else DEFAULT_TASK_DIR, artifact_roots)
+        Path(task_dir) if task_dir is not None else DEFAULT_TASK_DIR, artifact_roots,
+        deploy_config=deploy_config or DEFAULT_DEPLOY_CONFIG)
     task_store.recover()
     store.add_observer(task_store.handle_event)
     app.state.task_store = task_store
@@ -564,73 +628,49 @@ def create_app(session_factory=None, heartbeat_interval=15.0, static_dir=None,
     # 「▶ 运行」才建会话发指令。输入非法 422。
     @app.post("/api/tasks")
     async def create_task(body: dict | None = None):
-        b = body or {}
-        spec = {}
-        software = b.get("software")
-        if not isinstance(software, str) or not software.strip() or len(software.strip()) > 64:
-            raise HTTPException(status_code=422, detail="software required (1-64 chars)")
-        spec["software"] = software.strip()
-        for field in ("version", "install_doc"):
-            val = b.get(field)
-            if val is not None:
-                if not isinstance(val, str) or len(val) > 512:
-                    raise HTTPException(status_code=422, detail=f"invalid {field}")
-                spec[field] = val.strip()
-        task_type = b.get("task_type", "image")
-        if task_type not in ("image", "rpm"):
-            raise HTTPException(status_code=422, detail="task_type must be image|rpm")
-        spec["task_type"] = task_type
-        ecs_mode = b.get("ecs_mode", "create")
-        if ecs_mode not in ("existing", "create"):
-            raise HTTPException(status_code=422, detail="ecs_mode must be existing|create")
-        spec["ecs_mode"] = ecs_mode
-        if ecs_mode == "existing":
-            inst = b.get("ecs_instance")
-            if (not isinstance(inst, dict)
-                    or not str(inst.get("name") or "").strip()
-                    or not str(inst.get("ip") or "").strip()):
-                raise HTTPException(
-                    status_code=422, detail="ecs_instance {name, ip} required for existing mode")
-            spec["ecs_instance"] = {
-                "id": str(inst.get("id") or "").strip() or None,
-                "name": str(inst["name"]).strip(),
-                "ip": str(inst["ip"]).strip(),
-            }
-        else:
-            params = b.get("ecs_params")
-            if params is None:
-                params = {}
-            if not isinstance(params, dict):
-                raise HTTPException(status_code=422, detail="ecs_params must be an object")
-            clean_params = {}
-            for field in ("image", "flavor", "name"):
-                val = params.get(field)
-                if val is not None:
-                    if not isinstance(val, str) or not val.strip() or len(val.strip()) > 128:
-                        raise HTTPException(status_code=422, detail=f"invalid ecs_params.{field}")
-                    clean_params[field] = val.strip()
-            for field, lo, hi in (("disk_size", 10, 1024), ("bandwidth", 1, 2000)):
-                val = params.get(field)
-                if val is not None:
-                    if isinstance(val, bool) or not isinstance(val, int) or not lo <= val <= hi:
-                        raise HTTPException(
-                            status_code=422, detail=f"invalid ecs_params.{field} (int {lo}-{hi})")
-                    clean_params[field] = val
-            spec["ecs_params"] = clean_params
-        return task_store.create_manual(spec)
+        spec = _task_spec(body)
+        try:
+            return task_store.create_manual(spec)
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail="task_save_failed") from exc
+
+    @app.post("/api/tasks/preview")
+    async def preview_task(body: dict | None = None):
+        return {"prompt": tasks_mod.build_task_prompt(_task_spec(body))}
+
+    def _pending_task_or_error(task_id, body, require_version=False):
+        task = task_store.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="task not found")
+        if task.get("status") != "INIT":
+            raise HTTPException(status_code=409, detail="task_not_pending")
+        if require_version or "expected_updated_at" in body:
+            expected = body.get("expected_updated_at")
+            if (type(expected) not in (int, float)
+                    or (isinstance(expected, float) and not math.isfinite(expected))):
+                raise HTTPException(status_code=422, detail="invalid expected_updated_at")
+            if expected != task.get("updated_at"):
+                raise HTTPException(status_code=409, detail="task_changed")
+        return task
+
+    @app.put("/api/tasks/{task_id}")
+    async def update_task(task_id: str, body: dict):
+        _pending_task_or_error(task_id, body, require_version=True)
+        if not isinstance(body.get("spec"), dict):
+            raise HTTPException(status_code=422, detail="spec must be an object")
+        spec = _task_spec(body["spec"])
+        try:
+            return task_store.update_manual(task_id, spec)
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail="task_save_failed") from exc
 
     # 运行 INIT 任务：新建会话 → 按表单 spec 构造部署指令发出 → 任务绑定
     # 该会话转 RUNNING（mark_running 先于 start_turn，首个 stage.changed
     # 即认领本任务）。非 INIT（已运行/已收尾）409；未知 404。
     @app.post("/api/tasks/{task_id}/run")
-    async def run_task(task_id: str, request: Request):
+    async def run_task(task_id: str, request: Request, body: dict | None = None):
         _restricted_or_503()
-        task = task_store.get(task_id)
-        if task is None:
-            raise HTTPException(status_code=404, detail="task not found")
-        if task.get("status") != "INIT":
-            raise HTTPException(
-                status_code=409, detail=f"task not in INIT (current: {task.get('status')})")
+        task = _pending_task_or_error(task_id, body or {})
         prompt = tasks_mod.build_task_prompt(task.get("spec") or {})
         # 会话创建与首回合：owner 注入 + 审计前置（与 create_run / send 同构）
         run = manager.draft(owner=request.state.username)

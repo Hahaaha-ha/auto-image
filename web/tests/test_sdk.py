@@ -37,6 +37,17 @@ def test_options_pin_control_boundary():
     assert options.max_turns == 200
 
 
+def test_summary_is_document_only_without_a_new_remediation_route():
+    """总结保持文档入口，续接与新会话不额外强制整改路线或记录状态。"""
+    for phrase in ("deploy-summary", "不派发部署阶段", "不新建部署任务",
+                   "不修改阶段报告", "不执行远程或云操作", "必要附件"):
+        assert phrase in SYSTEM_PROMPT, phrase
+    for phrase in ("deploy_record", "state.json", "补救范围", "经 guide 修订", "固定目录"):
+        assert phrase not in SYSTEM_PROMPT, phrase
+    for start in (SessionStart.fresh("session-a"), SessionStart.resume("session-a")):
+        assert default_options(start).system_prompt == SYSTEM_PROMPT
+
+
 def test_session_start_distinguishes_new_resume_and_fork():
     """部署会话工厂的公开启动意图同时表达目标身份、上下文来源与 Fork。"""
     target = "11111111-2222-4333-8444-555555555555"

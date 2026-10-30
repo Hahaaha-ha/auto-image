@@ -212,10 +212,9 @@ async def test_zip_includes_binary_packages():
             r = await client.post("/api/artifacts/zip", json={"paths": paths})
             assert r.status_code == 200, r.text
             zf = zipfile.ZipFile(io.BytesIO(r.content))
-            # 包内平铺文件名，不带目录树
-            assert sorted(zf.namelist()) == sorted(Path(p).name for p in paths), zf.namelist()
+            assert sorted(zf.namelist()) == sorted(paths), zf.namelist()
             for p in paths:
-                assert zf.read(Path(p).name) == (rpm / p[len("rpm/"):]).read_bytes(), p
+                assert zf.read(p) == (rpm / p[len("rpm/"):]).read_bytes(), p
 
 
 async def test_browse_both_roots_mixed_and_sorted():
@@ -339,15 +338,15 @@ async def test_zip_batches_selected_paths_across_roots():
         rpm.mkdir()
         make_output_tree(deploy, "nginx/1.25", GUIDE_FILES, mtime=1000)
         make_output_tree(rpm, "nginx/1.25.3", RPM_BUILD_FILES + RPM_ARCHIVE_FILES, mtime=1000)
-        # 同名干扰项：与 rpm 侧产物同名但内容不同，钉死「首个胜出」
+        # 跨根同名产物必须分别保留。
         dup = make_output_tree(deploy, "dup", ("nginx-rpm-result.md",), mtime=1000)
-        (dup / "nginx-rpm-result.md").write_text("同名干扰项，不应收录", encoding="utf-8")
+        (dup / "nginx-rpm-result.md").write_text("另一个制作的同名产物", encoding="utf-8")
         async with await run_with_client(root) as client:
             paths = [
                 "rpm/nginx/1.25.3/nginx-rpm-result.md",
                 "deploy/nginx/1.25/nginx-install.md",
                 "rpm/nginx/1.25.3/nginx-rpm-result.md",   # 重复项去重
-                "deploy/dup/nginx-rpm-result.md",         # 同名文件首个胜出，后者跳过
+                "deploy/dup/nginx-rpm-result.md",         # 同名但不同相对路径，保留
                 "rpm/nginx/1.25.3/nginx-absent.md",       # 缺失如实跳过
                 "deploy/../scope.yaml",                   # 越界跳过
                 "guides/nginx/install-guide.md",          # 未注册根跳过
@@ -357,17 +356,45 @@ async def test_zip_batches_selected_paths_across_roots():
             assert r.headers.get("content-type") == "application/zip"
             assert "attachment" in r.headers.get("content-disposition", "")
             zf = zipfile.ZipFile(io.BytesIO(r.content))
-            # zip 内按文件名平铺（不带目录树）；顺序按给定（去重/跳过后）
+            # 保留根名前缀和目录；仅相同路径去重，顺序按给定。
             assert zf.namelist() == [
-                "nginx-rpm-result.md",
-                "nginx-install.md",
+                "rpm/nginx/1.25.3/nginx-rpm-result.md",
+                "deploy/nginx/1.25/nginx-install.md",
+                "deploy/dup/nginx-rpm-result.md",
             ], zf.namelist()
-            assert zf.read("nginx-rpm-result.md") == (
+            assert zf.read("rpm/nginx/1.25.3/nginx-rpm-result.md") == (
                 rpm / "nginx/1.25.3/nginx-rpm-result.md"
             ).read_bytes()
-            assert zf.read("nginx-install.md") == (
+            assert zf.read("deploy/nginx/1.25/nginx-install.md") == (
                 deploy / "nginx/1.25/nginx-install.md"
             ).read_bytes()
+            assert zf.read("deploy/dup/nginx-rpm-result.md").decode() == "另一个制作的同名产物"
+
+
+async def test_fixed_version_and_old_nested_artifacts_browse_preview_and_zip():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        deploy = root / "deploy"
+        paths = ["deploy/nginx/1.3.0/nginx-install.md",
+                 "deploy/nginx/1.3.0/runs/prod-a/guide/rev-a/nginx-install.md",
+                 "deploy/nginx/1.3.0/runs/prod-b/guide/rev-b/nginx-install.md",
+                 "deploy/nginx/1.3.0/summaries/sum-a/summary.md"]
+        for index, rel in enumerate(paths):
+            target = root / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f"材料 {index}", encoding="utf-8")
+        async with await run_with_client(root) as client:
+            groups = (await client.get("/api/artifacts")).json()["groups"]
+            assert {g["dir"] for g in groups} == {p.rsplit("/", 1)[0] for p in paths}
+            for index, rel in enumerate(paths):
+                response = await client.get(f"/api/artifacts/file/{rel}")
+                assert response.status_code == 200 and response.json()["content"] == f"材料 {index}"
+            response = await client.post("/api/artifacts/zip", json={"paths": paths + paths[:1]})
+            assert response.status_code == 200, response.text
+            with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                assert archive.namelist() == paths
+                for index, rel in enumerate(paths):
+                    assert archive.read(rel).decode() == f"材料 {index}"
 
 
 async def test_zip_rejects_bad_requests():
@@ -383,6 +410,56 @@ async def test_zip_rejects_bad_requests():
             # 合法请求但一个有效产物都没有 → 404
             r = await client.post("/api/artifacts/zip", json={"paths": ["deploy/absent.md"]})
             assert r.status_code == 404, r.text
+
+
+async def test_fixed_summary_and_state_are_readable_after_overwrite():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        files = ["deploy/demo/1.0.0/demo-summary.md", "deploy/demo/1.0.0/demo-state.json"]
+        for relative in files:
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("first value", encoding="utf-8")
+        async with await run_with_client(root) as client:
+            groups = (await client.get("/api/artifacts")).json()["groups"]
+            paths = [f"{group['dir']}/{file['name']}" for group in groups for file in group["files"]]
+            assert sorted(paths) == sorted(files), paths
+            for relative in files:
+                response = await client.get(f"/api/artifacts/file/{relative}")
+                assert response.json()["content"] == "first value", response.text
+                (root / relative).write_text("latest value", encoding="utf-8")
+                response = await client.get(f"/api/artifacts/file/{relative}")
+                assert response.json()["content"] == "latest value", response.text
+            response = await client.post("/api/artifacts/zip", json={"paths": files})
+            assert response.status_code == 200
+            with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                assert archive.namelist() == files
+                assert all(archive.read(path) == b"latest value" for path in files)
+
+
+async def test_summary_badge_follows_configured_filename():
+    for suffix in ("summary", "experience"):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "deploy.config.yaml"
+            config.write_text(DEPLOY_CONFIG_STUB + f'summary_file: "{{{{software}}}}-{suffix}.md"\n', encoding="utf-8")
+            name = f"nginx-{suffix}.md"
+            backup = f"{name}.v1"
+            directory = make_output_tree(root / "deploy", "nginx/1.25", (name, backup, "nginx-install.md"))
+            app = make_test_app(artifact_roots={"deploy": root / "deploy"}, deploy_config=config)
+            async with async_client(app) as client:
+                response = await client.get("/api/artifacts")
+                assert response.status_code == 200, response.text
+                files = {file["name"]: file for file in response.json()["groups"][0]["files"]}
+                assert files[name]["stage"] == "SUMMARY", files[name]
+                assert files[backup]["stage"] is None
+                assert files["nginx-install.md"]["stage"] == "GUIDE"
+                relative = f"deploy/nginx/1.25/{name}"
+                response = await client.get(f"/api/artifacts/file/{relative}")
+                assert response.status_code == 200, response.text
+                assert response.json()["stage"] == "SUMMARY"
+                response = await client.get(f"/api/artifacts/download/{relative}")
+                assert response.content == (directory / name).read_bytes()
 
 
 async def main():

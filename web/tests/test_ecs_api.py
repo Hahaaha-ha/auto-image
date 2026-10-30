@@ -291,6 +291,21 @@ async def test_defaults_from_scope_without_secrets():
             td.cleanup()
 
 
+async def test_defaults_scope_no_eip():
+    """scope no_eip: true → defaults.has_eip=False（面板据此隐藏/禁用公网相关项）。"""
+    with _Env():
+        scope = {**FULL_SCOPE, "ecs_create": {"server": {
+            **FULL_SCOPE["ecs_create"]["server"], "no_eip": True}}}
+        td, path = _scope_file(scope)
+        try:
+            async with async_client(make_test_app(scope_config=path)) as client:
+                r = await client.get("/api/ecs/defaults")
+                assert r.status_code == 200, r.text
+                assert r.json()["has_eip"] is False
+        finally:
+            td.cleanup()
+
+
 async def test_defaults_missing_server_fields():
     with _Env():
         scope = {"ak": PLAIN_AK, "sk": PLAIN_SK, "region": "ap-southeast-1",
@@ -337,6 +352,22 @@ async def test_resolve_create_spec_merge_and_defaults():
         auto = resolve_create_spec(scope, {})
         assert re.fullmatch(r"ecs-[0-9a-f]{8}", auto["name"])  # 自动名
         assert auto["size"] == 40 and auto["eip"]["size"] == 5  # root_volume/EIP 硬默认
+
+
+async def test_resolve_create_spec_scope_no_eip():
+    """scope no_eip: true → eip=None（私网路径）；表单 bandwidth 不构成反向开关。"""
+    scope = {"ecs_create": {"server": {
+        "imageRef": "img-001", "flavorRef": "kc1.xlarge.2", "vpcid": "vpc-1",
+        "nics": [{"subnet_id": "subnet-1"}], "security_groups": [{"id": "sg-1"}],
+        "no_eip": True,
+    }}}
+    with _Env():
+        spec = resolve_create_spec(scope, {"bandwidth": 8})
+        assert spec["eip"] is None
+    no_eip_false = {**scope, "ecs_create": {"server": {**scope["ecs_create"]["server"],
+                                                    "no_eip": False}}}
+    with _Env():
+        assert resolve_create_spec(no_eip_false, {})["eip"] is not None  # 非 true 走默认 EIP
 
 
 async def test_resolve_create_spec_auth_tiers():

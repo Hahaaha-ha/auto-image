@@ -88,7 +88,7 @@ async def test_artifact_reads_shared_by_two_users():
                 assert r.status_code == 200 and r.content[:2] == b"PK", r.text
                 r = await client.post("/api/artifacts/zip", json={"paths": [REL]})
                 assert r.status_code == 200, r.text
-                assert "result.md" in zipfile.ZipFile(io.BytesIO(r.content)).namelist()
+                assert REL in zipfile.ZipFile(io.BytesIO(r.content)).namelist()
 
 
 async def test_obs_reads_and_config_view_shared_by_two_users():

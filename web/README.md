@@ -53,6 +53,30 @@ OBS 配置修改先审计后执行；OBS 全局配置（凭据/桶/endpoint）�
 `max_parallel`，跨用户合计，不含他人 run id、标题、prompt、owner 或目标
 机器），前端标签栏「运行中 n/m」据此展示。
 
+## 共享任务与执行指令
+
+任务与产物、OBS 一样对所有已获业务访问资格的用户共享。所有用户均可
+创建、查看、编辑和启动待运行任务；启动者成为新会话的 owner。共享任务
+可以显示执行参数和原始指令，关联会话的内容与控制仍遵循会话 owner 权限。
+
+点击任务行打开详情。新建和编辑填写结构化表单及可选的多行“补充要求”，
+旁边展示完整执行指令预览。创建、预览、保存不会启动部署；只有“启动执行”
+才新建会话并发送指令。保存后进入只读详情，执行后显示实际发送的指令，
+不根据后来的默认配置重新生成。正常回合收尾标为“已完成”，不等于部署成功。
+
+任务接口沿用登录保护：
+
+- `GET /api/tasks`：完整共享清单及详情数据。
+- `POST /api/tasks`：原表单增加可选字符串 `extra_instructions`。
+- `POST /api/tasks/preview`：提交同一表单，返回 `{prompt}`，不持久化或执行。
+- `PUT /api/tasks/{id}`：提交 `{spec, expected_updated_at}`，仅更新待运行任务。
+- `POST /api/tasks/{id}/run`：面板携带 `expected_updated_at`；既有空体调用仍可用。
+
+编辑、启动遇到其他用户已修改的任务返回 `409 task_changed`，已启动任务
+返回 `409 task_not_pending`。界面保留未保存输入并提供查看最新内容的入口，
+不自动覆盖或重提。手动创建或编辑落盘失败返回 `503 task_save_failed`，
+原任务内容保留；事件观察者的持久化错误仍不会阻断部署回合。
+
 ## 角色与用户清单升级
 
 升级前停止 Web 服务，备份实际使用的用户清单（`WEB_USERS_PATH`，缺省项目根
@@ -216,19 +240,44 @@ OBS 配置修改先审计后执行；OBS 全局配置（凭据/桶/endpoint）�
 - RPM 等二进制产物在 Markdown 解析前分流，只显示元数据、不可预览说明与
   原始文件下载；Markdown 与 JSON 仍按文本方式显示。
 
-## 并行运行约定（产物冲突，人工规避）
+## 当前版本产物与并行运行
 
-产物目录 `deploy/{{software}}/{{version}}` 全实例共享、无服务端隔离（指令
-文本里的软件/版本表述不可穷尽，服务端拦截必漏且给「会拦」的错觉）。并行
-会话时的约定（真部署实测，同软件同版本并行 7 个产物文件全量覆盖）：
+Ubuntu deploy 按已确认官方项目统一名称与路径，优先用
+`scripts/deploy_paths.py resolve` 辅助定位。历史材料警告由 agent 结合上下文判断；
+脚本异常时按配置和已有证据确认路径，继续当前阶段。新版本文件保存在
+`deploy/<规范软件名>/<版本>/`；具体命名、续作与路径纠正规则见
+[部署总结参考](../.claude/deploy-summary.md)。手动总结通过
+`scripts/deploy_summary.py save/find` 保存与查找 Markdown 文件头及正文；
+同软件同版本再次总结覆盖该总结，其他部署操作不会更新、删除或使总结失效。
+旧状态文件和此前已有的嵌套目录仍可浏览和导出，不要求迁移。
 
-- **同软件 + 同版本不要同时运行**：后写入者覆盖先写入者（指南、meta、
-  结果、清单全部），以最后落盘内容为准，无合并。
-- 同目录并行时 verify 读 output_dir 全目录，会看到对方中途落盘的文件；
-  交叉读取的结论只对各自的机器安装有效，产物归属已乱。
-- 同一目标机器 / SSH alias / ECS / 镜像任务不要交叉使用——两路对同一台
-  机器并发安装会产生半成品系统。
-- 前端「正在跑：…」RUNNING 标题提示是唯一防线，新建会话时肉眼避开。
+Web 保留现有会话 `run_id` 和任务 `task_id`，不再生成额外调用或制作身份。
+任务按确认的目录读取安装 meta；仅同类型下唯一的近期阶段产物目录参与
+输入占位的修正，别名或请求版本与目录不同不会被硬过滤，多个候选时保持
+未确认。总结、附件、临时文件及旧状态的修改时间不会改变任务归属。
+手动 `deploy-summary` 只阅读材料、保存总结和必要附件，不产生部署阶段、
+任务、专用接口或云操作。完整部署继续按原四阶段执行，参考总结缺失或
+查找失败不影响原流程；总结存在也不证明本次安装或验证完成。
+
+生成或校正部署指南时，agent 默认查找已有总结并判断是否适用，无需额外说
+“参考历史”。可以在会话中指定参考版本或总结路径，例如：
+
+- `部署 nginx 1.26.2`：自动查找，同版本优先，再结合版本与环境选择参考。
+- `部署 nginx 1.26.2，基于 1.24.0 的总结`：安装目标仍为 1.26.2，优先阅读指定版本。
+- `部署 nginx 1.26.2，参考 deploy/nginx/1.24.0/nginx-summary.md`：读取并核对指定文件。
+
+参考版本与目标安装版本分开；默认选择不等于总取最新版本。指定总结不可用时，
+agent 说明原因与实际采用来源，继续官方资料调查；用户要求找不到就停止时遵从。
+
+已打开文本随阶段事件和 5 秒轮询更新，原位覆盖后自动显示最新正文；清单
+明确缺失时显示“当前文件已移除或尚未重新生成”，重新生成后恢复预览。
+已打开二进制附件同样随清单更新大小等元信息，删除后重建自动恢复下载视图。
+内容未变时保留阅读状态。下载 ZIP 和上传 OBS 单包保留根前缀相对路径，
+不同版本或目录下的同名文件可以同时导出。
+
+同软件同版本共用目录，需避免并行制作；同一目标机器、SSH alias、ECS 或
+镜像任务也应避免交叉操作。前端运行计数和「正在跑」提示便于识别并行活动，
+不提供文件或云操作互斥锁。RPM 系列继续遵循各自现有产物约定。
 
 ## 测试（主缝：HTTP 进、SSE 出）
 
@@ -252,12 +301,14 @@ python web/tests/test_obs_api.py    # OBS 端点（假云函数注入）
 python web/tests/test_obs_config.py # OBS 配置加密落盘与脱敏视图
 python web/tests/test_owner_acl.py  # owner 会话隔离（双认证客户端互不可见/不可控）
 python web/tests/test_redact.py     # 事件出口脱敏（形状正则 + 已知值清单）
+python web/tests/test_session_entrypoint.py # 会话来源过滤（entrypoint 黑名单，临时目录真 JSONL）
 python web/tests/test_shared_resources.py # 产物/OBS 共享读取、归档审计、OBS 配置 admin-only
 python web/tests/test_stream_isolation.py # 全局流 owner 逐帧过滤、心跳身份撤销、匿名容量
 python web/tests/test_sdk.py        # options 契约（身份、Fork、系统提示词、无值守写权限）
 python web/tests/test_recovery.py # 安全恢复（版本化簿记/legacy 迁移/受限恢复/落盘门/人工转移）
 python web/tests/test_state.py      # 身份映射、墓碑与 Fork 来源簿记
 python web/tests/test_tasks.py      # 任务面板与手动建任务端点
+python web/tests/test_task_editing.py  # 共享编辑、预览、启动冲突与保存失败
 python web/tests/test_title.py      # 标题生成（prompt/清洗/一次性会话/幂等/写回）
 python web/tests/test_transcript_times.py # transcript 时刻读取
 cd web-ui && npm test && npm run build    # 前端完整测试与生产构建
@@ -281,7 +332,7 @@ cd web-ui && npm test && npm run build    # 前端完整测试与生产构建
 | `rebuild.py` | 服务重启后的恢复（单一流程）：全量 transcript 按 session 粒度重放 + state 簿记叠加——身份映射命中的沿用原 run_id 并恢复 owner 归属，墓碑会话标 ENDED；其余重放会话 READY 可续聊，未收尾回合（transcript 推导 turn_open）补 `turn.interrupted` 不伪造完成 |
 | `state.py` | 恢复簿记（`~/.auto-image-web/state.json`，全量原子替换，带显式 version）：墓碑（用户 ENDED 的 session_id 集合）+ 身份映射（run_id ↔ session_id）+ Fork 来源镜像（session_id → 来源 run_id）+ owner 归属（run_id → 用户；与身份映射同生命周期登记）（stage/title/first_prompt 从 transcript 重放推导）；读取按状态分类（modern/legacy/missing/corrupt）支撑受限恢复判定，strict 落盘失败抛 `StatePersistError`（控制动作 503 门）；初始化标记（state 同名 `.initialized`）区分首次启动与初始化后缺失 |
 | `title.py` | 会话标题 LLM 生成（Codex 同构，research/codex-session-title.md）：首条指令到达即起一次性无工具会话生成，成功落 run.title + `session.title_changed` 事件 + transcript custom-title 行；失败静默维持截断标题；Fork 会话继承源标题不再生成 |
-| `sdk.py` | ClaudeSDKClient 生产实现：目标身份/上下文来源/Fork 启动意图、options 全配、消息形状适配、工厂、历史读取包装 |
+| `sdk.py` | ClaudeSDKClient 生产实现：目标身份/上下文来源/Fork 启动意图、options 全配、消息形状适配、工厂、历史读取包装；发现层会话来源过滤（transcript 头窗口 entrypoint 黑名单——交互客户端人工会话不进面板，无标记与未知来源保留） |
 | `fake.py` | 脚本化假会话（默认剧本含敏感样例），测试注入用 |
 
 ## SDK 与浏览器实测记录（claude-agent-sdk 0.2.144 + CLI 2.1.220）
@@ -405,6 +456,20 @@ cd web-ui && npm test && npm run build    # 前端完整测试与生产构建
 19. **二进制产物**（真实浏览器）：无 `content` 的 RPM 在 Markdown 解析前
     分流，显示文件名、`12.0 KB`、不支持在线预览说明与下载动作；下载得到
     12,292 bytes，魔数 `ed ab ee db`。Markdown 与 JSON 视图保持原行为。
+20. **会话来源过滤（entrypoint 黑名单）**（VS Code 插件 2.1.296
+    extension.js 逆向 + 本机 50 条 transcript 头扫描实测）：CLI 把会话来源
+    `"entrypoint"` 写进每条消息行的元数据区（先于 message 内容，首条
+    user 行必落在头 64KB 窗口内），SDK 的 SessionSummary / SessionMessage
+    均不透出、只能自读。本机取值分布：sdk-py × 38、cli × 8、
+    claude-vscode × 3、无标记（旧版 CLI）× 1；全集另有 sdk-ts/sdk-cli/
+    claude-desktop(-3p) 与 `CLAUDE_CODE_ENTRYPOINT` 的 remote_*/claude-in-slack
+    等 surface 值。VS Code 插件的历史列表反向做了同一件事——头 64KB 扫描
+    命中 sdk-* 三值即隐藏（程序化会话不进插件列表），web 发现层据此互为
+    镜像：黑名单藏交互客户端四种值，无标记与未知来源保留（未来新增
+    entrypoint 不误伤）。实测本机 50 条 → 39 条（38 sdk-py + 1 旧会话）；
+    过滤只在服务启动恢复时生效（`list_project_sessions` 唯一调用点是
+    重放恢复），运行中创建/克隆的 run 不经发现层；被隐藏会话的 state
+    簿记（身份映射/墓碑）原样保留，撤掉过滤重启即带原 run_id 回归。
 
 - CLI stderr 对本环境网关模型名报 `[claude-code:unrecognized_model]`
   警告，不影响会话执行，服务日志如实记录。

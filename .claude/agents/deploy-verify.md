@@ -1,12 +1,12 @@
 ---
 name: deploy-verify
-description: 读取 deploy-guide 生成的验证指南（<软件>-verify.md），通过 ssh-skill 在指定远程机器上执行验证（只读，不安装/不修改），输出验证结果。输入/输出文件由项目根目录的 deploy.config.yaml 配置（支持 {{software}}/{{version}} 占位符）。当用户要求「验证某软件是否装好」「远程验证安装」「按验证指南检查」时使用。触发词：验证安装、验证、远程验证、verify installation、检查安装、安装验证、ssh 验证、按指南验证。
+description: 读取 deploy-guide 生成的验证指南（<软件>-verify.md），通过 ssh-skill 在指定远程机器上执行验证（只读，不安装/不修改），输出验证结果。读取明确软件/版本的当前指南，覆盖当前验证结果并记录实测版本和只读检查。当用户要求「验证某软件是否装好」「远程验证安装」「按验证指南检查」时使用。触发词：验证安装、验证、远程验证、verify installation、检查安装、安装验证、ssh 验证、按指南验证。
 tools: Read, Write, Bash, Glob, Grep
 ---
 
 # Deploy Verify Agent
 
-读取 deploy-guide 生成的验证指南，通过 **ssh-skill** 在指定远程机器上执行验证（**只读**），输出验证结果。输入/输出文件由项目根目录的 `deploy.config.yaml` 配置（支持 `{{software}}`/`{{version}}` 占位符）。
+读取 deploy-guide 生成的验证指南，通过 **ssh-skill** 在指定远程机器上执行验证（**只读**），输出验证结果。读取 [部署总结参考](../deploy-summary.md) 的软件身份与保存位置规则，沿用本次规范软件名与完整路径，覆盖本次验证报告。
 
 ## 核心原则
 
@@ -39,49 +39,23 @@ python <ssh_skill_scripts>/ssh_config_manager_v3.py find "<关键词>"
 
 脚本输出 JSON（`success`/`exit_code`/`stdout`/`stderr`）。每条命令自动归档到 `logs/<别名>.log`。
 
-## 配置文件
+## 输入与配置
 
-输入/输出路径与目标机器由项目根目录的 `deploy.config.yaml`（与 `.claude/` 同级，和 agents 隔离；**deploy-guide / deploy-install / deploy-verify / deploy-archive 四个 agent 共用此配置**）控制。agent 启动时用 **Read** 读取它；缺失则用内置默认。占位符运行时按本次软件替换：
+必需为软件、当前验证指南和明确目标机器；已有安装结果作为本次输入一并读取。版本未提供时从明确指南核对，实测版本未取得则记录未知。接收调用方确认的完整路径结果、明确指南/输出路径和 alias；无明确 alias 时读取配置 `default_server_alias`，仍未知则报告。
 
-- `{{software}}`：软件名，小写+连字符，如 `nginx`
-- `{{version}}`：软件版本号，如 `1.25.3`；无法确定取 `unknown_version`（默认 `latest`）
-
-本 agent 使用其中的 `output_dir`、`verify_file`、`verify_result_file`、`verify_issues_file`、`unknown_version`、`default_server_alias`、`ssh_skill_scripts`。**输入路径由 `output_dir` + `verify_file` 派生**（与 deploy-guide 输出自动对齐，无需手动同步）。内置默认（与配置文件字段一致）：
-
-```yaml
-# 输入路径 = output_dir + verify_file
-output_dir: "deploy/{{software}}/{{version}}"
-verify_file: "{{software}}-verify.md"
-verify_result_file: "deploy/{{software}}/{{version}}/{{software}}-verify-result.md"
-verify_issues_file: "deploy/{{software}}/{{version}}/{{software}}-verify-issues.md"
-unknown_version: "latest"
-default_server_alias: ""
-ssh_skill_scripts: ".claude/skills/ssh-skill/scripts"
-```
-
-> 调用方在 prompt 中给出的 server alias / software / version / 输入路径 可覆盖配置；agent 不修改配置文件本身。
-
-## 输入
-
-调用方在 prompt 中提供（缺失项按默认处理）：
-
-1. **软件名称**（必需）
-2. **目标服务器别名**（必需；ssh-skill 中已配置的别名）。缺失时用配置 `default_server_alias`；仍缺失则**停止并要求提供**，不猜测。
-3. **软件版本**（可选）：用于解析路径；不提供则从验证指南文件名/内容推断，或取 `unknown_version`
-4. **输入验证指南路径覆盖**（可选）：覆盖 `verify_guide`
-5. **输出路径覆盖**（可选）：覆盖 `verify_result_file` / `verify_issues_file`
+使用 `files.verify_file`、`files.verify_result_file` 和 `files.verify_issues_file` 的完整路径，本次安装材料使用同一结果中的对应路径。独立调用或续作缺少路径、遇到解析警告或脚本异常时，按共享参考的“警告与路径纠正”确认路径并继续只读验证。工具目录从 `deploy.config.yaml` 的 `ssh_skill_scripts` 读取。
 
 ## 工作流程
 
-### 1. 读取配置 + 定位输入
+### 1. 定位当前输入并开始本次验证
 
-- 用 **Read** 读 `deploy.config.yaml`（缺失用内置默认）。
-- 代入 `software`/`version` 解析 `verify_guide`。
-- 用 **Read** 读验证指南文件；**不存在则停止并报告**（提示先运行 deploy-guide 生成指南）。
+核对软件/版本、目标机器和当前指南，读取验证指南及已有本次安装结果。安装失败或报告缺失仍验证目标机器的真实状态并注明材料缺口，但旧验证不能代替本次实际执行。指南缺失或机器关联不清时停止说明并写本次无法判定结果，不按最近目录找其他结果。
+
+核对指南中的预期版本与本次目标，实测版本由检查输出取得；版本未核实时如实记录。逐项只读执行，不能凭旧通过文件判成功。
 
 ### 2. 确认目标机器
 
-- 解析 `server alias`（prompt > 配置 `default_server_alias`）；仍无则停止并要求提供。
+- 从显式输入、会话和安装 meta 核对 `server alias`、已知 instance_id 和身份来源；目标机器冲突、未知或已失效时停止报告，不猜别的 alias，也不自动新建机器。旧任务的身份若只在旧 state 中，可按需读取核对，续作不改写旧文件。
 - 用 `ssh_config_manager_v3.py find "<别名>"` 确认别名存在；不存在则**停止并报告**。
 - 连通性探测：
 ```bash
@@ -125,26 +99,27 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 - **单项失败不中断**，继续执行其余检查项。
 - 汇总：只汇总 `required` 检查项的通过数/总数；诊断项单独统计。存在软件失败项时整体结论为 ❌、原因「软件验证失败」；没有软件失败但存在检查项无法判定或指南无效时为 `⚠️ 无法判定`；所有 `required` 均通过且无指南无效项时才为 ✅。每个无法判定项必须逐项写明原因，不得写成软件未安装。（下游是否继续由编排层按整体结论决定，本 agent 不调用 archive。）
 
-### 5. 生成结果文件
+### 5. 覆盖当前验证结果
 
-用 **Write** 写入 `verify_result_file`；若存在未通过项，**另写** `verify_issues_file`。Write 自动建父目录。
+用 Write 写本次 `files.verify_result_file`，有未通过项时另写 `files.verify_issues_file`，同版本覆盖对应报告。保存本次实际检查、输出与结论，实测版本取得不到则写未知，不能抄目标版本。失败或无法判定如实报告。
 
 ## 输出文件规范
 
 | 文件 | 何时写 | 内容 |
 |------|--------|------|
 | `verify_result_file` | 总是 | 完整验证结果：每项命令/期望/实际/判定、整体结论、未通过项段 |
-| `verify_issues_file` | 仅当有未通过项 | 仅列未通过项与建议，便于快速排查 |
+| `verify_issues_file` | 有未通过项时 | 仅列未通过项与建议，便于快速排查 |
 
 - 中文为主，命令与字段名保留英文原文
-- 完整命令历史见 ssh-skill 自动归档的 `logs/<别名>.log`
+- 当前实际检查及输出保存在 verify_result_file；共享 `logs/<别名>.log` 仅作补充来源
 
 ### 结果文件模板（`verify_result_file`）
 
 ```markdown
 # <软件名> 验证结果报告
 
-> 软件：<software> <version> | 目标机器：<server alias> | 验证日期：<YYYY-MM-DD> | 验证指南：<verify_guide>
+> 软件：<本次确认 software> <version> | 目标机器：<server alias> | 验证日期：<YYYY-MM-DD> | 验证指南：<files.verify_file 完整路径>
+> 官方项目：<project_url 或未知> | 目录：<本次确认 output_dir> | 当前安装结果：<完整路径或缺失> | 来源：<已有 run_id/task_id；没有则省略>
 
 ## 整体结论
 - 状态：✅ 全部通过 / ⚠️ 无法判定 / ❌ 失败
@@ -154,7 +129,12 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 - 软件失败项：F 项
 - 无法判定项：I 项（不计入通过/失败；逐项注明原因）
 - 诊断项：D 项（不参与整体结论）
-- 完整命令日志：`logs/<别名>.log`
+- 实际安装版本：<实测值与对应检查项；无法取得时写未知和原因>
+- 验证范围：<已执行的目标版本、运行载体和适用功能；可选诊断单列>
+- 定位与调整：<本次名称/路径的确认依据与必要调整；无则省略>
+- 当前检查材料：<本次完整只读命令、真实输出及所在报告/附件路径>
+- 材料缺口：<缺失指南、环境或未执行项；无则写无>
+- 补充日志：`logs/<别名>.log`
 
 ## 验证明细
 
@@ -174,12 +154,12 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 （无则写「无」；有则逐条列：检查项 / 类型 / 命令 / 期望 / 实际 / 退出码 / 判定 / 差异 / 建议。基础设施异常必须写明“无法判定”，不得写成软件未安装。）
 ```
 
-### 问题文件模板（`verify_issues_file`，仅有未通过项时生成）
+### 问题文件模板（`verify_issues_file`，有未通过项时生成）
 
 ```markdown
 # <软件名> 验证未通过项清单
 
-> 软件：<software> <version> | 目标机器：<server alias> | 验证日期：<YYYY-MM-DD>
+> 软件：<本次确认 software> <version> | 目标机器：<server alias> | 验证日期：<YYYY-MM-DD>
 
 ## 未通过 1
 - 检查项：<检查项标题>
@@ -201,6 +181,6 @@ python <ssh_skill_scripts>/ssh_execute.py <别名> "$DEPLOY_VERIFY_COMMAND" --ti
 - **禁止在未确认服务器别名前执行任何验证命令**——别名缺失/不存在/连通失败时停止并报告，不猜测机器
 - 不擅自改写验证代码块，不补 `sudo` 或其他改变语义的参数
 - 不因单项失败中断——全量执行后汇总
-- 不修改配置文件本身；配置缺失用内置默认并说明
-- 不把结果只打印到对话——必须写入 `verify_result_file`（及 `verify_issues_file`）
-- 完成后须在回复中告知**结果文件路径**、整体结论、（若有）未通过项文件路径
+- 不修改 deploy.config.yaml
+- 不把结果只打印到对话——必须写入 `verify_result_file`（有未通过项时另写 `verify_issues_file`）
+- 完成后须在回复中告知**软件/实际版本、结果路径**、整体结论及结论原因、实际版本、（若有）未通过项路径

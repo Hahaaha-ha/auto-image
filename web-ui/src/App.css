@@ -354,6 +354,14 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   margin-left: 11px; padding-left: 8px;
   border-left: 1px solid var(--line);
 }
+/* 附件目录可能较深：每层只占 8px，累计最多 24px；完整路径仍由行 title 提供。 */
+.va-local-art-group > .va-art-children { margin-left: 3px; padding-left: 4px; }
+.va-art-depth-limit > .va-art-children { margin-left: 0; padding-left: 0; border-left: 0; }
+.va-local-art-group .va-art-item { gap: 4px; }
+.va-art-panel { container-type: inline-size; }
+@container (max-width: 260px) {
+  .va-local-art-group .va-art-size { display: none; }
+}
 /* 卡头工具行：全选 / 清空 / 勾选集打包 zip */
 .va-art-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .va-art-tools button { padding: 2px 8px; font-size: 11.5px; }
@@ -420,15 +428,15 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .va-artifact { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .va-artifact-head {
-  display: flex; align-items: center; gap: 8px; padding: 8px 16px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 16px;
   border-bottom: 1px solid var(--line); background: var(--surface-dim);
 }
-.va-artifact-name { font-family: var(--mono); font-size: 13px; font-weight: 600; }
+.va-artifact-name { min-width: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: 13px; font-weight: 600; }
 /* 产物查看头部的单文件下载按钮（dir 靠 margin-left:auto 推右，按钮随之） */
 .va-artifact-dl { flex-shrink: 0; padding: 3px 10px; font-size: 12px; }
 .va-artifact-dir {
   margin-left: auto; color: var(--ink-3); font-size: 11px; font-family: var(--mono);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl;
 }
 .va-artifact-raw {
   flex: 1; margin: 0; padding: 16px; overflow: auto;
@@ -451,6 +459,19 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* markdown 渲染（marked 输出）：表格 / 代码块 / 验证契约 blockquote */
 .va-artifact-md { flex: 1; overflow: auto; padding: 16px 24px; font-size: 13.5px; line-height: 1.65; }
+.va-artifact-info {
+  margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--line);
+  color: var(--ink-2); font-size: 13px; overflow-wrap: anywhere;
+}
+.va-artifact-info summary { cursor: pointer; }
+.va-artifact-info summary:hover { color: var(--ink); }
+.va-artifact-environment { font-family: var(--mono); font-size: 12.5px; }
+.va-artifact-info dl {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 16px; margin: 12px 0 4px;
+}
+.va-artifact-info dd { margin: 0; color: var(--ink); font-family: var(--mono); font-size: 12.5px; }
+.va-artifact-info a { color: var(--accent); }
 .va-md h1, .va-md h2, .va-md h3 { border-bottom: 1px solid var(--line); padding-bottom: 4px; }
 .va-md pre {
   background: var(--surface-dim); border: 1px solid var(--line); border-radius: 8px;
@@ -656,23 +677,26 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* 任务行：状态点 + 名称 + 阶段流转图 + 次行（类型/token/时间）+ 会话跳转 */
 .va-task-row {
-  display: flex; align-items: flex-start; gap: 6px;
+  display: flex; align-items: flex-start; flex-wrap: wrap; gap: 6px;
   padding: 6px 6px 6px 4px; margin: 0 2px;
   border-radius: 6px; border-bottom: 1px solid var(--line-2, #eaeef2);
 }
 .va-task-row:hover { background: var(--bg-2, #f6f8fa); }
 .va-task-row.on { background: var(--surface-dim, #eef1f4); }
-.va-task-main { min-width: 0; flex: 1; }
+.va-task-main { min-width: 0; flex: 1; cursor: pointer; border-radius: 4px; }
+.va-task-main:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.va-task-actions { flex-shrink: 0; }
+.va-task-row-error { flex-basis: 100%; margin-top: 0; }
 .va-task-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .va-task-name-text {
   font-size: 12.5px; font-weight: 500;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .va-task-outcome { flex-shrink: 0; font-size: 10px; color: var(--ink-3, #6e7781); }
-.va-task-outcome.o-success { color: var(--ok, #1a7f37); }
+.va-task-outcome.o-success { color: var(--ink-2, #57606a); }
 .va-task-outcome.o-failed { color: var(--bad, #cf222e); }
 .va-task-sub {
-  display: flex; align-items: baseline; gap: 8px; min-width: 0;
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; min-width: 0;
   margin-top: 2px; font-size: 11px; color: var(--ink-3, #6e7781);
 }
 .va-task-chip {
@@ -713,6 +737,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .va-flow-pill.done {
   color: var(--ok, #1a7f37); background: #dafbe1;
   border: 1px solid #abe4b8;
+}
+.va-flow-pill.halted {
+  color: var(--ink-2, #57606a); background: var(--bg-2, #f6f8fa);
+  border: 1px solid var(--line-1, #d0d7de);
 }
 
 /* ECS 实例运行态：跑任务的机器给动作色（点击跳任务），空闲弱化 */

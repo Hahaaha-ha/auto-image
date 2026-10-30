@@ -1,197 +1,104 @@
 ---
 name: deploy
-version: 1.2.0
-description: "CRITICAL: 端到端 Ubuntu 软件部署编排——把 deploy-guide → deploy-install → deploy-verify → deploy-archive 四个 agent 串成一条流水线：生成部署/验证指南 → 经 ssh-skill 在目标机安装 → 经 ssh-skill 验证 → 经 ssh-skill/ims-skill/ecs-skill 打包归档（清理 → 制镜像 → 切换 OS → 交付清单） → 汇总。当用户要求『一键部署』『端到端部署』『部署并验证』『串联部署』『完整部署某软件到某机器』『部署并打包』时使用。Triggers: 一键部署, 端到端部署, 部署并验证, 完整部署, 串联部署, 部署流水线, deploy pipeline, end-to-end deploy, /deploy, 全流程部署, 部署并打包, 部署并归档。需要同时给出：软件名 + 安装文档/链接；目标服务器别名可选（给了→已有机器安装；没给→install 自动拉起 ECS + 注册）。"
+version: 3.0.0
+description: "端到端 Ubuntu 软件部署编排：依次调用 deploy-guide、deploy-install、deploy-verify、deploy-archive，完成指南、安装、验证和打包交付。用户要求一键部署、完整部署、部署并验证、部署并打包或继续部署排障时使用。需要软件名与安装资料，目标版本和机器别名可选；无关联机器时 install 创建 ECS。"
 allowed-tools: Agent, Read, Write, Bash, Glob
-keywords: 部署, deploy, 一键部署, 端到端, pipeline, 安装, 验证, 串联, 流水线, 全流程, ssh, 远程, 打包, archive, 归档, 制镜像, 交付清单, 创建ecs, 自动拉起
 ---
 
-# Deploy 端到端部署流水线
+# Deploy 部署流水线
 
-把四个 agent 串成一条流水线，完成「出指南 → 远程安装 → 远程验证 → 打包归档」：
+完整部署依次派发 guide → install → verify → archive；软件名称与完整产物路径按 [部署总结参考](../../deploy-summary.md) 确认，同版本覆盖对应产物。guide 默认查找已有总结作为调查参考；总结由用户独立手动调用 deploy-summary，缺少总结不影响部署。
 
-```
-deploy-guide    生成 install.md + verify.md（只探索，不安装）
-       ↓  （产物落盘，路径由 deploy.config.yaml 决定，自动对齐）
-deploy-install  读 install.md → ssh-skill 远程安装 → install-result.md (+ issues) + meta.json
-       ├─ 有 alias → 在已有机器上安装
-       └─ 无 alias → ecs-skill create 拉起 + ssh-skill 注册 → 安装
-                     └─ meta.json 记录 instance_id（供 archive 消费）
-       ↓
-deploy-verify   读 verify.md  → ssh-skill 远程验证 → verify-result.md (+ issues)
-       ↓  （verify 通过后才进入 archive）
-deploy-archive  清理 → 制镜像 → 切换 OS → archive-result.md + deploy-list.md (+ issues)
-                └─ instance_id 从 meta.json 取；password 从 scope.yaml 取
-```
+## 编排职责与门禁
 
-四端输入/输出路径都由项目根目录的 **`deploy.config.yaml`（共用）** 决定，按 `{{software}}`/`{{version}}` 解析。**编排层只需把 software / version / server-alias 一致地传给四个 agent**，无需手工对齐路径。
+编排只定位当前软件/版本、传递参数、派发子 agent、校验本次结果和写 pipeline-result。四阶段必须分别通过 Agent 工具调用独立子 agent，依次阻塞完成，不合并、并行或内联替做。文档探索、远程安装/修改、只读验证、清理与云操作由各阶段执行；编排不抓文档，不运行远程命令或解析执行安装、验证、清理代码块。
 
-## 强制铁律（不可妥协）
+| 阶段 | 当前产物 | 进入下步条件 |
+|------|------|------|
+| guide | install_file、verify_file | 本次指南生成完成；verify 头部有精确的 `> 验证契约: exit-code-v1`，否则停止 |
+| install | install_result_file、install_meta_file | 安装失败仍派发 verify 采证，机器缺口如实透传 |
+| verify | verify_result_file | 仅本次实际通过且对应当前安装、目标机器和版本时进入 archive；其他结论跳过 |
+| archive | archive_result_file、deploy_list_file | 记录本次真实结果与镜像；未执行或失败不视为完成 |
 
-本 skill 是**纯编排层**：只做「解析公共入参 → 按序调用四个子 agent → 校验每步产物 → 汇总」，**不亲自做任何实际工作**。以下三条强制执行，破坏任一条即视为编排失败：
+每步完成后用 Read 校验对应产物已落盘，核对软件、版本、机器及本次调用结果；不能只检查旧同名文件存在。guide 产物缺失或失败停止后续；install 结果缺失记失败，仍执行 verify 采证；verify 报告缺失或未通过则跳过 archive；archive 报告或交付清单缺失记失败。archive 跳过原因引用 verify 的具体结论，保留软件失败、基础设施异常、检查项无法判定和指南问题的区别，不能都改写成软件未装好。
 
-1. **必须依次执行全部 4 个步骤，不得合并、跳过或内联替做**：deploy-guide → deploy-install → deploy-verify → deploy-archive。
-   - 唯一允许的提前终止：步骤 1（guide）失败 → 后续无输入，整条停止。
-   - 步骤 2（install）失败**仍须执行**步骤 3（verify），以采证机器真实状态。
-   - 步骤 3（verify）未通过**不执行**步骤 4（archive）——archive 的前提是软件已装好且验证通过，对未通过验证的机器打包无意义。
+## 输入与续作
 
-2. **4 个步骤各是一个独立的 Agent 子 agent**——编排层**禁止**亲自抓文档、**禁止**任何 `ssh`/ssh-skill 远程执行、**禁止**解析或执行安装/验证/清理命令、**禁止**亲自制镜像或切换 OS；这些只能在各自子 agent 内完成。
-   - **为什么必须用子 agent**：**上下文隔离**。文档抓取与远程命令会产出大量上下文，关在各子 agent 内即可；编排层只回收每步的「结论 + 产物路径」，避免主上下文膨胀与互相串扰，也确保各 agent 自身约束（guide 禁装、verify 只读、archive 三步顺序执行）不被绕过。
+用户提供软件与安装文档/链接；版本、分支/tag、Ubuntu 版本、机器 alias 与 ECS 规格可选。文档可为 URL、GitHub 仓库、本地文件或粘贴内容。本次明确关联的 alias、instance_id、认证来源可用时沿用；同目录旧 meta 不自动把上次机器变成本次新部署目标。目标系统、架构、基础镜像、安装方式来自用户要求、解析后的 ECS 规格或明确目标机探测；未知如实说明，不能代入 agent 宿主环境。
 
-3. **步骤之间以「输出件」硬约束**：每步都有明确产物文件（见对照表）。进入下一步**前**，编排层必须用 **Read**（或 Bash `[ -f <文件> ]`）确认上一步产物已落盘；产物缺失即视为该步失败。这正是「不可跳过」的 enforcement——没有 guide 的 `install.md`，install 无从读起。
+用户还可指定参考版本或总结路径。按 [部署总结参考](../../deploy-summary.md) 的“目标版本与指定参考”区分安装目标和参考要求；把用户的参考版本、路径及原话单独传给 guide，不用参考版本填充本次目标版本或产物目录。
 
-### 步骤产物对照表（enforcement 锚点）
+续作先从会话、安装 meta 和报告核对软件、版本与目标机器，按用户问题及实际进展继续相应阶段，不强制重跑完整流水线。文档调查、安装修改、只读验证和云操作仍交给各自 agent；修改后用本次验证结果决定是否归档。机器失效或关联不清时先核对，不能因连接失败自动新建机器。仅旧 state 中存在的资源身份可按需读取核对后带入现有 meta/报告，旧文件保留，新部署不依赖它。现有 run_id/task_id 可写作来源。
 
-| 步骤 | 子 agent | 必须产出（落盘到 output_dir） | 进入下一步前的校验 |
-|------|----------|-------------------------------|--------------------|
-| 1 guide | deploy-guide | `<install.md>`、`<verify.md>` | Read 两文件并确认 verify 头部为 `> 验证契约: exit-code-v1`；任一缺失/契约错误 → 终止整条 |
-| 2 install | deploy-install | `<install-result.md>`（有问题另出 `<install-issues.md>`）、`<install-meta.json>` | Read `install-result.md` + `<install-meta.json>`；result 缺失记失败，**仍继续步骤 3**。meta.json 缺失记警告（instance_id 取不到，可能影响步骤 4） |
-| 3 verify | deploy-verify | `<verify-result.md>`（未通过项另出 `<verify-issues.md>`） | Read `verify-result.md`；缺失记失败。**verify 未通过 → 不执行步骤 4** |
-| 4 archive | deploy-archive | `<archive-result.md>`、`<deploy-list.md>` | Read 两文件；任一缺失 → 记失败 |
+编排不收集和透传密码；archive 由 ecs.py 的 scope 配置获取。已有 alias 分支不能把已知 instance_id 和认证方式写空；确实缺少 instance_id 时说明 archive 跳过原因。
 
-## 输入（调用方在 prompt 中提供）
+## 执行
 
-1. **软件名称**（必需）
-2. **安装文档或链接**（必需）：URL / GitHub 仓库链接 / 本地文件 / 粘贴内容
-3. **目标服务器别名**（**可选**；ssh-skill 已配置的别名）——**双路径触发器**：
-   - 给了 alias → 已有机器路径（在指定机器上安装）
-   - 没给 alias → 创建路径（install 自动拉起 ECS + 注册 ssh-skill 别名）
-4. **软件版本**（可选；不提供则由 deploy-guide 推断，推断结果向后传递）
-5. **分支/标签**（可选；GitHub 仓库时）
-6. **目标 Ubuntu 版本**（可选；默认 auto）
-7. **ECS instance_id**（**条件必需**；仅步骤 4 deploy-archive 使用）：
-   - 创建路径（无 alias）→ install 产出 meta.json，编排层自动读取，**调用方无需提供**
-   - 已有 alias 路径 → meta.json 的 instance_id 为 null，**仍需调用方提供**；未提供则 archive 跳过（见步骤 4）
-8. **ECS 规格**（可选；仅创建路径使用）：如 flavor / image / disk-size / bandwidth 等，自由文本透传给 install → ecs.py
+### 0. 收集本次定位信息
 
-> **密码不需要调用方提供**。archive 步骤切换 OS 时自己从 scope.yaml 取密码（ecs.py change-os 的 `--password` 不给时自动兜底 scope 的 `ecs_create.server.password`）。密码不经过编排层传递。
+读取共享参考，保留用户原始软件名、目标版本、输入资料、明确指定的输出路径和本次已确认的现有文件；同时收集已知目标机器及来源。新部署把这些信息交给 guide 确认官方项目与路径，此时不按用户别名或参考总结目录预设输出目录。续作已持有完整路径结果时直接沿用，缺少文件路径时按共享参考补齐。
 
-## 执行步骤
+### 1. 生成或校正指南
 
-**MUST**（见上方「强制铁律」）：四个步骤**每步都用 Agent 工具调用对应子 agent**，**阻塞完成后再调下一个**，禁止并行——install 依赖 guide 产物，verify 依赖 install 完成，archive 依赖 verify 通过。步骤 0、5 是编排层内部的解析与汇总，不计入这四步。
+通过 Agent（subagent_type: deploy-guide）传入原始软件名、目标版本（若有）、文档/链接、分支/tag（若有）、目标环境与来源，以及第 0 步收集的明确路径；同时要求返回本次确认的完整路径结果。单独传入用户的参考要求（若有），已有用户反馈和当前失败现象一并提供。
 
-### 步骤 0 — 解析公共路径
+guide 按共享参考负责官方项目确认、路径定位、自动查找与阅读及本次指南生成；解析警告或辅助脚本异常按其中的“警告与路径纠正”处理。结束后捕获其确认的 `software`、`project_url`、`canonical_name`（若有）、`version`、`output_dir` 和 `files`，连同必要的定位依据与调整传给后续阶段。读取 `files.install_file` 和 `files.verify_file`，并确认验证指南在首个二级标题前包含精确的 `> 验证契约: exit-code-v1`；指南缺失或标记错误即停止后续，不由编排执行验证代码块。
 
-- 用 **Read** 读 `deploy.config.yaml`，取 `output_dir` + `install_meta_file`，代入本次 `software`/`version` 得到产物目录（如 `deploy/nginx/1.25.3`）与 meta.json 路径，用于后续汇总与流水线报告路径。
-- 用 **Bash** `date +%F` 取当日日期。
-- 若调用方未给 version，先记为待定（以步骤 1 deploy-guide 解析结果为准）。
+### 2. 执行安装
 
-### 步骤 1 — deploy-guide（生成指南）
+通过 Agent（subagent_type: deploy-install）传入当前软件/版本、指南路径、已知 alias/instance_id/认证方式和 ECS 创建规格，已有定时删除记录及来源一并传入。已有 alias 使用指定机器；无 alias 且没有关联实例时，由 install 调用 ecs-skill 创建并注册，保留时长沿用 `scope.yaml` 的统一配置，编排不另传时长覆盖参数。已有机器和续作沿用原安排，配置变更不重置已创建实例的时间。
 
-用 **Agent** 调用（subagent_type: `deploy-guide`），prompt 传入：软件名、文档/链接、版本（若有）、分支（若有）、Ubuntu 版本（若有）。
+结束后读取 `install_result_file` 与 `install_meta_file`，缓存 meta 中的 `server_alias`、`instance_id`、`path`、`auth_method`、`auto_terminate_time` 及报告中的时间来源。后续 alias 以 install 实际使用并保存的值为准，尤其创建路径不可猜测。meta 缺失或某字段未知时，沿用本次已核对的调用方/会话机器信息，不把已知值写空；仍无 instance_id 则注明 archive 将跳过。安装失败仍派发 verify 只读采证。
 
-完成后（产物校验 = 强制铁律第 3 条）：
-- **捕获 deploy-guide 实际使用的 `software` / `version`**（其回复中会告知）→ 作为步骤 2、3、4 的固定入参。
-- **用 Read 校验 `<install.md>` 与 `<verify.md>` 已落盘**（路径 = output_dir + 配置文件名），并确认 `<verify.md>` 在首个二级标题前包含精确标记 `> 验证契约: exit-code-v1`。任一文件缺失或契约标记缺失/错误，都视为 guide 失败，停止整条流水线；这里只检查产物门禁，不解析或执行验证代码块。
-- **任一缺失 / guide 失败 → 停止整条流水线**，报告原因（后续阶段无输入，无法进行）。
+### 3. 只读验证
 
-### 步骤 2 — deploy-install（远程安装）
+通过 Agent（subagent_type: deploy-verify）传入当前软件/版本、验证指南、当前安装结果和明确目标机器。每次实际执行检查，旧通过文件不能替代本次结果。
 
-用 **Agent** 调用（subagent_type: `deploy-install`），prompt 传入：软件名、**步骤 1 解析的 version**、目标服务器别名（若有）、ECS 规格参数（若有；仅创建路径使用）。
+读取本次 `verify_result_file`；只有本次实际通过、机器与安装内容对应时才进入 archive，目标版本已确定时还须与实测版本一致。无法判定、失败或报告缺失则跳过，写明报告中的具体原因或材料缺口。
 
-agent 会自行按配置路径读 install 指南、经 ssh-skill 在目标机安装，产出 `install-result.md`（及 `install-issues.md`）+ `install-meta.json`。捕获其整体结论（✅ 成功 / ⚠️ 部分 / ❌ 失败）及**实际使用的 server alias**（创建路径下 alias 由 install 自动生成，其回复中会告知）。
+### 4. 打包归档
 
-完成后：
-- **用 Read 校验 `<install-result.md>` 已落盘**；缺失则记为失败，但**不阻塞步骤 3**。
-- **用 Read 读取 `<install-meta.json>`**，解析 `instance_id`、`server_alias`、`path`、`auth_method`：
-  - `instance_id` **有值**（创建路径）→ **缓存** instance_id + auth_method，步骤 4 直接使用，调用方无需提供。
-  - `instance_id` 为 **null**（已有 alias 路径）→ 回退到**调用方在 prompt 中提供的 instance_id**（若有）。
-  - 仍**没有** instance_id（已有 alias 路径 + 调用方未给）→ 标记 `archive_skip_reason = "instance_id 缺失（已有 alias 路径且调用方未提供），archive 将跳过"`，步骤 4 据此跳过。
-  - meta.json **文件缺失** → 同上标记（instance_id 取不到，archive 将跳过）。
-- **捕获 install 实际使用的 server alias**（创建路径下由 install 自动生成）→ 作为步骤 3、4 的 alias 入参（调用方未给 alias 时尤为重要）。
+本次 verify 通过且 instance_id 明确时，通过 Agent（subagent_type: deploy-archive）传入本次指南/安装/验证路径、目标机器、认证方式、已有定时删除记录及来源与已有 image_id/job_id/动作结果；否则跳过并说明原因。创建路径 instance_id 由 install meta 自动提供，已有机器则沿用已核对信息，编排不猜测云资源身份。
 
-> **即使安装失败也继续步骤 3**：验证可捕获机器当前真实状态，便于诊断。
+子 agent 遵循清理 → 制镜像 → 切 OS 顺序并输出交付清单；续作先核对已有云动作，进行中或已完成操作不重复提交。只剩云操作时不要求重新 SSH 清理。结束后读取 `archive_result_file`、`deploy_list_file` 与实际镜像身份。上传、审核和上架仍由用户完成。
 
-> **meta.json 中的 alias 优先**：创建路径下 install 自动生成的 alias 是步骤 3（verify）和步骤 4（archive）的目标机器标识，编排层必须使用 meta.json 的 `server_alias`，不猜测。
+### 5. 覆盖当前流水线结果
 
-### 步骤 3 — deploy-verify（远程验证）
+用 Write 写本次确认的 `files.pipeline_result_file`，记录本次四阶段结论、产物路径和未执行原因。中途失败仍写汇总，不让旧成功报告代替本次结果；缺少路径时按共享参考定位与纠正，保存位置仍有实质歧义才在回复中说明缺口。
 
-用 **Agent** 调用（subagent_type: `deploy-verify`），prompt 传入：软件名、version、**步骤 2 确定的目标服务器别名**（创建路径下使用 meta.json 的 `server_alias`）。
+回复软件/实际版本、各阶段结论、当前镜像及汇总路径。pipeline-result 记录执行结果；用户可手动调用 deploy-summary 整理已有经验和人工反馈，部署流程不自动运行或更新总结。
 
-agent 按 verify 指南**只读验证**，产出 `verify-result.md`（及 `verify-issues.md`）。捕获其整体结论（✅ 全部通过 / ⚠️ 无法判定 / ❌ 失败）及**结论原因**（软件验证失败 / 检查项无法判定 / 基础设施异常 / 验证指南无效）。
-
-完成后：**用 Read 校验 `<verify-result.md>` 已落盘**；缺失则记为失败，并在汇总中如实标注。
-
-> **verify 非 ✅ 则不执行步骤 4（archive）**：archive 的前提是软件已装好且验证通过。verify 结论非 ✅（⚠️ 无法判定或 ❌ 失败）或产物缺失时，编排层跳过 archive，直接进入步骤 5 汇总。
->
-> **跳过原因必须按 verify 的「结论原因」字段如实归因，不得一律写成「验证未通过」**：
-> - 原因「软件验证失败」→ 写「archive 因软件验证失败而跳过」
-> - 原因「检查项无法判定」→ 写「archive 因验证项未能判定而跳过——检查项自己报告拿不到结论（工具缺失、无权读取、入口路径未知等），照 verify-result.md 的逐项原因人工确认后重跑 verify」
-> - 原因「基础设施异常」→ 写「archive 因基础设施异常跳过——软件是否装好未能判定，需排除环境问题后重跑 verify」
-> - 原因「验证指南无效」→ 写「archive 因验证指南不符合契约而跳过，需重跑 deploy-guide 重新生成指南」
->
-> 把基础设施异常或指南问题写成软件未装好，与 deploy-verify 的判定语义冲突。
-
-### 步骤 4 — deploy-archive（打包归档）
-
-**前置条件**：步骤 3 verify 结论为 ✅（全部通过）。verify 未通过 / 产物缺失时**跳过本步**。
-
-**instance_id 缺失时跳过**：若步骤 2 标记了 `archive_skip_reason`（instance_id 缺失），**跳过本步**，直接进入步骤 5 汇总，在汇总中如实标注「instance_id 缺失，archive 未执行」。
-
-用 **Agent** 调用（subagent_type: `deploy-archive`），prompt 传入：软件名、version、目标服务器别名、**instance_id**（从步骤 2 缓存的 meta.json instance_id 取）、**auth_method**（从步骤 2 缓存的 meta.json auth_method 取；已有 alias 路径为 null 时传「未知」，agent 可从 ssh-skill 配置推断）。**不传 password**——archive 自己读 scope.yaml（ecs.py change-os 的 `--password` 不给时自动兜底 scope 的 `ecs_create.server.password`）。
-
-agent 依次执行「清理 → 制镜像 → 切换 OS → 输出交付清单」，产出 `archive-result.md`（执行明细）+ `deploy-list.md`（交付清单）（及有问题的 `archive-issues.md`）。捕获其整体结论（✅ 成功 / ❌ 失败）。
-
-完成后：**用 Read 校验 `<archive-result.md>` 与 `<deploy-list.md>` 已落盘**；任一缺失则记为失败。
-
-> instance_id 来源：创建路径 → meta.json 自动产出；已有 alias 路径 → 调用方提供。编排层不猜测、不编造 instance_id。auth_method 来源：创建路径 → meta.json 自动产出；已有 alias 路径 → null（交付清单记「未知」，agent 可从 ssh-skill 配置推断）。密码不经编排层传递。
-
-### 步骤 5 — 汇总
-
-用 **Write** 落一份流水线汇总 `<output_dir>/<software>-pipeline-result.md`，并在对话中给出整体结论 + 汇总文件路径。
-
-## 流水线汇总模板（`<software>-pipeline-result.md`）
+## 流水线汇总模板
 
 ```markdown
-# <软件名> 端到端部署汇总
+# <软件名> 部署流水线结果
 
-> 软件：<software> <version> | 目标机器：<server alias> | 安装路径：新创建/已有 | 日期：<YYYY-MM-DD>
+> 软件：<本次确认 software> | 官方项目：<project_url 或未知> | 请求/实际版本：<实际值或未知> | 日期：<日期>
+> 来源：<已有 run_id/task_id；无 Web 上下文则注明> | 目录：<本次确认 output_dir>
+
+## 本次输入
+- 目标机器与来源：<alias、已知 instance_id、认证方式；秘密值省略>
+- 定时删除：<本次建机保留小时数及配置来源、记录的时刻及其时区和实际来源；未知如实记录，创建请求回显不写成云端确认>
+- 计划/实际环境：<系统、架构、基础镜像、安装方式及来源、差异和未知>
+- 参考要求：<用户指定版本/路径及约束；未指定写自动查找，用户排除历史则注明>
+- 参考总结：<guide 实际采用的版本、文件与调整；未采用或指定材料不可用时说明原因>
+- 定位与调整：<本次名称/路径的确认依据与必要调整；无则省略>
+- 本次操作：<实际执行与未执行步骤>
 
 ## 四阶段结论
-| 阶段 | 结论 | 产物 |
+| 阶段 | 本次真实结论 | 当前产物 / 未执行原因 |
 |------|------|------|
-| deploy-guide（生成指南） | ✅/❌ | <install.md> / <verify.md> |
-| deploy-install（远程安装） | ✅/⚠️/❌ | <install-result.md> (+ issues) + <install-meta.json> |
-| deploy-verify（远程验证） | ✅/⚠️无法判定/❌ | <verify-result.md> (+ issues) |
-| deploy-archive（打包归档） | ✅/❌/⊘跳过 | <archive-result.md> / <deploy-list.md> (+ issues) |
+| guide | <本次结果> | <install_file / verify_file> |
+| install | <本次结果> | <install_result_file / install_meta_file> |
+| verify | <本次结论和具体原因> | <verify_result_file> |
+| archive | <本次结果或跳过> | <archive_result_file / deploy_list_file / image_id；或原因> |
 
-## 关键问题摘要
-（install / verify / archive 的未通过项；无则写「无」。详见对应 -issues 文件）
+## 有效修改与镜像
+- 实际执行：<最终有效命令、参数、配置/脚本路径及结果>
+- 未执行建议：<用户建议及未执行原因，不能写成已完成>
+- 镜像与云操作：<当前 image_id、job_id 与真实状态；未生成则注明>
+- 人工上架：<已有明确反馈或尚待用户操作，执行成功不推断上架>
 
-## 产物清单
-- 指南：<output_dir>/<install.md>、<verify.md>
-- 安装结果：<output_dir>/<install-result.md>（+ <install-meta.json> 运行时元数据）
-- 验证结果：<output_dir>/<verify-result.md>
-- 打包结果：<output_dir>/<archive-result.md>、<deploy-list.md>
-- 命令日志：logs/<别名>.log
+## 当前缺口
+<未执行步骤、无法判定原因、缺失材料和下一步；无则写无。>
 ```
-
-> **archive 被跳过时**，结论列记 `⊘跳过`，产物列写跳过原因：
-> - verify 非 ✅ → 按步骤 3 的归因规则填写，**不得写成「验证未通过」**
-> - instance_id 缺失 →「（instance_id 缺失，archive 未执行）」
-
-## 约束
-
-- **四步强制执行（见「强制铁律」）**：不得合并、跳过步骤；install 依赖 guide 产物，verify 依赖 install 完成，archive 依赖 verify 通过，故**顺序执行、禁止并行**。
-- **编排层零实操**：编排层**只**解析公共入参 + 调用子 agent + 校验产物 + 汇总。**禁止**亲自抓文档、**禁止**任何 `ssh`/ssh-skill 远程执行、**禁止**解析或执行安装/验证/清理命令、**禁止**亲自制镜像或切换 OS——实际工作一律下放到对应子 agent（上下文隔离）。
-- **步骤间产物校验**：每步完成后用 Read 校验对应产物落盘，缺失即失败（步骤 1 缺失终止整条；步骤 2 result 缺失仍继续步骤 3 采证；步骤 3 未通过则跳过步骤 4）。
-- **参数一致**：`software` / `version` 在四个 agent 间保持一致；version 以步骤 1 解析结果为准向后传。**目标服务器别名**以步骤 2 meta.json 的 `server_alias` 为准向后传（创建路径下 alias 由 install 自动生成）。
-- **instance_id 传递链**：编排层从步骤 2 的 meta.json 读取 instance_id → 传给步骤 4 archive。已有 alias 路径下 meta.json 的 instance_id 为 null，回退到调用方提供的值；仍无则跳过 archive。编排层**不猜测、不编造** instance_id。
-- **密码不经编排层**：编排层**不接收、不传递**密码。archive 切换 OS 时由 ecs.py change-os 自动从 scope.yaml 取密码。
-- **不绕过各 agent 自身约束**：deploy-guide 禁止安装、install/verify 必须走 ssh-skill、verify 只读、archive 三步顺序执行且前序失败即停等，均由各 agent 自身保证。
-- **失败处理**：步骤 1 失败则整条停止；步骤 2 失败仍执行步骤 3；步骤 3 未通过则跳过步骤 4；步骤 4 instance_id 缺失则跳过 archive；任何阶段失败或跳过都在汇总中如实标注。
-- 完成后在对话中给出**整体结论 + 汇总文件路径 + 各阶段结论**。
-
-## 调用示例
-
-### 创建路径（全自动，不给 alias）
-
-> 一键部署 nginx，安装文档见 https://nginx.org/en/docs/install.html，版本 1.25.3，打包制镜像
-
-编排层将依次：deploy-guide 生成指南 → deploy-install 自动拉起 ECS + 注册 ssh-skill + 安装（产出 meta.json） → deploy-verify 验证 → deploy-archive 打包归档（instance_id 从 meta.json 取，密码从 scope.yaml 取）→ 输出 `deploy/nginx/1.25.3/nginx-pipeline-result.md` 汇总。
-
-### 已有 alias 路径（指定机器）
-
-> 一键把 nginx 部署到 prod-web-01，安装文档见 https://nginx.org/en/docs/install.html，版本 1.25.3，打包制镜像（instance_id=xxx）
-
-编排层将依次：deploy-guide 生成指南 → deploy-install 在 prod-web-01 安装 → deploy-verify 验证 → deploy-archive 打包归档（instance_id 由调用方提供，密码从 scope.yaml 取）→ 输出 `deploy/nginx/1.25.3/nginx-pipeline-result.md` 汇总。

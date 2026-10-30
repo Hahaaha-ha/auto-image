@@ -10,7 +10,9 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 import time
+from pathlib import Path
 from uuid import UUID
 
 
@@ -1246,6 +1248,7 @@ async def test_manual_task_run_lifecycle():
         t = mine[0]
         assert t["status"] == "DONE" and t["outcome"] == "success"
         assert t["run_id"] == run_id
+        assert t["instance_id"] == "i-9" and t["server_alias"] == "nginx-20260914", t
         assert [s["stage"] for s in t["stages"]] == ["GUIDE"]
 
         # 重复运行与未知任务
@@ -1253,6 +1256,63 @@ async def test_manual_task_run_lifecycle():
         assert r.status_code == 409, r.text
         r = await client.post("/api/tasks/task-nope/run")
         assert r.status_code == 404, r.text
+
+
+async def test_fixed_version_metadata_binds_task_without_additional_identity():
+    """HTTP 与 SDK 保留既有会话形态，任务从明确版本目录读取机器信息。"""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        fake = FakeSessionFactory()
+
+        def factory(start):
+            directory = root / "deploy/nginx/1.3.0"
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "nginx-install-meta.json").write_text(json.dumps({
+                "instance_id": "i-current", "server_alias": "current", "auth_method": "key_pair",
+            }))
+            return fake(start)
+
+        app = make_test_app(session_factory=factory, task_dir=root / "task",
+                            artifact_roots={"deploy": root / "deploy"})
+        async with async_client(app) as client:
+            run_id = (await client.post("/api/runs", json={})).json()["run_id"]
+            response = await client.post(f"/api/runs/{run_id}/messages", json={"text": "部署 nginx 1.3.0"})
+            assert response.status_code == 200, response.text
+            assert set(response.json()) == {"run_id", "status"}, response.json()
+            await wait_status(client, run_id, "READY")
+            task = (await client.get("/api/tasks")).json()["tasks"][0]
+            assert (task["software"], task["version"], task["instance_id"]) == ("nginx", "1.3.0", "i-current"), task
+            assert task["run_id"] == run_id and task["task_id"]
+            stored = json.loads((root / "task" / f"{task['task_id']}.json").read_text())
+            assert "call_id" not in stored and "production_id" not in stored
+            assert fake.queries == ["部署 nginx 1.3.0"]
+            assert not (root / "task/calls").exists()
+
+
+async def test_manual_summary_after_restart_does_not_create_deployment_task():
+    script = [{"type": "assistant", "message": {"content": [{"type": "text", "text": "总结文档已保存"}]}},
+              {"type": "result", "subtype": "success", "result": "文档操作完成"}]
+    factory = FakeSessionFactory(script=script)
+    app = make_test_app(session_factory=factory)
+    state_file = app.state.test_root / "state.json"
+    task_dir = app.state.test_root / "task"
+    async with async_client(app) as client:
+        run_id = (await client.post("/api/runs", json={})).json()["run_id"]
+        response = await client.post(f"/api/runs/{run_id}/messages", json={"text": "/deploy-summary nginx 1.3.0"})
+        assert response.status_code == 200, response.text
+        await wait_status(client, run_id, "READY")
+        assert (await client.get("/api/tasks")).json()["tasks"] == []
+    restarted = make_test_app(session_factory=factory, state_path=state_file, task_dir=task_dir,
+                             list_sessions_fn=factory.list_sessions,
+                             get_session_messages_fn=factory.get_session_messages)
+    async with async_client(restarted) as client:
+        response = await client.post(f"/api/runs/{run_id}/messages", json={"text": "/deploy-summary 记录上架结果"})
+        assert response.status_code == 200, response.text
+        await wait_status(client, run_id, "READY")
+        assert (await client.get("/api/tasks")).json()["tasks"] == []
+        events, _ = await collect_sse(await open_stream(client, run_id))
+        assert not any(event["event"] == "stage.changed" for event in events)
+        assert factory.queries == ["/deploy-summary nginx 1.3.0", "/deploy-summary 记录上架结果"]
 
 
 async def main():

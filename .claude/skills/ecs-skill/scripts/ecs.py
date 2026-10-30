@@ -149,6 +149,7 @@ def summarize_server(server: Any) -> dict[str, Any]:
         "ip_type": "floating" if (ip and ip == floating_ip(server)) else "private",
         "flavor": _obj_id(getattr(server, "flavor", None)),
         "image": _obj_id(getattr(server, "image", None)),
+        "auto_terminate_time": getattr(server, "auto_terminate_time", None),
     }
 
 

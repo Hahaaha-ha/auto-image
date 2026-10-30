@@ -86,7 +86,7 @@ function SessionPanel({ order, runs, controlId, openIds }) {
 // 全选 / 部分半选 / 无）；展开状态由父级 toggles 字典集中管理，未动过的
 // 目录落到 defaultOpen（最新一组所在路径自动展开）。文件行「已开标签页」
 // 弱标记与高亮从 tabs 派生，不另立状态。
-function ArtDir({ node, toggles, setToggles, defaultOpen, openFiles, activeRel }) {
+function ArtDir({ node, toggles, setToggles, defaultOpen, openFiles, activeRel, depth = 0 }) {
   const s = store.useRunState()
   const open = toggles[node.path] ?? defaultOpen.has(node.path)
   const rels = subtreeRels(node)
@@ -95,7 +95,7 @@ function ArtDir({ node, toggles, setToggles, defaultOpen, openFiles, activeRel }
   const some = selCount > 0 && !allOn
   const toggleOpen = () => setToggles({ ...toggles, [node.path]: !open })
   return (
-    <div className="va-art-group">
+    <div className={`va-art-group va-local-art-group${depth >= 3 ? ' va-art-depth-limit' : ''}`}>
       <div
         className="va-art-dir-head"
         role="button"
@@ -170,7 +170,7 @@ function ArtDir({ node, toggles, setToggles, defaultOpen, openFiles, activeRel }
             )
           })}
           {node.dirs.map((d) => (
-            <ArtDir key={d.path} node={d} toggles={toggles} setToggles={setToggles} defaultOpen={defaultOpen} openFiles={openFiles} activeRel={activeRel} />
+            <ArtDir key={d.path} node={d} toggles={toggles} setToggles={setToggles} defaultOpen={defaultOpen} openFiles={openFiles} activeRel={activeRel} depth={depth + 1} />
           ))}
         </div>
       )}
@@ -207,7 +207,7 @@ function ArtifactPanel({ openFiles, activeRel }) {
   const fileCount = artifactFileCount(groups)
   const selCount = Object.keys(s.artifactSel).length
   return (
-    <div className="va-side-panel">
+    <div className="va-side-panel va-art-panel">
       <div className="va-art-panel-head">产物 · {fileCount}</div>
       {fileCount > 0 && (
         <div className="va-art-tools">

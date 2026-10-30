@@ -18,6 +18,7 @@ import sys
 import tempfile
 from argparse import Namespace
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import yaml
 
@@ -232,6 +233,20 @@ def test_no_eip_skips_publicip():
     assert req.body.server.publicip is None, "--no-eip 时不应有 publicip"
 
 
+def test_scope_no_eip_skips_publicip():
+    """scope no_eip: true 时不注入 publicip（yaml 固定私网形态，CLI 不带参数也生效）。"""
+    scope = make_scope(no_eip=True, **_EIP_TEMPLATE)
+    req = build_create_request(scope, make_args())  # no_eip=False
+    assert req.body.server.publicip is None, "scope no_eip: true 时不应有 publicip"
+
+
+def test_scope_no_eip_false_or_absent_keeps_eip():
+    """scope no_eip: false / 缺省 → 默认带 EIP（不给字段不改变既有行为）。"""
+    for scope in (make_scope(no_eip=False, **_EIP_TEMPLATE), make_scope(**_EIP_TEMPLATE)):
+        req = build_create_request(scope, make_args())
+        assert req.body.server.publicip is not None, "no_eip 非 true 时应默认带 EIP"
+
+
 def test_eip_uses_scope_template_default_bandwidth():
     """默认（带 EIP）用 scope 的 publicip 模板，带宽取模板默认 5。"""
     scope = make_scope(**_EIP_TEMPLATE)
@@ -375,6 +390,34 @@ def dry_run_server(*flags):
     return server
 
 
+def test_show_preserves_cloud_auto_terminate_time():
+    """show 返回云端原值；即使 scope 有默认时长，也不推算缺失的删除时间。"""
+    cases = (
+        ({"auto_terminate_time": "2026-11-01T10:30:00Z"}, "2026-11-01T10:30:00Z"),
+        ({"auto_terminate_time": ""}, ""),
+        ({"auto_terminate_time": None}, None),
+        ({}, None),
+        ({"auto_terminate_time": "invalid-time"}, "invalid-time"),
+    )
+    scope = make_cli_scope()
+    scope["ecs_create"]["server"]["terminate_hours"] = 4
+    for fields, expected in cases:
+        server = SimpleNamespace(id="server-1", name="query-target", status="ACTIVE",
+                                 created="2026-10-01T08:00:00Z", **fields)
+        for target in (("--id", server.id), ("--name", server.name)):
+            client = SimpleNamespace(list_servers_details=lambda request: SimpleNamespace(servers=[server]))
+            with patch.object(ecs, "build_client", return_value=client):
+                code, payload = run_cli(scope, ["show", *target])
+            assert code == 0, f"show 应成功，实得 {code!r}: {payload!r}"
+            assert payload["ok"] is True and payload["action"] == "show"
+            summary = payload["server"]
+            assert "auto_terminate_time" in summary
+            assert summary["auto_terminate_time"] == expected, \
+                f"应原样返回云端值 {expected!r}，实得 {summary!r}"
+            assert summary["id"] == server.id and summary["status"] == "ACTIVE"
+            assert summary["ssh_port_open"] is False, "无可达 IP 时仍可查询云端删除时间"
+
+
 # ---- CLI 互斥：--terminate-hours vs --no-auto-terminate ----
 def test_dry_run_terminate_flags_mutually_exclusive():
     """两 flag 同时给 → argparse 报错（exit 2），不静默择一。"""
@@ -480,6 +523,15 @@ def test_dry_run_eip_flags_reach_request():
     assert (pub.get("eip") or {}).get("iptype") == DEFAULT_EIP_IPTYPE, f"publicip 实得 {pub!r}"
     assert ((pub.get("eip") or {}).get("bandwidth") or {}).get("size") == 10, \
         f"--bandwidth 实得 {pub!r}"
+
+
+def test_dry_run_scope_no_eip_reaches_request():
+    """scope 文件里 no_eip: true → dry-run 请求体不带 publicip（端到端）。"""
+    scope = make_cli_scope()
+    scope["ecs_create"]["server"]["no_eip"] = True
+    _, payload = run_cli(scope, ["create", "--dry-run"])
+    server = ((payload.get("request") or {}).get("body") or {}).get("server") or {}
+    assert server.get("publicip") is None, f"scope no_eip 应不带 EIP，实得 {server.get('publicip')!r}"
 
 
 # ---- project_id 降为可选 ----
